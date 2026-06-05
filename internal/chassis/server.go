@@ -50,9 +50,15 @@ type Config struct {
 	// VolumeViewer is the optional read-only source for global output
 	// volume. When nil, chassis falls back to startup bridge config.
 	VolumeViewer VolumeViewer
+	// MuteViewer is the optional read-only source for transient output mute.
+	// When nil, chassis renders the level module as unmuted.
+	MuteViewer MuteViewer
 	// VolumeSaver is the optional persistence hook for output-volume
 	// changes. When nil, chassis renders the knob read-only for POSTs.
 	VolumeSaver VolumeSaver
+	// MuteController is the optional transient mute controller. When nil,
+	// mute POSTs return a read-only error.
+	MuteController MuteController
 
 	// AudioDSPController is the live tone/EQ runtime (preview + read).
 	AudioDSPController AudioDSPController
@@ -162,7 +168,9 @@ type Server struct {
 	visualizerViewer   VisualizerViewer
 	visualizerSaver    VisualizerSaver
 	volumeViewer       VolumeViewer
+	muteViewer         MuteViewer
 	volumeSaver        VolumeSaver
+	muteController     MuteController
 	audioDSPController AudioDSPController
 	audioDSPSaver      AudioDSPSaver
 	audioScopeViewer   AudioScopeViewer
@@ -231,7 +239,9 @@ func New(cfg Config) (*Server, error) {
 		visualizerViewer:     cfg.VisualizerViewer,
 		visualizerSaver:      cfg.VisualizerSaver,
 		volumeViewer:         cfg.VolumeViewer,
+		muteViewer:           cfg.MuteViewer,
 		volumeSaver:          cfg.VolumeSaver,
+		muteController:       cfg.MuteController,
 		audioDSPController:   cfg.AudioDSPController,
 		audioDSPSaver:        cfg.AudioDSPSaver,
 		audioScopeViewer:     cfg.AudioScopeViewer,
@@ -303,6 +313,11 @@ func (s *Server) buildSnapshot(now time.Time) ReceiverPageData {
 		if s.volumeViewer != nil {
 			base.Transport.OutputVolume = s.volumeViewer.OutputVolume()
 		}
+		if s.muteViewer != nil {
+			base.Transport.OutputMuted = s.muteViewer.OutputMuted()
+		}
+		base.AudioStrip.OutputVolume = base.Transport.OutputVolume
+		base.AudioStrip.OutputMuted = base.Transport.OutputMuted
 		return base
 	}
 	view := s.session.StatusHomeView()
@@ -337,6 +352,7 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /ui/transport/seek", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleTransportSeek))))
 	mux.Handle("POST /ui/visualizer", requireSameOrigin(http.HandlerFunc(s.handleVisualizerPost)))
 	mux.Handle("POST /ui/volume", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleVolumePost))))
+	mux.Handle("POST /ui/volume/mute", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleVolumeMutePost))))
 	mux.Handle("POST /ui/audio/dsp", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleAudioDSPPost))))
 	mux.Handle("POST /ui/audio/dsp/memory", requireSameOrigin(http.HandlerFunc(s.handleAudioDSPMemoryPost)))
 	mux.Handle("POST /ui/aux/start", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleAUXStartPost))))

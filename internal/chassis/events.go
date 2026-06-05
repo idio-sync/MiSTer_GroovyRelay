@@ -111,11 +111,12 @@ type actionsEnabledE struct {
 // knob) don't force the transport UI to repaint, and so transport-only
 // changes (state/seek) don't echo the unchanged volume.
 type volumeEnvelope struct {
-	OutputVolume int `json:"outputVolume"`
+	OutputVolume int  `json:"outputVolume"`
+	OutputMuted  bool `json:"outputMuted"`
 }
 
 func volumeEnvelopeFrom(t TransportData) volumeEnvelope {
-	return volumeEnvelope{OutputVolume: t.OutputVolume}
+	return volumeEnvelope{OutputVolume: t.OutputVolume, OutputMuted: t.OutputMuted}
 }
 
 func transportEnvelopeFrom(t TransportData) transportEnvelope {
@@ -249,12 +250,12 @@ func (s *Server) logMeterEmitRefused(reason string) {
 	}
 }
 
-// volumeChanged isolates the OutputVolume diff so the `volume` SSE
-// event can fire without piggy-backing on `transport`. Deliberately
-// excludes every other TransportData field: a state/seek change that
-// leaves volume untouched must not emit a duplicate volume event.
+// volumeChanged isolates the level/mute diff so the `volume` SSE event can
+// fire without piggy-backing on `transport`. Deliberately excludes every other
+// TransportData field: a state/seek change that leaves level untouched must not
+// emit a duplicate volume event.
 func volumeChanged(a, b TransportData) bool {
-	return a.OutputVolume != b.OutputVolume
+	return a.OutputVolume != b.OutputVolume || a.OutputMuted != b.OutputMuted
 }
 
 // audioDspEnvelope is the payload for the `audioDsp` SSE event. One shape for
@@ -541,6 +542,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				last.Transport.OutputVolume = curr.Transport.OutputVolume
+				last.Transport.OutputMuted = curr.Transport.OutputMuted
 			}
 			if transportChanged(curr.Transport, last.Transport) {
 				if err := emit(w, "transport", transportEnvelopeFrom(curr.Transport)); err != nil {

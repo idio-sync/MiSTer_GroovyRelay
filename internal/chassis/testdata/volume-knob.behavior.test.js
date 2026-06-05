@@ -32,6 +32,7 @@ class FakeElement extends FakeTarget {
     super();
     this.value = value;
     this.dataset = {};
+    this.attrs = new Map();
     this.rect = { left: 0, top: 0, width: 100, height: 100 };
     this.styleValues = new Map();
     this.style = {
@@ -50,6 +51,14 @@ class FakeElement extends FakeTarget {
     };
   }
 
+  setAttribute(name, value) {
+    this.attrs.set(name, String(value));
+  }
+
+  getAttribute(name) {
+    return this.attrs.get(name);
+  }
+
   matches(selector) {
     return selector === ':hover';
   }
@@ -65,17 +74,15 @@ class FakeElement extends FakeTarget {
   focus() {}
 }
 
-class FakeSource extends FakeTarget {
-  emitVolume(outputVolume) {
-    this.dispatch('volume', { data: JSON.stringify({ outputVolume }) });
-  }
-}
-
-function createHarness(initialValue = 40) {
+function createHarness(initialValue = 40, initialMuted = false) {
   const root = new FakeElement();
   root.dataset.volumeValue = String(initialValue);
+  root.dataset.volumeMuted = String(initialMuted);
   const range = new FakeElement(String(initialValue));
-  const source = new FakeSource();
+  const mute = new FakeElement();
+  mute.dataset.volumeMute = '';
+  mute.setAttribute('aria-pressed', String(initialMuted));
+  const source = new FakeTarget();
   const subscriptions = new Map();
   const requests = [];
   const timers = new Map();
@@ -135,15 +142,18 @@ function createHarness(initialValue = 40) {
     if (selector === '[data-volume-range]') {
       return range;
     }
+    if (selector === '[data-volume-mute]') {
+      return mute;
+    }
     return null;
   };
   range.focus = () => {
     document.activeElement = range;
   };
-  source.emitVolume = (outputVolume) => {
+  source.emitVolume = (outputVolume, outputMuted = false) => {
     const fn = subscriptions.get('volume');
     if (fn) {
-      fn({ data: JSON.stringify({ outputVolume }) });
+      fn({ data: JSON.stringify({ outputVolume, outputMuted }) });
     }
   };
 
@@ -170,7 +180,7 @@ function createHarness(initialValue = 40) {
   const code = fs.readFileSync(path.join(__dirname, '..', 'static', 'volume-knob.js'), 'utf8');
   vm.runInContext(code, context, { filename: 'volume-knob.js' });
 
-  return { root, range, source, requests, advance };
+  return { root, range, mute, source, requests, advance };
 }
 
 async function settle() {
@@ -181,6 +191,10 @@ async function settle() {
 
 function postedVolume(req) {
   return new URLSearchParams(req.body).get('output_volume');
+}
+
+function postedMuted(req) {
+  return new URLSearchParams(req.body).get('muted');
 }
 
 test('coalesces non-final saves behind one in-flight request and preserves 200ms spacing', async () => {
@@ -286,4 +300,21 @@ test('turning the knob with pointer drag commits the radial volume value', async
   h.advance(0);
   assert.equal(h.requests.length, 1);
   assert.equal(postedVolume(h.requests[0]), '83');
+});
+
+test('mute button posts separate muted state and follows SSE state', async () => {
+  const h = createHarness(40, false);
+
+  h.mute.dispatch('click');
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.requests[0].url, '/ui/volume/mute');
+  assert.equal(postedMuted(h.requests[0]), 'true');
+  assert.equal(h.mute.classes.has('on'), true);
+  assert.equal(h.mute.getAttribute('aria-pressed'), 'true');
+  assert.equal(h.root.classes.has('muted'), true);
+
+  h.source.emitVolume(40, false);
+  assert.equal(h.mute.classes.has('on'), false);
+  assert.equal(h.mute.getAttribute('aria-pressed'), 'false');
+  assert.equal(h.root.classes.has('muted'), false);
 });

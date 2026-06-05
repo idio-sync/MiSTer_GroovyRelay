@@ -222,6 +222,7 @@ type TransportData struct {
 	Source          string
 	Generation      uint64
 	OutputVolume    int
+	OutputMuted     bool
 }
 
 type ActionsEnabled struct {
@@ -236,8 +237,8 @@ type ActionsEnabled struct {
 // AudioStripData drives the always-on audio/EQ face module. Tone/balance/EQ
 // are the live tone-control values; Memory carries per-slot labels + stored
 // flags for the M1..M3 buttons. OutputVolume duplicates the transport's
-// volume so the relocated knob renders from this module's data; the volume
-// SSE event + volume-knob.js are unchanged.
+// volume/mute state so the relocated level controls render from this module's
+// data; the volume SSE event + volume-knob.js keep them synced.
 type AudioStripData struct {
 	Enabled      bool // false = defeat (EQ OUT engaged)
 	Mono         bool
@@ -254,6 +255,7 @@ type AudioStripData struct {
 	Engaged      bool // status-bar EQ LED
 	Persisted    bool // false while a preview runs ahead of disk
 	OutputVolume int
+	OutputMuted  bool
 }
 
 // AudioStripMemory is one M1..M3 preset slot for the audio strip.
@@ -266,7 +268,7 @@ type AudioStripMemory struct {
 // audioStripFromDSP flattens a config.AudioDSP (+ volume + persisted flag)
 // into the render/SSE struct, normalizing the 3 memory slots so the template
 // always renders M1..M3.
-func audioStripFromDSP(d config.AudioDSP, engaged, persisted bool, volume int) AudioStripData {
+func audioStripFromDSP(d config.AudioDSP, engaged, persisted bool, volume int, muted bool) AudioStripData {
 	out := AudioStripData{
 		Enabled:      d.Enabled,
 		Mono:         d.Mono,
@@ -282,6 +284,7 @@ func audioStripFromDSP(d config.AudioDSP, engaged, persisted bool, volume int) A
 		Engaged:      engaged,
 		Persisted:    persisted,
 		OutputVolume: volume,
+		OutputMuted:  muted,
 	}
 	if len(out.EQ) != 10 {
 		eq := make([]float64, 10)
@@ -955,6 +958,7 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 			cfg.Bridge.Audio.DSP.Engaged(),
 			true, // idle = persisted (no preview)
 			cfg.Bridge.Audio.OutputVolume,
+			false,
 		),
 		Visualizer: VisualizerData{
 			ActiveMode: defaultVisualizerMode(cfg),

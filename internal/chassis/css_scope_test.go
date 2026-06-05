@@ -971,8 +971,18 @@ func TestChassisCSS_LevelSectionCentersMasterVolumeKnob(t *testing.T) {
 	if !strings.Contains(rule, "align-items: center;") {
 		t.Fatalf("level section should center the master volume knob horizontally: %s", rule)
 	}
-	if !strings.Contains(rule, "min-width: 132px;") {
+	if !strings.Contains(rule, "min-width: 204px;") {
 		t.Fatalf("level section should reserve enough width to visibly center the knob: %s", rule)
+	}
+	controlsRule := cssRuleBlock(t, text, "body.receiver .level-controls")
+	for _, want := range []string{
+		"display: flex;",
+		"align-items: center;",
+		"justify-content: center;",
+	} {
+		if !strings.Contains(controlsRule, want) {
+			t.Fatalf("level controls should center the mute button and master volume knob, missing %q: %s", want, controlsRule)
+		}
 	}
 }
 

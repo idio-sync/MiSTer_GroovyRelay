@@ -63,9 +63,13 @@ func snapshotFromSession(cfg Config, sv SessionViewer, vv VisualizerViewer, volv
 		if volv != nil {
 			base.Transport.OutputVolume = volv.OutputVolume()
 		}
+		if cfg.MuteViewer != nil {
+			base.Transport.OutputMuted = cfg.MuteViewer.OutputMuted()
+		}
 		// Keep the relocated volume knob (rendered from AudioStrip) in sync
 		// with the transport's resolved volume, mirroring snapshotFromStatusView.
 		base.AudioStrip.OutputVolume = base.Transport.OutputVolume
+		base.AudioStrip.OutputMuted = base.Transport.OutputMuted
 		return base
 	}
 	return snapshotFromStatusView(cfg, sv.StatusHomeView(), vv, volv, tv, aux, now)
@@ -97,15 +101,19 @@ func snapshotFromStatusView(cfg Config, view core.StatusHomeView, vv VisualizerV
 	} else {
 		base.Transport.OutputVolume = cfg.Bridge.Audio.OutputVolume
 	}
+	if cfg.MuteViewer != nil {
+		base.Transport.OutputMuted = cfg.MuteViewer.OutputMuted()
+	}
 	// AudioStrip: for live sessions use view.AudioDSP (runtime params);
 	// idle/unknown keep idleSnapshot's config-seeded value unchanged.
 	// The volume is taken from base.Transport.OutputVolume which was just
 	// resolved above, so both fields stay in sync.
 	switch view.State {
 	case core.StatePlaying, core.StatePaused:
-		base.AudioStrip = audioStripFromDSP(view.AudioDSP, view.AudioDSPEngaged, view.AudioDSPPersisted, base.Transport.OutputVolume)
+		base.AudioStrip = audioStripFromDSP(view.AudioDSP, view.AudioDSPEngaged, view.AudioDSPPersisted, base.Transport.OutputVolume, base.Transport.OutputMuted)
 	default:
 		base.AudioStrip.OutputVolume = base.Transport.OutputVolume
+		base.AudioStrip.OutputMuted = base.Transport.OutputMuted
 	}
 	applyAUXSourceState(&base, aux)
 	base.Visualizer.ActiveMode = liveVisualizerMode(cfg, vv)

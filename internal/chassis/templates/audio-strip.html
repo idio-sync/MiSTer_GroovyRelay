@@ -51,7 +51,10 @@
 
     <div class="deck-sect deck-level">
       <span class="deck-cap">Level</span>
-      {{ template "volume-control" . }}
+      <div class="level-controls">
+        {{ template "mute-control" . }}
+        {{ template "volume-control" . }}
+      </div>
     </div>
 
   </div>
@@ -78,10 +81,21 @@
 {{end}}
 
 {{define "volume-control"}}
-<div class="volume-control" data-volume-knob data-volume-value="{{.OutputVolume}}" style="--volume-angle: {{volumeAngle .OutputVolume}}deg">
+<div class="volume-control{{if .OutputMuted}} muted{{end}}" data-volume-knob data-volume-value="{{.OutputVolume}}" data-volume-muted="{{.OutputMuted}}" style="--volume-angle: {{volumeAngle .OutputVolume}}deg">
   <label class="volume-label" for="receiver-volume-range">Volume</label>
   <div class="volume-tick-ring" aria-hidden="true">{{range $i, $_ := until 21}}<span class="volume-tick tick-{{$i}}"></span>{{end}}</div>
   <div class="volume-dial" aria-hidden="true"><span class="volume-notch"></span></div>
   <input id="receiver-volume-range" class="volume-range" data-volume-range type="range" name="output_volume" min="0" max="100" step="1" value="{{.OutputVolume}}" aria-label="Volume">
+</div>
+{{end}}
+
+{{define "mute-control"}}
+<div class="mute-control">
+  <span class="mute-label">Mute</span>
+  <button class="mute-button{{if .OutputMuted}} on{{end}}" type="button" data-volume-mute
+          aria-pressed="{{if .OutputMuted}}true{{else}}false{{end}}" aria-label="Mute output">
+    <span class="mute-button-face" aria-hidden="true"></span>
+  </button>
+  <span class="mute-lamp{{if .OutputMuted}} on{{end}}" aria-hidden="true"></span>
 </div>
 {{end}}

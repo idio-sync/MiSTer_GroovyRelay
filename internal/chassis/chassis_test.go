@@ -5243,7 +5243,8 @@ func TestRender_AudioStripPresent(t *testing.T) {
 		`data-dsp-preset="Flat"`,
 		`data-dsp-memory="1"`,
 		`data-volume-knob`, // volume relocated into the strip
-		`data-eq-led`,      // status-bar EQ LED tagged for live toggle
+		`data-volume-mute`,
+		`data-eq-led`, // status-bar EQ LED tagged for live toggle
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered page missing %q", want)
