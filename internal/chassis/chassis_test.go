@@ -3106,8 +3106,8 @@ func TestCatalogDrawerTemplate_RendersProviderTabs(t *testing.T) {
 		`data-provider="cartoon-rewind"`,
 		`data-provider="toonami-aftermath"`,
 		`<span class="ic mtv">MTV</span>`,
-		`<span class="ic cartoon">CART</span>`,
-		`<span class="ic toonami">TOON</span>`,
+		`<span class="ic cartoon">CTRW</span>`,
+		`<span class="ic toonami">TNAM</span>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("catalog-drawer html missing %q", want)
@@ -3180,13 +3180,13 @@ func newTestServerWithCatalog(t *testing.T) *Server {
 					{ID: "1stday", Name: "First Day on MTV", PlayMode: "SEQ"},
 				}},
 			}},
-		{ID: "cartoon-rewind", DisplayName: "Cartoon Rewind", BadgeLabel: "CART", BadgeClass: "cartoon", Live: false,
+		{ID: "cartoon-rewind", DisplayName: "Cartoon Rewind", BadgeLabel: "CTRW", BadgeClass: "cartoon", Live: false,
 			Groups: []adapters.CatalogGroup{
 				{ID: "g1", Name: "Group 1", Channels: []adapters.CatalogChannel{
 					{ID: "c1", Name: "Cartoon 1", PlayMode: "SHUFFLE"},
 				}},
 			}},
-		{ID: "toonami-aftermath", DisplayName: "Toonami Aftermath", BadgeLabel: "TOON", BadgeClass: "toonami", Live: true,
+		{ID: "toonami-aftermath", DisplayName: "Toonami Aftermath", BadgeLabel: "TNAM", BadgeClass: "toonami", Live: true,
 			Groups: []adapters.CatalogGroup{
 				{ID: "g1", Name: "Group 1", Channels: []adapters.CatalogChannel{
 					{ID: "east", Name: "Toonami East", PlayMode: "", Live: true},
@@ -4539,10 +4539,10 @@ func TestRenderCatalogPane_ProvidersRendered(t *testing.T) {
 			{ID: "mtv-rewind", DisplayName: "MTV Rewind", BadgeLabel: "MTV", BadgeClass: "",
 				Origin: "wantmymtv.vercel.app", Kind: "youtube-channel-json",
 				DefaultChannel: "1stday", ChannelCount: 73, Enabled: true},
-			{ID: "cartoon-rewind", DisplayName: "Cartoon Rewind", BadgeLabel: "CART", BadgeClass: "cartoon",
+			{ID: "cartoon-rewind", DisplayName: "Cartoon Rewind", BadgeLabel: "CTRW", BadgeClass: "cartoon",
 				Origin: "cartoonrewind.tv", Kind: "youtube-channel-json",
 				DefaultChannel: "all", ChannelCount: 13, Enabled: true},
-			{ID: "toonami-aftermath", DisplayName: "Toonami Aftermath", BadgeLabel: "TOON", BadgeClass: "toonami",
+			{ID: "toonami-aftermath", DisplayName: "Toonami Aftermath", BadgeLabel: "TNAM", BadgeClass: "toonami",
 				Origin: "api.toonamiaftermath.com", Kind: "direct-streams",
 				DefaultChannel: "", ChannelCount: 4, Live: true, Enabled: true,
 				HLSBufferDisabled: false},
@@ -4579,7 +4579,7 @@ func TestRenderCatalogPane_ProvidersRendered(t *testing.T) {
 func TestRenderCatalogPane_DefaultChannelOmittedWhenEmpty(t *testing.T) {
 	data := SettingsData{
 		CatalogProviders: []CatalogProviderState{
-			{ID: "toonami-aftermath", BadgeLabel: "TOON", BadgeClass: "toonami",
+			{ID: "toonami-aftermath", BadgeLabel: "TNAM", BadgeClass: "toonami",
 				Origin: "api.toonamiaftermath.com", Kind: "direct-streams",
 				DefaultChannel: "", ChannelCount: 4, Live: true},
 		},
