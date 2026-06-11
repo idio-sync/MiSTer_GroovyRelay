@@ -199,6 +199,24 @@ func TestCompanionGatePreflightUsesExtensionCORS(t *testing.T) {
 	}
 }
 
+func TestCompanionGatePreflightAllowsPrivateNetworkAccess(t *testing.T) {
+	h := companionExtensionGate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("preflight should not reach route")
+	}))
+	req := httptest.NewRequest(http.MethodOptions, "/ui/companion/status", nil)
+	req.Header.Set("Origin", "moz-extension://abc")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	req.Header.Set("Access-Control-Request-Private-Network", "true")
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+	if rw.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rw.Code)
+	}
+	if got := rw.Header().Get("Access-Control-Allow-Private-Network"); got != "true" {
+		t.Fatalf("Access-Control-Allow-Private-Network = %q, want true", got)
+	}
+}
+
 func TestCompanionStatusURLSessionIncludesCapabilitiesAndHistory(t *testing.T) {
 	reg := adapters.NewRegistry()
 	if err := reg.Register(&uiStubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {

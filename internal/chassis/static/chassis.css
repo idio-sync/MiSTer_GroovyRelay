@@ -5111,8 +5111,19 @@ body.receiver .catalog-form { display: none; }
 body.receiver.catalog-form-open .catalog-form {
   display: flex;
   flex-direction: column;
+  grid-column: 2;
   gap: 10px;
-  padding: 12px;
+  padding: 10px;
+  margin-top: 12px;
+  min-width: 0;
+  min-height: 0;
+  background:
+    linear-gradient(180deg, #17171a 0%, #0c0c0e 100%);
+  border: 1px solid #0a0a0b;
+  border-radius: 3px;
+  box-shadow:
+    inset 0 2px 5px rgba(0, 0, 0, 0.72),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.04);
 }
 body.receiver.catalog-form-open .catalog-browser { display: none; }
 
@@ -5209,15 +5220,244 @@ body.receiver .catalog-form .cf-chip.pending {
   animation: chip-resolve 1.2s ease-in-out infinite;
 }
 
+body.receiver .catalog-form .cf-channel[data-dragging="source"] { opacity: 0.4; }
+body.receiver .catalog-form .cf-channel.drop-target { outline: 1px dashed var(--vfd-dim); }
+
+body.receiver .catalog-form .cf-identity > label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font: 700 8px 'Inter', sans-serif;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #5a5a5e;
+}
+
+body.receiver .catalog-form .cf-label {
+  display: block;
+  font: 700 8px 'Inter', sans-serif;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: #5a5a5e;
+  margin-bottom: 4px;
+}
+
+body.receiver .catalog-form .cf-groups {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #0a0a0b;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+body.receiver .catalog-form .cf-group-chips {
+  display: inline-flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+body.receiver .catalog-form .cf-group-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 8px;
+  font: 600 10px 'Inter', sans-serif;
+  letter-spacing: 0.06em;
+  color: #b0b0b8;
+  background: linear-gradient(180deg, #2a2a30 0%, #1a1a1f 100%);
+  border: 1px solid oklch(0.26 0.012 80);
+  border-radius: 2px;
+  cursor: grab;
+}
+
+body.receiver .catalog-form .cf-group-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 1px;
+  color: #6a6a6e;
+  font: 700 11px 'Inter', sans-serif;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+body.receiver .catalog-form .cf-group-delete:hover {
+  color: oklch(0.82 0.16 25);
+  background: oklch(0.22 0.12 25 / 0.4);
+}
+
+body.receiver .catalog-form .cf-add-group,
+body.receiver .catalog-form .cf-add-channel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  background: transparent;
+  border: 1px dashed oklch(0.26 0.012 80);
+  border-radius: 2px;
+  color: var(--vfd-dim);
+  font: 600 10px 'Inter', sans-serif;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+
+body.receiver .catalog-form .cf-add-group:hover,
+body.receiver .catalog-form .cf-add-channel:hover {
+  border-color: oklch(0.36 0.06 175);
+  color: var(--vfd);
+}
+
+body.receiver .catalog-form .cf-channels {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+body.receiver .catalog-form .cf-play-mode {
+  display: inline-flex;
+}
+
+body.receiver .catalog-form .cf-channel-verify {
+  padding: 3px 8px;
+  background: linear-gradient(180deg, #2a2a30 0%, #1a1a1f 100%);
+  border: 1px solid oklch(0.26 0.012 80);
+  border-radius: 2px;
+  color: #b0b0b8;
+  font: 500 9px 'Inter', sans-serif;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease;
+}
+
+body.receiver .catalog-form .cf-channel-verify:hover {
+  background: linear-gradient(180deg, #35353c 0%, #20202a 100%);
+  color: #d4d4d8;
+}
+
+body.receiver .catalog-form .cf-channel-verify[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+body.receiver .catalog-form .cf-channel-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid oklch(0.20 0.012 80);
+  border-radius: 2px;
+  color: #6a6a6e;
+  font: 700 11px 'Inter', sans-serif;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+body.receiver .catalog-form .cf-channel-delete:hover {
+  color: oklch(0.82 0.16 25);
+  border-color: oklch(0.40 0.16 25);
+  background: oklch(0.22 0.12 25 / 0.3);
+}
+
 body.receiver .catalog-form .cf-footer {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
   margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #0a0a0b;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.035);
 }
 
-body.receiver .catalog-form .cf-channel[data-dragging="source"] { opacity: 0.4; }
-body.receiver .catalog-form .cf-channel.drop-target { outline: 1px dashed var(--vfd-dim); }
+body.receiver .catalog-form .cf-cancel {
+  padding: 7px 16px;
+  background: transparent;
+  border: 1px solid oklch(0.22 0.012 80);
+  border-radius: 2px;
+  color: var(--vfd-faded);
+  font: 600 10px 'Inter', sans-serif;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+
+body.receiver .catalog-form .cf-cancel:hover {
+  border-color: oklch(0.28 0.06 175);
+  color: var(--vfd);
+}
+
+body.receiver .catalog-form .cf-save {
+  padding: 7px 16px;
+  background: linear-gradient(180deg, oklch(0.30 0.06 175) 0%, oklch(0.18 0.05 175) 100%);
+  border: 1px solid oklch(0.32 0.06 175);
+  border-radius: 2px;
+  color: var(--vfd);
+  font: 700 10px 'Inter', sans-serif;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-shadow: 0 0 3px var(--vfd-glow-soft);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+
+body.receiver .catalog-form .cf-save:hover {
+  background: linear-gradient(180deg, oklch(0.34 0.07 175) 0%, oklch(0.22 0.06 175) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3),
+    0 0 8px var(--vfd-glow-soft);
+}
+
+body.receiver .catalog-form .cf-save[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+body.receiver .catalog-form .cf-delete {
+  padding: 7px 16px;
+  background: transparent;
+  border: 1px solid oklch(0.30 0.12 25);
+  border-radius: 2px;
+  color: oklch(0.68 0.16 25);
+  font: 600 10px 'Inter', sans-serif;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+body.receiver .catalog-form .cf-delete:hover {
+  background: oklch(0.22 0.12 25 / 0.35);
+  color: oklch(0.82 0.18 25);
+  border-color: oklch(0.45 0.16 25);
+}
+
+body.receiver .catalog-form .cf-delete[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+body.receiver .catalog-form .cf-enum-chip {
+  margin-left: 4px;
+}
 
 body.receiver .catalog-provider-wrap .cf-pencil {
   width: 30px;

@@ -253,12 +253,12 @@ var bundledChassisPresets = [12]adapters.PresetEntry{
 	{Slot: 4, ProviderID: "mtv-rewind", ChannelID: "trl", Title: "TRL", BadgeLabel: "MTV", BadgeClass: "mtv"},
 	{Slot: 5, ProviderID: "mtv-rewind", ChannelID: "120minutes", Title: "120 Minutes", BadgeLabel: "MTV", BadgeClass: "mtv"},
 	{Slot: 6, ProviderID: "mtv-rewind", ChannelID: "unplugged", Title: "Unplugged", BadgeLabel: "MTV", BadgeClass: "mtv"},
-	{Slot: 7, ProviderID: "cartoon-rewind", ChannelID: "loonytunes", Title: "Looney Tunes", BadgeLabel: "CART", BadgeClass: "cartoon"},
-	{Slot: 8, ProviderID: "cartoon-rewind", ChannelID: "animaniacs", Title: "Animaniacs", BadgeLabel: "CART", BadgeClass: "cartoon"},
-	{Slot: 9, ProviderID: "cartoon-rewind", ChannelID: "heman", Title: "He-Man", BadgeLabel: "CART", BadgeClass: "cartoon"},
-	{Slot: 10, ProviderID: "cartoon-rewind", ChannelID: "all", Title: "All Cartoons", BadgeLabel: "CART", BadgeClass: "cartoon"},
-	{Slot: 11, ProviderID: "toonami-aftermath", ChannelID: "east", Title: "Toonami East", BadgeLabel: "TOON", BadgeClass: "toonami", Live: true},
-	{Slot: 12, ProviderID: "toonami-aftermath", ChannelID: "movies", Title: "Toonami Movies", BadgeLabel: "TOON", BadgeClass: "toonami", Live: true},
+	{Slot: 7, ProviderID: "cartoon-rewind", ChannelID: "loonytunes", Title: "Looney Tunes", BadgeLabel: "CTRW", BadgeClass: "cartoon"},
+	{Slot: 8, ProviderID: "cartoon-rewind", ChannelID: "animaniacs", Title: "Animaniacs", BadgeLabel: "CTRW", BadgeClass: "cartoon"},
+	{Slot: 9, ProviderID: "cartoon-rewind", ChannelID: "heman", Title: "He-Man", BadgeLabel: "CTRW", BadgeClass: "cartoon"},
+	{Slot: 10, ProviderID: "cartoon-rewind", ChannelID: "all", Title: "All Cartoons", BadgeLabel: "CTRW", BadgeClass: "cartoon"},
+	{Slot: 11, ProviderID: "toonami-aftermath", ChannelID: "east", Title: "Toonami East", BadgeLabel: "TNAM", BadgeClass: "toonami", Live: true},
+	{Slot: 12, ProviderID: "toonami-aftermath", ChannelID: "west", Title: "Toonami West", BadgeLabel: "TNAM", BadgeClass: "toonami", Live: true},
 }
 
 // bundledChassisCatalogProviderIDs is the subset of bundledManifest()
@@ -281,6 +281,6 @@ var providerBadges = map[string]struct {
 	Class string
 }{
 	"mtv-rewind":        {"MTV", "mtv"},
-	"cartoon-rewind":    {"CART", "cartoon"},
-	"toonami-aftermath": {"TOON", "toonami"},
+	"cartoon-rewind":    {"CTRW", "cartoon"},
+	"toonami-aftermath": {"TNAM", "toonami"},
 }
