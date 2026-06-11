@@ -78,6 +78,9 @@ jobs:
       - name: Sidecar script tests
         if: runner.os == 'Linux'
         run: bash scripts/fetch-sidecars-test.sh
+      - name: Release workflow tests
+        if: runner.os == 'Linux'
+        run: bash scripts/release-workflow-test.sh
       - name: Race tests
         if: runner.os != 'Windows'
         run: go test -race ./...
