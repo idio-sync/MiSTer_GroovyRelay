@@ -115,7 +115,12 @@ func companionExtensionGate(next http.Handler) http.Handler {
 			return
 		}
 		setExtensionCORSHeaders(w, r)
-		if !isExtensionOrigin(r.Header.Get("Origin")) || r.Header.Get("X-Bridge-Extension") != "1" {
+		if r.Header.Get("X-Bridge-Extension") != "1" {
+			writeCompanionError(w, r, http.StatusForbidden, "companion extension header required")
+			return
+		}
+		origin := r.Header.Get("Origin")
+		if origin != "" && !isExtensionOrigin(origin) {
 			writeCompanionError(w, r, http.StatusForbidden, "companion extension origin and header required")
 			return
 		}

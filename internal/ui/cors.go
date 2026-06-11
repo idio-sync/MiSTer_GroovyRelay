@@ -28,4 +28,7 @@ func setExtensionCORSHeaders(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Allow-Headers", extensionCORSAllowHeaders)
 	w.Header().Set("Access-Control-Allow-Methods", extensionCORSAllowMethods)
+	if r.Header.Get("Access-Control-Request-Private-Network") == "true" {
+		w.Header().Set("Access-Control-Allow-Private-Network", "true")
+	}
 }

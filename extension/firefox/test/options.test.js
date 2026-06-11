@@ -89,9 +89,8 @@ describe("testConnection", () => {
     expect(captured.headers["x-bridge-extension"]).toBe("1");
   });
 
-  it("requests bridge host permission before testing when it is missing", async () => {
+  it("uses relay CORS without requesting bridge host permission", async () => {
     browser.permissions.contains.mockResolvedValueOnce(false);
-    browser.permissions.request.mockResolvedValueOnce(true);
     server.use(
       http.get("http://192.168.1.50:32500/ui/companion/status", () => {
         return HttpResponse.json({ ok: true });
@@ -101,22 +100,8 @@ describe("testConnection", () => {
     const result = await testConnection("http://192.168.1.50:32500");
 
     expect(result).toEqual({ ok: true });
-    expect(browser.permissions.contains).toHaveBeenCalledWith({
-      origins: ["http://192.168.1.50/*"],
-    });
-    expect(browser.permissions.request).toHaveBeenCalledWith({
-      origins: ["http://192.168.1.50/*"],
-    });
-  });
-
-  it("returns a permission error when bridge host permission is denied", async () => {
-    browser.permissions.contains.mockResolvedValueOnce(false);
-    browser.permissions.request.mockResolvedValueOnce(false);
-
-    const result = await testConnection("http://192.168.1.50:32500");
-
-    expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/permission/i);
+    expect(browser.permissions.contains).not.toHaveBeenCalled();
+    expect(browser.permissions.request).not.toHaveBeenCalled();
   });
 
   it("returns ok:false with status code on 404", async () => {
@@ -139,6 +124,30 @@ describe("testConnection", () => {
     const result = await testConnection("http://192.168.1.50:32500");
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/unreachable/i);
+  });
+
+  it("suggests http when an https bridge URL cannot be reached", async () => {
+    server.use(
+      http.get("https://192.168.1.50:32500/ui/companion/status", () => {
+        return HttpResponse.error();
+      })
+    );
+    const result = await testConnection("https://192.168.1.50:32500");
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("built-in relay listens on HTTP");
+    expect(result.error).toContain("http://192.168.1.50:32500");
+  });
+
+  it("explains that localhost means the browser machine", async () => {
+    server.use(
+      http.get("http://127.0.0.1:32500/ui/companion/status", () => {
+        return HttpResponse.error();
+      })
+    );
+    const result = await testConnection("http://127.0.0.1:32500");
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("127.0.0.1 points at this browser");
+    expect(result.error).toContain("relay's LAN IP");
   });
 
   it("returns ok:false when bridgeURL is empty", async () => {

@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+	<title id="title">GroovyRelay</title>
+	<desc id="desc">A compact PVM-style CRT monitor with a cyan segmented G on the screen.</desc>
+	<defs>
+		<linearGradient id="pvm-case" x1="24" x2="105" y1="0" y2="128" gradientUnits="userSpaceOnUse">
+			<stop stop-color="#5b5b62"/>
+			<stop offset=".46" stop-color="#303035"/>
+			<stop offset="1" stop-color="#171719"/>
+		</linearGradient>
+		<linearGradient id="screen-glass" x1="32" x2="96" y1="16" y2="90" gradientUnits="userSpaceOnUse">
+			<stop stop-color="#102f31"/>
+			<stop offset=".52" stop-color="#071112"/>
+			<stop offset="1" stop-color="#030506"/>
+		</linearGradient>
+		<filter id="vfd-glow" x="-40%" y="-40%" width="180%" height="180%">
+			<feGaussianBlur stdDeviation="2.2" result="blur"/>
+			<feMerge>
+				<feMergeNode in="blur"/>
+				<feMergeNode in="SourceGraphic"/>
+			</feMerge>
+		</filter>
+	</defs>
+	<rect width="128" height="128" rx="23" fill="url(#pvm-case)"/>
+	<rect x="7" y="9" width="114" height="104" rx="12" fill="#151517"/>
+	<rect x="13" y="16" width="102" height="74" rx="8" fill="url(#screen-glass)"/>
+	<path d="M19 34h90M19 53h90M19 72h90" stroke="#174042" stroke-width="1.8" opacity=".55"/>
+	<g fill="none" stroke="#45f3dc" stroke-width="7.6" stroke-linecap="round" filter="url(#vfd-glow)">
+		<path d="M45 33h34"/>
+		<path d="M36 42v25"/>
+		<path d="M42 77h39"/>
+		<path d="M65 56h24"/>
+		<path d="M90 57v17"/>
+	</g>
+	<rect x="18" y="96" width="92" height="11" rx="5.5" fill="#0d0d0f"/>
+	<rect x="27" y="100" width="30" height="3.5" rx="1.75" fill="#f2b247"/>
+	<circle cx="72" cy="101.75" r="3.4" fill="#51d48a"/>
+	<circle cx="86" cy="101.75" r="3.4" fill="#2a2a2f"/>
+	<circle cx="100" cy="101.75" r="3.4" fill="#2a2a2f"/>
+</svg>

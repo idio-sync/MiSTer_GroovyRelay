@@ -245,6 +245,47 @@ func TestSendField_AdaptiveDeltaOptInEmitsDeltaWhenUseful(t *testing.T) {
 	}
 }
 
+func TestSendField_DeltaEnabledForcesPeriodicFullLZ4Resync(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.fieldSender = sender
+
+	current := repeatedTileField(fieldBytes, deterministicTile(4096))
+	p.sendField(1, 0, current)
+	if got := blitPayloadType(sender.headers[0]); got != groovy.BlitHeaderLZ4 {
+		t.Fatalf("seed payload type = %d, want full LZ4", got)
+	}
+
+	for i := 0; i < deltaLZ4ForcedFullInterval-1; i++ {
+		current = nextSmallDeltaField(current, byte(i+1))
+		p.sendField(uint32(3+i*2), 0, current)
+		if got := blitPayloadType(sender.headers[len(sender.headers)-1]); got != groovy.BlitHeaderLZ4Delta {
+			t.Fatalf("payload %d type = %d, want delta before forced resync", i+2, got)
+		}
+	}
+
+	current = nextSmallDeltaField(current, 0x7f)
+	p.sendField(999, 0, current)
+	if got := blitPayloadType(sender.headers[len(sender.headers)-1]); got != groovy.BlitHeaderLZ4 {
+		t.Fatalf("forced resync payload type = %d, want full LZ4", got)
+	}
+
+	current = nextSmallDeltaField(current, 0x80)
+	p.sendField(1001, 0, current)
+	if got := blitPayloadType(sender.headers[len(sender.headers)-1]); got != groovy.BlitHeaderLZ4Delta {
+		t.Fatalf("post-resync payload type = %d, want delta to resume", got)
+	}
+}
+
 func TestSendField_DeltaEnvWithLZ4DisabledSendsRaw(t *testing.T) {
 	t.Setenv("GROOVY_DELTA_LZ4", "1")
 
@@ -997,6 +1038,14 @@ func repeatedTileField(length int, tile []byte) []byte {
 		out[i] = tile[i%len(tile)]
 	}
 	return out
+}
+
+func nextSmallDeltaField(prev []byte, salt byte) []byte {
+	next := append([]byte(nil), prev...)
+	for i := 0; i < 64; i++ {
+		next[i*4096] += salt + byte(i) + 1
+	}
+	return next
 }
 
 func deterministicTile(length int) []byte {

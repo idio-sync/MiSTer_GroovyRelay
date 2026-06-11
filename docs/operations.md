@@ -36,9 +36,11 @@ Enable it with:
 GROOVY_DELTA_LZ4=1 ./mister-groovy-relay --config /path/to/config.toml
 ```
 
-The default is off. The feature has no effect unless `bridge.lz4_enabled` is also true, which is the default.
+The generated config enables it by default. The feature has no effect unless `bridge.lz4_enabled` is also true, which is also the default.
 
 **Known limitation: delta loss is silent.** UDP packet loss is structural in this protocol: there are no per-chunk sequence numbers, and the receiver concatenates by arrival order. If a delta-LZ4 field is dropped, sender and receiver history diverge until the next full BLIT resyncs them. On a stable LAN this usually recovers within a few frames; on a lossy link, leave delta-LZ4 off.
+
+To bound recovery time, the bridge periodically sends a normal full-LZ4 BLIT while delta-LZ4 is enabled, even when the delta payload would otherwise win.
 
 Grep logs for `delta_selected` to see how often the adaptive selector chose the delta path in each 5-second window.
 

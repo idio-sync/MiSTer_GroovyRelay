@@ -62,9 +62,8 @@ describe("play() happy path", () => {
     expect(captured.body).toEqual({ url: "https://youtu.be/x", mode: "auto" });
   });
 
-  it("requests bridge host permission before POSTing when it is missing", async () => {
+  it("POSTs through relay CORS without requesting bridge host permission", async () => {
     browser.permissions.contains.mockResolvedValueOnce(false);
-    browser.permissions.request.mockResolvedValueOnce(true);
     server.use(
       http.post("http://192.168.1.50:32500/ui/companion/play", () => {
         return HttpResponse.json({ ok: true, adapter_ref: "url:abc123" }, { status: 202 });
@@ -75,9 +74,8 @@ describe("play() happy path", () => {
     const result = await play("https://youtu.be/x");
 
     expect(result).toEqual({ ok: true, adapter_ref: "url:abc123" });
-    expect(browser.permissions.request).toHaveBeenCalledWith({
-      origins: ["http://192.168.1.50/*"],
-    });
+    expect(browser.permissions.contains).not.toHaveBeenCalled();
+    expect(browser.permissions.request).not.toHaveBeenCalled();
   });
 
   it("uses provided mode parameter", async () => {

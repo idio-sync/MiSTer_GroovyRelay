@@ -268,10 +268,10 @@ type PlaneConfig struct {
 	AudioRate           int // Go-side integer (48000)
 	AudioChans          int // 2 for stereo
 	SuppressAudioOutput bool
-	OutputVolume        int           // global output gain, 0..100
+	OutputVolume        int             // global output gain, 0..100
 	AudioDSP            audiodsp.Params // tone/EQ chain; zero value = transparent
-	SeekOffsetMs        int // reported as session start position
-	Generation          uint64 // session generation; stamps audio snapshots
+	SeekOffsetMs        int             // reported as session start position
+	Generation          uint64          // session generation; stamps audio snapshots
 
 	// OnInit is fired exactly once after the INIT handshake completes.
 	// nil err = success (FPGA accepted INIT, ready for frames); non-nil
@@ -293,6 +293,11 @@ const (
 	deltaLZ4Env              = "GROOVY_DELTA_LZ4"
 	deltaLZ4WinNumerator     = 95
 	deltaLZ4WinDenominator   = 100
+	// Force a full-LZ4 same-polarity field after this many delta-capable
+	// same-polarity fields. At NTSC cadence this refreshes each field
+	// polarity about once per second, bounding silent delta-loss corruption
+	// without adding a user-facing tuning knob.
+	deltaLZ4ForcedFullInterval = 30
 )
 
 // Startup prebuffer defaults. The field tick loop runs at 59.94 Hz;
@@ -391,6 +396,7 @@ type Plane struct {
 	fieldDeltaScratch    []byte
 	fieldDeltaLZ4Scratch []byte
 	fieldDeltaLZ4        lz4.Compressor
+	deltaFieldsSinceFull [2]int
 
 	// Period of one field in milliseconds, as the rational
 	// periodMsNumer/periodMsDenom precomputed at NewPlane from
@@ -1219,6 +1225,7 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats 
 	p.wireBytes.Add(uint64(len(payload)))
 	stats.wireBytes += len(payload)
 	p.fieldSender.MarkBlitSent(len(payload))
+	p.recordDeltaLZ4SendState(frame, field, choice)
 	stats.send = time.Since(t)
 
 	// Throttled budget-overrun warn. Threshold is 84% of the field
@@ -1256,6 +1263,7 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats 
 				"delta_lz4_available", choice.deltaLZ4Available,
 				"delta_lz4_ok", choice.deltaLZ4OK,
 				"delta_lz4_selected", choice.delta,
+				"delta_lz4_forced_full", choice.deltaForcedFull,
 				"delta_lz4_full_bytes", choice.fullLZ4Bytes,
 				"delta_lz4_bytes", choice.deltaLZ4Bytes,
 				"delta_lz4_chunks", datagramChunks(choice.deltaLZ4Bytes),
@@ -1295,6 +1303,7 @@ type fieldPayloadChoice struct {
 	deltaLZ4Available bool
 	deltaLZ4OK        bool
 	deltaLZ4Bytes     int
+	deltaForcedFull   bool
 }
 
 type fieldDiagnostic struct {
@@ -1336,6 +1345,11 @@ func (p *Plane) chooseFieldPayload(field uint8, raw []byte, fullLZ4 []byte, full
 	}
 
 	choice.deltaLZ4Available = true
+	if p.shouldForceDeltaLZ4Full(field) {
+		choice.deltaForcedFull = true
+		return choice
+	}
+
 	slot := int(field & 1)
 	delta := p.fieldDeltaScratch[:len(raw)]
 	writeFieldSubDeltaInto(delta, raw, p.fieldPrev[slot])
@@ -1347,6 +1361,32 @@ func (p *Plane) chooseFieldPayload(field uint8, raw []byte, fullLZ4 []byte, full
 		choice.delta = true
 	}
 	return choice
+}
+
+func (p *Plane) shouldForceDeltaLZ4Full(field uint8) bool {
+	if deltaLZ4ForcedFullInterval <= 0 {
+		return false
+	}
+	slot := int(field & 1)
+	return p.deltaFieldsSinceFull[slot] >= deltaLZ4ForcedFullInterval-1
+}
+
+func (p *Plane) recordDeltaLZ4SendState(frame uint32, field uint8, choice fieldPayloadChoice) {
+	if !p.deltaLZ4Enabled {
+		return
+	}
+	slot := int(field & 1)
+	if choice.delta {
+		p.deltaFieldsSinceFull[slot]++
+		return
+	}
+	p.deltaFieldsSinceFull[slot] = 0
+	if choice.deltaForcedFull {
+		slog.Debug("delta-LZ4 forced full resync",
+			"frame", frame,
+			"field", field,
+			"interval", deltaLZ4ForcedFullInterval)
+	}
 }
 
 func (p *Plane) currentFieldHistoryIdentity(raw []byte) fieldHistoryIdentity {

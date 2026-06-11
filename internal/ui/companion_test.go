@@ -153,7 +153,7 @@ func TestCompanionGateRequiresExtensionOriginAndHeader(t *testing.T) {
 	}{
 		{"missing both", "", "", http.StatusForbidden},
 		{"origin only", "moz-extension://abc", "", http.StatusForbidden},
-		{"header only", "", "1", http.StatusForbidden},
+		{"header only no origin", "", "1", http.StatusOK},
 		{"web origin", "https://evil.example", "1", http.StatusForbidden},
 		{"extension pair", "moz-extension://abc", "1", http.StatusOK},
 	}
@@ -185,6 +185,7 @@ func TestCompanionGatePreflightUsesExtensionCORS(t *testing.T) {
 	req := httptest.NewRequest(http.MethodOptions, "/ui/companion/status", nil)
 	req.Header.Set("Origin", "chrome-extension://abc")
 	req.Header.Set("Access-Control-Request-Method", "GET")
+	req.Header.Set("Access-Control-Request-Private-Network", "true")
 	rw := httptest.NewRecorder()
 	h.ServeHTTP(rw, req)
 	if rw.Code != http.StatusNoContent {
@@ -192,6 +193,9 @@ func TestCompanionGatePreflightUsesExtensionCORS(t *testing.T) {
 	}
 	if got := rw.Header().Get("Access-Control-Allow-Origin"); got != "chrome-extension://abc" {
 		t.Fatalf("Access-Control-Allow-Origin = %q", got)
+	}
+	if got := rw.Header().Get("Access-Control-Allow-Private-Network"); got != "true" {
+		t.Fatalf("Access-Control-Allow-Private-Network = %q", got)
 	}
 }
 

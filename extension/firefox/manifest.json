@@ -1,11 +1,9 @@
 {
   "manifest_version": 3,
   "name": "MiSTer GroovyRelay Companion",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Cast pages, links, and videos to a MiSTer GroovyRelay bridge.",
   "permissions": ["activeTab", "contextMenus", "storage", "notifications"],
-  "host_permissions": ["<all_urls>"],
-  "optional_host_permissions": ["http://*/*", "https://*/*"],
   "content_scripts": [
     {
       "matches": ["https://app.plex.tv/desktop/*"],

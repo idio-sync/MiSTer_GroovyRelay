@@ -26,8 +26,9 @@ describe("manifest data collection declaration", () => {
     });
   });
 
-  it("declares optional bridge host permissions for runtime requests", () => {
-    expect(manifest.optional_host_permissions).toEqual(["http://*/*", "https://*/*"]);
+  it("does not request bridge host permissions so CORS sends the extension origin", () => {
+    expect(manifest.host_permissions || []).toEqual([]);
+    expect(manifest.optional_host_permissions || []).toEqual([]);
   });
 
   it("declares the URL data sent to the bridge for AMO signing", () => {

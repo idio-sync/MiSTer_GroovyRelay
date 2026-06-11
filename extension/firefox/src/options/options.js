@@ -1,5 +1,3 @@
-import { ensureBridgeHostPermission } from "../lib/permissions.js";
-
 export function validateBridgeURL(input) {
   const trimmed = (input || "").trim();
   if (trimmed === "") return { ok: true, url: "" };
@@ -24,9 +22,6 @@ export function validateBridgeURL(input) {
 export async function testConnection(bridgeURL) {
   if (!bridgeURL) return { ok: false, error: "Bridge not configured" };
 
-  const permission = await ensureBridgeHostPermission(bridgeURL);
-  if (!permission.ok) return permission;
-
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 10000);
 
@@ -44,8 +39,35 @@ export async function testConnection(bridgeURL) {
   } catch (e) {
     clearTimeout(timeout);
     if (e.name === "AbortError") return { ok: false, error: "Bridge timed out" };
-    return { ok: false, error: `Bridge unreachable: ${e.message}` };
+    return { ok: false, error: bridgeUnreachableMessage(bridgeURL, e) };
   }
+}
+
+function bridgeUnreachableMessage(bridgeURL, error) {
+  const base = `Bridge unreachable: ${error.message}`;
+  const hint = bridgeURLHint(bridgeURL);
+  return hint ? `${base}. ${hint}` : base;
+}
+
+function bridgeURLHint(bridgeURL) {
+  let parsed;
+  try {
+    parsed = new URL(bridgeURL);
+  } catch {
+    return "";
+  }
+
+  if (parsed.protocol === "https:") {
+    const httpURL = new URL(parsed.href);
+    httpURL.protocol = "http:";
+    return `The built-in relay listens on HTTP; try ${httpURL.origin}.`;
+  }
+
+  if (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1" || parsed.hostname === "::1") {
+    return `${parsed.hostname} points at this browser. If the relay runs on another machine, use the relay's LAN IP.`;
+  }
+
+  return "";
 }
 
 export async function initOptionsPage(doc = document) {
