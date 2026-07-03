@@ -80,6 +80,8 @@ type dataplaneStatsWindow struct {
 
 	wireBytesStart     uint64
 	deltaSelectedStart uint64
+	tornStart          uint64
+	enobufStart        uint64
 }
 
 type dataplaneStatsSnapshot struct {
@@ -103,6 +105,8 @@ type dataplaneStatsSnapshot struct {
 	currentFramesAhead uint32
 
 	enobufTotal    uint64
+	tornTotal      uint64
+	audioRingDrops uint64
 	wireBytesTotal uint64
 	position       time.Duration
 	audioReady     bool
@@ -170,11 +174,43 @@ func (w *dataplaneStatsWindow) observeVideoBacklogAfterPull(backlog int) {
 	}
 }
 
-func (w *dataplaneStatsWindow) reset(wireBytesTotal, deltaSelectedTotal uint64) {
+func (w *dataplaneStatsWindow) reset(wireBytesTotal, deltaSelectedTotal, tornTotal, enobufTotal uint64) {
 	*w = dataplaneStatsWindow{
 		wireBytesStart:     wireBytesTotal,
 		deltaSelectedStart: deltaSelectedTotal,
+		tornStart:          tornTotal,
+		enobufStart:        enobufTotal,
 	}
+}
+
+// dataplaneStatsEventful reports whether the just-closed 5 s window recorded
+// link or deadline trouble. Eventful windows log at Info so a default-level
+// log captures degradation as it happens; healthy windows stay at Debug.
+func dataplaneStatsEventful(w dataplaneStatsWindow, snap dataplaneStatsSnapshot) bool {
+	return w.duplicates > 0 ||
+		w.sendBudgetOverruns > 0 ||
+		snap.tornTotal > w.tornStart ||
+		snap.enobufTotal > w.enobufStart
+}
+
+// ackDistressTransitions returns the receiver-distress edges between two ACK
+// status bytes: vramSynced dropping (bit 2, 1→0) and vgaFrameskip asserting
+// (bit 3, 0→1). All other bits oscillate by design every field or raster
+// (vramReady/EndFrame/Queue, vgaVblank, vgaF1, audio) and are ignored — the
+// caller logs these edges, and logging routine oscillation would be spam.
+func ackDistressTransitions(prev, cur byte) []string {
+	const (
+		vramSynced   = byte(1 << 2)
+		vgaFrameskip = byte(1 << 3)
+	)
+	var events []string
+	if prev&vramSynced != 0 && cur&vramSynced == 0 {
+		events = append(events, "vram_sync_lost")
+	}
+	if prev&vgaFrameskip == 0 && cur&vgaFrameskip != 0 {
+		events = append(events, "vga_frameskip")
+	}
+	return events
 }
 
 func dataplaneStatsAttrs(window dataplaneStatsWindow, snap dataplaneStatsSnapshot) []any {
@@ -230,6 +266,8 @@ func dataplaneStatsAttrs(window dataplaneStatsWindow, snap dataplaneStatsSnapsho
 		"wire_bytes_window", wireBytesWindow,
 		"wire_bytes_total", snap.wireBytesTotal,
 		"enobuf_total", snap.enobufTotal,
+		"torn_payload_sends_total", snap.tornTotal,
+		"audio_ring_drops_total", snap.audioRingDrops,
 		"position_s", snap.position.Seconds(),
 		"audio_ready", snap.audioReady,
 	}
@@ -354,6 +392,14 @@ type Plane struct {
 	// consuming subsequent datagrams (including the next header) as payload.
 	// See audit F3, docs/plans/2026-07-02-dataplane-pipeline-audit.md.
 	tornPayloadSends atomic.Uint64
+	// framesAhead is the live gap between the local BLIT frame counter and
+	// the receiver's last echoed frame — the "receiver lag" health signal.
+	// Updated once per tick and on each echo-advancing ACK.
+	framesAhead atomic.Uint32
+	// audioRingDrops mirrors the audio delay ring's oldest-chunk drop count
+	// (the ring itself is Run-local; this atomic makes it readable from the
+	// status/UI goroutines).
+	audioRingDrops atomic.Uint64
 	lastACKUnix    atomic.Int64  // unix nanos of last received ACK; 0 = never
 	audioReady     atomic.Bool
 	outputVolume   atomic.Int32
@@ -609,6 +655,41 @@ func (p *Plane) Underruns() uint64 { return p.underruns.Load() }
 // receiver short of the announced byte count — a torn field on screen and a
 // possible framing slip until the receiver realigns.
 func (p *Plane) TornPayloadSends() uint64 { return p.tornPayloadSends.Load() }
+
+// LinkHealth is a point-in-time snapshot of the sender→receiver link's
+// distress counters, exposed as one struct so the status view and UI meter
+// gain future signals without another interface method per counter.
+type LinkHealth struct {
+	TornPayloadSends uint64 // payload streams aborted mid-send (see F3)
+	ENOBUFTotal      uint64 // kernel send-buffer overflows (Sender counter)
+	AudioRingDrops   uint64 // audio chunks shed by the delay ring (see F14)
+	FramesAhead      uint32 // local frame counter minus last echoed frame
+}
+
+// LinkHealth returns the current link-distress snapshot. Safe to call
+// concurrently with Run; a Plane built without a Sender (tests) reports
+// zero ENOBUFS.
+func (p *Plane) LinkHealth() LinkHealth {
+	lh := LinkHealth{
+		TornPayloadSends: p.tornPayloadSends.Load(),
+		AudioRingDrops:   p.audioRingDrops.Load(),
+		FramesAhead:      p.framesAhead.Load(),
+	}
+	if p.cfg.Sender != nil {
+		lh.ENOBUFTotal = p.cfg.Sender.ENOBUFCount()
+	}
+	return lh
+}
+
+// updateFramesAhead publishes the live sender-vs-echo frame gap, clamping to
+// zero when the echo is at or ahead of the local counter.
+func (p *Plane) updateFramesAhead(frameNum, lastEcho uint32) {
+	ahead := uint32(0)
+	if frameNum > lastEcho {
+		ahead = frameNum - lastEcho
+	}
+	p.framesAhead.Store(ahead)
+}
 
 // WireBytes returns the cumulative post-LZ4 bytes sent across the
 // Groovy UDP socket. Drives the status home's throughput readout.
@@ -881,6 +962,11 @@ func (p *Plane) Run(ctx context.Context) error {
 		lastEcho            uint32
 		ticksSinceEchoMoved int
 
+		// Receiver-distress edge detection over ACK status bits (see
+		// ackDistressTransitions). Seeded from the INIT ACK below.
+		lastACKStatus    byte
+		lastDistressWarn time.Time
+
 		// Rolling 5-second stats. Reset each statsTicker fire. Gives the
 		// operator a "grep dataplane stats" view of the session evolving
 		// without waiting for threshold-triggered warns.
@@ -895,7 +981,8 @@ func (p *Plane) Run(ctx context.Context) error {
 		sessionEndReason       = "unknown"
 	)
 	lastEcho = ack.FrameEcho
-	statWindow.reset(p.wireBytes.Load(), p.deltaSelectedTotal)
+	lastACKStatus = ack.Status
+	statWindow.reset(p.wireBytes.Load(), p.deltaSelectedTotal, p.TornPayloadSends(), p.cfg.Sender.ENOBUFCount())
 	statsTicker := time.NewTicker(5 * time.Second)
 	defer statsTicker.Stop()
 
@@ -939,7 +1026,22 @@ func (p *Plane) Run(ctx context.Context) error {
 			if a.FrameEcho != lastEcho {
 				lastEcho = a.FrameEcho
 				ticksSinceEchoMoved = 0
+				p.updateFramesAhead(frameNum, lastEcho)
 			}
+			// Receiver-distress edges (sync loss, frameskip). Throttled to
+			// one warn per second — under sustained distress the edges
+			// re-fire every few ACKs and would otherwise flood the log.
+			if events := ackDistressTransitions(lastACKStatus, a.Status); len(events) > 0 &&
+				time.Since(lastDistressWarn) >= time.Second {
+				lastDistressWarn = time.Now()
+				slog.Warn("receiver distress signals in ACK",
+					"events", events,
+					"status_bits", fmt.Sprintf("%08b", a.Status),
+					"frame_sent", frameNum,
+					"frame_echo", a.FrameEcho,
+					"fpga_frame", a.FPGAFrame)
+			}
+			lastACKStatus = a.Status
 			if correction, ok := rasterCorrection(a, p.cfg.Modeline, linePeriod, fieldPeriod, lastCorrectedEcho); ok {
 				resetTimer(timer, nextTickDelay(lastTick, fieldPeriod, correction))
 				lastCorrectedEcho = a.FrameEcho
@@ -969,22 +1071,30 @@ func (p *Plane) Run(ctx context.Context) error {
 				maxFramesAhead:     statMaxFramesAhead,
 				currentFramesAhead: currentFramesAhead,
 				enobufTotal:        p.cfg.Sender.ENOBUFCount(),
+				tornTotal:          p.TornPayloadSends(),
+				audioRingDrops:     p.audioRingDrops.Load(),
 				wireBytesTotal:     wireBytesTotal,
 				position:           p.Position(),
 				audioReady:         p.audioReady.Load(),
 				deltaEnabled:       p.deltaLZ4Enabled,
 				deltaSelectedTotal: p.deltaSelectedTotal,
 			}
-			if slog.Default().Enabled(ctx, slog.LevelDebug) {
+			// Eventful windows (duplicates, budget overruns, torn sends,
+			// ENOBUFS) surface at Info so degradation is visible at the
+			// default log level; healthy windows stay behind Debug.
+			if dataplaneStatsEventful(statWindow, snap) {
+				slog.Info("dataplane stats", dataplaneStatsAttrs(statWindow, snap)...)
+			} else if slog.Default().Enabled(ctx, slog.LevelDebug) {
 				slog.Debug("dataplane stats", dataplaneStatsAttrs(statWindow, snap)...)
 			}
-			statWindow.reset(wireBytesTotal, p.deltaSelectedTotal)
+			statWindow.reset(wireBytesTotal, p.deltaSelectedTotal, snap.tornTotal, snap.enobufTotal)
 			statMaxFramesAhead = 0
 		case <-timer.C:
 			lastTick = time.Now()
 			frameNum++
 			ticksSinceEchoMoved++
 			statWindow.ticks++
+			p.updateFramesAhead(frameNum, lastEcho)
 			if framesAhead := frameNum - lastEcho; frameNum > lastEcho && framesAhead > statMaxFramesAhead {
 				statMaxFramesAhead = framesAhead
 			}
@@ -1077,6 +1187,7 @@ func (p *Plane) Run(ctx context.Context) error {
 			if audioEnabled {
 				if pcm := pullAudioChunk(&audioPrebuffer, audioCh); len(pcm) > 0 {
 					if audioRing.Push(pcm) {
+						p.audioRingDrops.Add(1)
 						slog.Debug("audio delay ring full; dropped oldest chunk",
 							"drops_total", audioRing.Drops(),
 							"audio_ready", p.audioReady.Load())

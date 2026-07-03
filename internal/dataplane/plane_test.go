@@ -2364,6 +2364,119 @@ func newPlaneForTest(t *testing.T) *Plane {
 	})
 }
 
+func TestPlane_LinkHealth_ZeroBeforeRun(t *testing.T) {
+	p := newPlaneForTest(t) // no Sender set: ENOBUFTotal must not panic
+	if got := p.LinkHealth(); got != (LinkHealth{}) {
+		t.Errorf("LinkHealth before Run = %+v, want zero struct", got)
+	}
+}
+
+func TestPlane_LinkHealth_TracksFramesAhead(t *testing.T) {
+	p := newPlaneForTest(t)
+	p.updateFramesAhead(10, 4)
+	if got := p.LinkHealth().FramesAhead; got != 6 {
+		t.Errorf("FramesAhead = %d, want 6", got)
+	}
+	// Echo ahead of the local counter (receiver caught up / counter reset)
+	// must clamp to zero, not wrap.
+	p.updateFramesAhead(4, 10)
+	if got := p.LinkHealth().FramesAhead; got != 0 {
+		t.Errorf("FramesAhead after echo overtake = %d, want 0", got)
+	}
+}
+
+func TestPlane_LinkHealth_ReportsTornPayloadSends(t *testing.T) {
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{failPayloadSend: 1}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.fieldSender = sender
+	p.sendField(1, 0, repeatedTileField(fieldBytes, deterministicTile(4096)))
+	if got := p.LinkHealth().TornPayloadSends; got != 1 {
+		t.Errorf("LinkHealth.TornPayloadSends = %d, want 1", got)
+	}
+}
+
+// TestAckDistressTransitions: only newly-asserted distress edges count —
+// vramSynced dropping (bit 2, 1→0) and vgaFrameskip asserting (bit 3, 0→1).
+// Bits that oscillate by design every field/raster (vblank, vgaF1, audio,
+// vramReady/EndFrame/Queue) must never register, or the log would be spam.
+func TestAckDistressTransitions(t *testing.T) {
+	const (
+		vramSynced   = 1 << 2
+		vgaFrameskip = 1 << 3
+		noisy        = 1<<0 | 1<<1 | 1<<4 | 1<<5 | 1<<6 | 1<<7
+	)
+	cases := []struct {
+		name      string
+		prev, cur byte
+		want      []string
+	}{
+		{"steady healthy", vramSynced, vramSynced, nil},
+		{"sync lost", vramSynced, 0, []string{"vram_sync_lost"}},
+		{"sync regained is not distress", 0, vramSynced, nil},
+		{"frameskip asserted", vramSynced, vramSynced | vgaFrameskip, []string{"vga_frameskip"}},
+		{"frameskip deasserted is not distress", vramSynced | vgaFrameskip, vramSynced, nil},
+		{"both at once", vramSynced, vgaFrameskip, []string{"vram_sync_lost", "vga_frameskip"}},
+		{"noisy bits ignored", vramSynced, vramSynced | noisy, nil},
+		{"noisy bits dropping ignored", vramSynced | noisy, vramSynced, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ackDistressTransitions(c.prev, c.cur)
+			if len(got) != len(c.want) {
+				t.Fatalf("ackDistressTransitions(%08b, %08b) = %v, want %v", c.prev, c.cur, got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Fatalf("ackDistressTransitions(%08b, %08b) = %v, want %v", c.prev, c.cur, got, c.want)
+				}
+			}
+		})
+	}
+}
+
+// TestDataplaneStatsEventful: the 5 s stats line must surface at Info when
+// the window recorded trouble (duplicates, budget overruns, torn sends,
+// ENOBUFS) and stay at Debug for healthy windows, so a default-level log
+// captures degradation without per-window spam.
+func TestDataplaneStatsEventful(t *testing.T) {
+	quiet := dataplaneStatsWindow{tornStart: 2, enobufStart: 3}
+	quietSnap := dataplaneStatsSnapshot{tornTotal: 2, enobufTotal: 3}
+	if dataplaneStatsEventful(quiet, quietSnap) {
+		t.Error("quiet window reported eventful")
+	}
+
+	dup := quiet
+	dup.duplicates = 1
+	if !dataplaneStatsEventful(dup, quietSnap) {
+		t.Error("window with duplicates not eventful")
+	}
+
+	overrun := quiet
+	overrun.sendBudgetOverruns = 1
+	if !dataplaneStatsEventful(overrun, quietSnap) {
+		t.Error("window with budget overruns not eventful")
+	}
+
+	tornSnap := quietSnap
+	tornSnap.tornTotal = 3
+	if !dataplaneStatsEventful(quiet, tornSnap) {
+		t.Error("window with new torn sends not eventful")
+	}
+
+	enobufSnap := quietSnap
+	enobufSnap.enobufTotal = 4
+	if !dataplaneStatsEventful(quiet, enobufSnap) {
+		t.Error("window with new ENOBUFS not eventful")
+	}
+}
+
 func TestPlane_TelemetryAccessors_ZeroBeforeRun(t *testing.T) {
 	p := newPlaneForTest(t)
 	if got := p.BlitsTotal(); got != 0 {
