@@ -722,7 +722,12 @@ func (p *Plane) Run(ctx context.Context) error {
 		lz4Mode = groovy.LZ4ModeDefault
 	}
 	initPkt := groovy.BuildInit(lz4Mode, soundRate, byte(audioChans), p.cfg.RGBMode)
-	ack, err := p.cfg.Sender.SendInitAwaitACK(initPkt, 60*time.Millisecond)
+	// 3 attempts × 60 ms: INIT is the one ACK-gated exchange, and a single
+	// lost datagram on a busy host should not fail the whole session.
+	// SendInitAwaitACK flushes stale ACKs from the shared socket before
+	// each attempt so a previous session's tail cannot satisfy the
+	// handshake (audit F4/F10).
+	ack, err := p.cfg.Sender.SendInitAwaitACKWithRetry(initPkt, 60*time.Millisecond, 3)
 	if p.cfg.OnInit != nil {
 		p.cfg.OnInit(err)
 	}

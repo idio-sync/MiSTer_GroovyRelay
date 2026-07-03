@@ -177,6 +177,144 @@ func TestSender_CongestionNoBackoffUnderThreshold(t *testing.T) {
 	}
 }
 
+// TestSender_InitACKHandshakeFlushesStaleACKs proves the handshake cannot be
+// satisfied by an ACK left over from a previous session. The sender socket is
+// reused across sessions (stable source port) and the previous session's
+// drainer stops before its final blits are ACKed, so stale 13-byte ACKs can
+// sit in the receive buffer; SendInitAwaitACK reads the OLDEST datagram, and
+// any 13-byte packet parses as a valid ACK. Audit finding F4.
+func TestSender_InitACKHandshakeFlushesStaleACKs(t *testing.T) {
+	mister, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mister.Close()
+
+	s, err := NewSender("127.0.0.1", mister.LocalAddr().(*net.UDPAddr).Port, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Queue a stale ACK (FPGAFrame=7) in the sender's receive buffer
+	// before INIT is even sent, mimicking the tail of a previous session.
+	senderAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: s.SourcePort()}
+	stale := make([]byte, groovy.ACKPacketSize)
+	stale[6] = 7 // fpgaFrame LE = 7
+	if _, err := mister.WriteToUDP(stale, senderAddr); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond) // loopback delivery into the recv queue
+
+	// Reply to the actual INIT with a fresh, distinguishable ACK.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 64)
+		for {
+			n, src, err := mister.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			if n >= 1 && buf[0] == groovy.CmdInit {
+				fresh := make([]byte, groovy.ACKPacketSize)
+				fresh[6] = 42 // fpgaFrame LE = 42
+				_, _ = mister.WriteToUDP(fresh, src)
+				return
+			}
+		}
+	}()
+
+	ack, err := s.SendInitAwaitACK(
+		groovy.BuildInit(groovy.LZ4ModeDefault, groovy.AudioRate48000, 2, groovy.RGBMode888),
+		200*time.Millisecond,
+	)
+	if err != nil {
+		t.Fatalf("INIT ACK: %v", err)
+	}
+	if ack.FPGAFrame != 42 {
+		t.Errorf("handshake consumed stale ACK: FPGAFrame = %d, want 42 (fresh reply)", ack.FPGAFrame)
+	}
+	<-done
+}
+
+// TestSender_InitRetryRecoversFromDroppedINIT: the INIT handshake is the one
+// ACK-gated exchange; a single lost datagram must not fail the session when
+// a retry succeeds. Audit finding F10.
+func TestSender_InitRetryRecoversFromDroppedINIT(t *testing.T) {
+	mister, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mister.Close()
+
+	s, err := NewSender("127.0.0.1", mister.LocalAddr().(*net.UDPAddr).Port, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Ignore the first INIT ("dropped"), ACK the second.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 64)
+		inits := 0
+		for {
+			n, src, err := mister.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			if n >= 1 && buf[0] == groovy.CmdInit {
+				inits++
+				if inits == 2 {
+					reply := make([]byte, groovy.ACKPacketSize)
+					reply[12] = 1 << 6
+					_, _ = mister.WriteToUDP(reply, src)
+					return
+				}
+			}
+		}
+	}()
+
+	ack, err := s.SendInitAwaitACKWithRetry(
+		groovy.BuildInit(groovy.LZ4ModeDefault, groovy.AudioRate48000, 2, groovy.RGBMode888),
+		100*time.Millisecond, 3,
+	)
+	if err != nil {
+		t.Fatalf("INIT with retry: %v", err)
+	}
+	if !ack.AudioReady() {
+		t.Error("expected audio-ready in retried ACK")
+	}
+	<-done
+}
+
+func TestSender_InitRetryPreservesTimeoutErrorType(t *testing.T) {
+	bh, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bh.Close()
+
+	s, err := NewSender("127.0.0.1", bh.LocalAddr().(*net.UDPAddr).Port, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	_, err = s.SendInitAwaitACKWithRetry(
+		groovy.BuildInit(groovy.LZ4ModeDefault, groovy.AudioRate48000, 2, groovy.RGBMode888),
+		30*time.Millisecond, 2,
+	)
+	if err == nil {
+		t.Fatal("expected timeout error after exhausted retries")
+	}
+	if !IsInitACKTimeout(err) {
+		t.Fatalf("expected InitACKTimeoutError after retries, got %T (%v)", err, err)
+	}
+}
+
 func TestSender_InitACKTimeout(t *testing.T) {
 	// Bind a local "black hole" socket so the destination port exists but
 	// never replies. Using a random bound socket (held open) guarantees the

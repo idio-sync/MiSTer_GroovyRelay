@@ -326,6 +326,9 @@ func (s *Sender) SendInitAwaitACK(initPacket []byte, timeout time.Duration) (gro
 	if len(initPacket) == 0 || initPacket[0] != groovy.CmdInit {
 		return groovy.ACK{}, fmt.Errorf("not an INIT packet")
 	}
+	if flushed := s.flushStaleDatagrams(); flushed > 0 {
+		slog.Debug("flushed stale datagrams before INIT", "count", flushed)
+	}
 	if err := s.Send(initPacket); err != nil {
 		return groovy.ACK{}, err
 	}
@@ -345,4 +348,58 @@ func (s *Sender) SendInitAwaitACK(initPacket []byte, timeout time.Duration) (gro
 		return groovy.ACK{}, fmt.Errorf("INIT ack wrong size: %d", n)
 	}
 	return groovy.ParseACK(buf[:n])
+}
+
+// flushStaleDatagrams drains any datagrams already queued on the socket.
+// The socket is reused across sessions (stable source port) and the previous
+// session's drainer stops before the receiver's final ACKs arrive, so stale
+// 13-byte ACKs can sit in the receive buffer — and SendInitAwaitACK reads
+// the OLDEST datagram, which parses as a valid ACK. Draining first ensures
+// the handshake can only observe a reply to THIS INIT (modulo a stale ACK
+// still in flight during the ~1 ms window, which the shared-socket design
+// cannot exclude). Uses a short absolute deadline: queued datagrams read
+// back instantly, and once the deadline passes reads fail immediately, so
+// the flush is bounded at ~1 ms even under a continuous inbound stream.
+// Callers must not have a Drainer running (same contract as the handshake).
+func (s *Sender) flushStaleDatagrams() int {
+	buf := make([]byte, 512)
+	flushed := 0
+	if err := s.conn.SetReadDeadline(time.Now().Add(time.Millisecond)); err != nil {
+		return 0
+	}
+	defer s.conn.SetReadDeadline(time.Time{})
+	for flushed < 4096 {
+		if _, _, err := s.conn.ReadFromUDP(buf); err != nil {
+			break
+		}
+		flushed++
+	}
+	return flushed
+}
+
+// SendInitAwaitACKWithRetry runs SendInitAwaitACK up to `attempts` times,
+// re-sending INIT after each per-attempt timeout. Only timeout errors are
+// retried — socket errors fail immediately. INIT is safe to repeat: the
+// receiver resets session state on each one, and a late ACK to attempt N
+// read by attempt N+1 is still a genuine INIT ACK. The final error keeps the
+// InitACKTimeoutError type so callers' IsInitACKTimeout handling still works.
+func (s *Sender) SendInitAwaitACKWithRetry(initPacket []byte, timeout time.Duration, attempts int) (groovy.ACK, error) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var ack groovy.ACK
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		ack, err = s.SendInitAwaitACK(initPacket, timeout)
+		if err == nil || !IsInitACKTimeout(err) {
+			return ack, err
+		}
+		if attempt < attempts {
+			slog.Warn("INIT ACK timeout; retrying",
+				"attempt", attempt,
+				"max_attempts", attempts,
+				"timeout_ms", timeout.Milliseconds())
+		}
+	}
+	return ack, err
 }
