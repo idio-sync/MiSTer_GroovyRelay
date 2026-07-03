@@ -158,6 +158,13 @@ type SourceStripIdleData struct {
 	DropsPercent      float64
 	BlitsTotal        uint64
 	UnderrunsTotal    uint64
+	// Link-distress counters from the dataplane's LinkHealth snapshot
+	// (audit F11): torn payload sends, kernel send-buffer overflows,
+	// audio-ring drops, and the live sender-vs-echo frame gap.
+	TornPayloadSendsTotal uint64
+	EnobufTotal           uint64
+	AudioRingDropsTotal   uint64
+	FramesAhead           uint32
 }
 
 // MidRowIdleData is the analytics row: bitrate, sample rate, mode,

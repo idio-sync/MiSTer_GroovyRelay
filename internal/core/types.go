@@ -14,6 +14,11 @@ import (
 // boundaries.
 type AudioScopeSnapshot = dataplane.AudioScopeSnapshot
 
+// LinkHealth is an alias for dataplane.LinkHealth for the same reason:
+// chassis reads the link-distress counters via the core view types without
+// importing internal/dataplane directly.
+type LinkHealth = dataplane.LinkHealth
+
 // State is the session lifecycle state exposed through SessionStatus.State.
 // The concrete transition table and machine live in state.go; the type is
 // declared here so SessionStatus is self-contained.
@@ -248,11 +253,12 @@ type StatusHomeView struct {
 	Position    time.Duration
 	Duration    time.Duration
 	StartedAt   time.Time
-	BlitsTotal  uint64        // fields emitted (one per BLIT_FIELD_VSYNC)
-	FramesTotal uint64        // ffmpeg frames consumed
-	Underruns   uint64        // dataplane underruns since session start
-	WireBytes   uint64        // post-LZ4 bytes sent (drives throughput; §S10)
-	LastACKAge  time.Duration // 0 when no plane or no ACK yet
+	BlitsTotal  uint64               // fields emitted (one per BLIT_FIELD_VSYNC)
+	FramesTotal uint64               // ffmpeg frames consumed
+	Underruns   uint64               // dataplane underruns since session start
+	WireBytes   uint64               // post-LZ4 bytes sent (drives throughput; §S10)
+	LastACKAge  time.Duration        // 0 when no plane or no ACK yet
+	LinkHealth  dataplane.LinkHealth // torn sends / ENOBUFS / ring drops / frames-ahead
 	Meter       MeterHomeView
 	AudioDSP          config.AudioDSP // live tone/EQ params (runtime snapshot)
 	AudioDSPEngaged   bool            // shaping active → status-bar EQ LED
@@ -318,6 +324,7 @@ type RuntimeMeterView struct {
 	Underruns   uint64
 	WireBytes   uint64
 	LastACKAge  time.Duration
+	LinkHealth  dataplane.LinkHealth
 	StartedAt   time.Time
 	Generation  uint64
 }

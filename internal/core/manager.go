@@ -117,6 +117,7 @@ type planeRunner interface {
 	Underruns() uint64
 	WireBytes() uint64
 	LastACKAge() time.Duration
+	LinkHealth() dataplane.LinkHealth
 	AudioScopes() *dataplane.AudioScopeSnapshot
 }
 
@@ -1661,6 +1662,7 @@ func (m *Manager) StatusHomeView() StatusHomeView {
 		underruns := m.plane.Underruns()
 		wireBytes := m.plane.WireBytes()
 		lastACKAge := m.plane.LastACKAge()
+		linkHealth := m.plane.LinkHealth()
 		view.Modeline = m.bridge.Video.Modeline
 		view.Position = m.plane.Position()
 		view.BlitsTotal = blits
@@ -1668,11 +1670,13 @@ func (m *Manager) StatusHomeView() StatusHomeView {
 		view.Underruns = underruns
 		view.WireBytes = wireBytes
 		view.LastACKAge = lastACKAge
+		view.LinkHealth = linkHealth
 		view.Meter.Runtime.BlitsTotal = blits
 		view.Meter.Runtime.FramesTotal = frames
 		view.Meter.Runtime.Underruns = underruns
 		view.Meter.Runtime.WireBytes = wireBytes
 		view.Meter.Runtime.LastACKAge = lastACKAge
+		view.Meter.Runtime.LinkHealth = linkHealth
 	}
 	return view
 }

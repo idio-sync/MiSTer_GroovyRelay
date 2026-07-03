@@ -146,6 +146,10 @@ func meterDataFromSnapshot(snap core.StatusHomeView, overlay adapters.MeterOverl
 	base.SourceStrip.Crop = formatCrop(src, snap.Meter.Crop)
 	base.SourceStrip.BlitsTotal = snap.Meter.Runtime.BlitsTotal
 	base.SourceStrip.UnderrunsTotal = snap.Meter.Runtime.Underruns
+	base.SourceStrip.TornPayloadSendsTotal = snap.Meter.Runtime.LinkHealth.TornPayloadSends
+	base.SourceStrip.EnobufTotal = snap.Meter.Runtime.LinkHealth.ENOBUFTotal
+	base.SourceStrip.AudioRingDropsTotal = snap.Meter.Runtime.LinkHealth.AudioRingDrops
+	base.SourceStrip.FramesAhead = snap.Meter.Runtime.LinkHealth.FramesAhead
 	base.MidRow.BitrateMbps = formatBitrate(src, overlay)
 	base.MidRow.FreqKHz = formatKHzFrequency(pipe.HorizontalKHz)
 	base.MidRow.Mode = formatMode(pipe)
@@ -572,6 +576,12 @@ type meterSourceStripE struct {
 	DropsPercent      float64 `json:"dropsPercent"`
 	BlitsTotal        uint64  `json:"blitsTotal"`
 	UnderrunsTotal    uint64  `json:"underrunsTotal"`
+	// Link-distress counters (audit F11). Carried for the front-end like
+	// blitsTotal/underrunsTotal; no server-side formatting layer.
+	TornPayloadSendsTotal uint64 `json:"tornPayloadSendsTotal"`
+	EnobufTotal           uint64 `json:"enobufTotal"`
+	AudioRingDropsTotal   uint64 `json:"audioRingDropsTotal"`
+	FramesAhead           uint32 `json:"framesAhead"`
 }
 
 type meterMidRowE struct {
@@ -624,6 +634,11 @@ func meterEnvelopeFrom(m MeterData) meterEnvelope {
 			DropsPercent:      m.SourceStrip.DropsPercent,
 			BlitsTotal:        m.SourceStrip.BlitsTotal,
 			UnderrunsTotal:    m.SourceStrip.UnderrunsTotal,
+
+			TornPayloadSendsTotal: m.SourceStrip.TornPayloadSendsTotal,
+			EnobufTotal:           m.SourceStrip.EnobufTotal,
+			AudioRingDropsTotal:   m.SourceStrip.AudioRingDropsTotal,
+			FramesAhead:           m.SourceStrip.FramesAhead,
 		},
 		MidRow: meterMidRowE{
 			BitrateMbps:          m.MidRow.BitrateMbps,

@@ -77,6 +77,51 @@ func TestMeterSamplerFormatsLiveLowRateFields(t *testing.T) {
 	}
 }
 
+// TestMeterCarriesLinkHealthCounters: the link-distress counters ride the
+// meter snapshot into the SSE envelope (same pattern as blitsTotal /
+// underrunsTotal — carried in JSON for the front-end, no formatting layer).
+func TestMeterCarriesLinkHealthCounters(t *testing.T) {
+	sampler := newMeterSampler()
+	snap := core.StatusHomeView{
+		State:      core.StatePlaying,
+		AdapterRef: "url:live",
+		Source:     "url",
+		Generation: 4,
+		Meter: core.MeterHomeView{
+			Runtime: core.RuntimeMeterView{
+				BlitsTotal: 100, Generation: 4,
+				LinkHealth: core.LinkHealth{
+					TornPayloadSends: 3,
+					ENOBUFTotal:      5,
+					AudioRingDrops:   2,
+					FramesAhead:      7,
+				},
+			},
+		},
+	}
+	got := sampler.Sample(snap, adapters.MeterOverlay{}, false, time.Unix(100, 0))
+	strip := got.SourceStrip
+	if strip.TornPayloadSendsTotal != 3 || strip.EnobufTotal != 5 ||
+		strip.AudioRingDropsTotal != 2 || strip.FramesAhead != 7 {
+		t.Fatalf("SourceStrip link health = %+v, want torn=3 enobuf=5 ringDrops=2 framesAhead=7", strip)
+	}
+
+	raw, err := json.Marshal(meterEnvelopeFrom(got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		`"tornPayloadSendsTotal":3`,
+		`"enobufTotal":5`,
+		`"audioRingDropsTotal":2`,
+		`"framesAhead":7`,
+	} {
+		if !strings.Contains(string(raw), key) {
+			t.Errorf("meter envelope missing %s:\n%s", key, raw)
+		}
+	}
+}
+
 func TestMeterSamplerPausedFreezesHistoriesAndDisplayValues(t *testing.T) {
 	sampler := newMeterSampler()
 	now := time.Unix(200, 0)

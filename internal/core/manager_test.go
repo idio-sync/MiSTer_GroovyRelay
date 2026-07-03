@@ -99,6 +99,7 @@ func (f *fakePlane) FramesTotal() uint64                            { return 0 }
 func (f *fakePlane) Underruns() uint64                              { return 0 }
 func (f *fakePlane) WireBytes() uint64                              { return 0 }
 func (f *fakePlane) LastACKAge() time.Duration                      { return 0 }
+func (f *fakePlane) LinkHealth() dataplane.LinkHealth               { return dataplane.LinkHealth{} }
 func (f *fakePlane) AudioScopes() *dataplane.AudioScopeSnapshot     { return nil }
 
 type contextDonePlane struct {
@@ -121,6 +122,7 @@ func (f *contextDonePlane) FramesTotal() uint64        { return 0 }
 func (f *contextDonePlane) Underruns() uint64          { return 0 }
 func (f *contextDonePlane) WireBytes() uint64          { return 0 }
 func (f *contextDonePlane) LastACKAge() time.Duration  { return 0 }
+func (f *contextDonePlane) LinkHealth() dataplane.LinkHealth { return dataplane.LinkHealth{} }
 
 type blockingDonePlane struct {
 	done chan struct{}
@@ -138,6 +140,7 @@ func (f *blockingDonePlane) FramesTotal() uint64                         { retur
 func (f *blockingDonePlane) Underruns() uint64                           { return 0 }
 func (f *blockingDonePlane) WireBytes() uint64                           { return 0 }
 func (f *blockingDonePlane) LastACKAge() time.Duration                   { return 0 }
+func (f *blockingDonePlane) LinkHealth() dataplane.LinkHealth            { return dataplane.LinkHealth{} }
 func (f *blockingDonePlane) AudioScopes() *dataplane.AudioScopeSnapshot  { return nil }
 
 type volumePlane struct {
@@ -169,7 +172,39 @@ func (f *errorPlane) FramesTotal() uint64                         { return 0 }
 func (f *errorPlane) Underruns() uint64                           { return 0 }
 func (f *errorPlane) WireBytes() uint64                           { return 0 }
 func (f *errorPlane) LastACKAge() time.Duration                   { return 0 }
+func (f *errorPlane) LinkHealth() dataplane.LinkHealth            { return dataplane.LinkHealth{} }
 func (f *errorPlane) AudioScopes() *dataplane.AudioScopeSnapshot  { return nil }
+
+type linkHealthPlane struct{ fakePlane }
+
+func (f *linkHealthPlane) LinkHealth() dataplane.LinkHealth {
+	return dataplane.LinkHealth{
+		TornPayloadSends: 3,
+		ENOBUFTotal:      5,
+		AudioRingDrops:   2,
+		FramesAhead:      7,
+	}
+}
+
+// TestManager_StatusHomeView_IncludesLinkHealth: the link-distress counters
+// (torn sends, ENOBUFS, audio-ring drops, frames-ahead) must ride the status
+// snapshot into both the top-level view and the meter runtime block so the
+// UI meter can surface them. Audit finding F11.
+func TestManager_StatusHomeView_IncludesLinkHealth(t *testing.T) {
+	m := newTestManager(t)
+	m.mu.Lock()
+	m.plane = &linkHealthPlane{}
+	m.mu.Unlock()
+
+	view := m.StatusHomeView()
+	want := dataplane.LinkHealth{TornPayloadSends: 3, ENOBUFTotal: 5, AudioRingDrops: 2, FramesAhead: 7}
+	if view.LinkHealth != want {
+		t.Errorf("view.LinkHealth = %+v, want %+v", view.LinkHealth, want)
+	}
+	if view.Meter.Runtime.LinkHealth != want {
+		t.Errorf("view.Meter.Runtime.LinkHealth = %+v, want %+v", view.Meter.Runtime.LinkHealth, want)
+	}
+}
 
 func TestManager_DropActiveCast_NoSession(t *testing.T) {
 	m := newTestManager(t)
