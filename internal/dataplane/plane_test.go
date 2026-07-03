@@ -2126,6 +2126,44 @@ func TestEnvPrebufferFields(t *testing.T) {
 	}
 }
 
+// TestEnvPrebufferFields_WarnsWhenEnvValueClamped: an operator-supplied
+// GROOVY_PREBUFFER_FIELDS beyond the video queue capacity is honored only up
+// to the clamp; that silent truncation cost debugging time (audit F17), so
+// it must be visible in the log.
+func TestEnvPrebufferFields_WarnsWhenEnvValueClamped(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	t.Setenv("GROOVY_PREBUFFER_FIELDS", "99")
+	if got := envPrebufferFields(8); got != 8 {
+		t.Fatalf("envPrebufferFields(8) with env=99 = %d, want 8", got)
+	}
+	if !strings.Contains(buf.String(), "GROOVY_PREBUFFER_FIELDS clamped") {
+		t.Fatalf("expected clamp warning in log, got:\n%s", buf.String())
+	}
+
+	buf.Reset()
+	t.Setenv("GROOVY_PREBUFFER_FIELDS", "4")
+	if got := envPrebufferFields(8); got != 4 {
+		t.Fatalf("envPrebufferFields(8) with env=4 = %d, want 4", got)
+	}
+	if strings.Contains(buf.String(), "clamped") {
+		t.Fatalf("unexpected clamp warning for in-range value:\n%s", buf.String())
+	}
+
+	// Unset env must never warn — the built-in default is not operator input.
+	buf.Reset()
+	t.Setenv("GROOVY_PREBUFFER_FIELDS", "")
+	if got := envPrebufferFields(2); got != 2 {
+		t.Fatalf("envPrebufferFields(2) with unset env = %d, want 2 (clamped default)", got)
+	}
+	if strings.Contains(buf.String(), "clamped") {
+		t.Fatalf("unexpected clamp warning for built-in default:\n%s", buf.String())
+	}
+}
+
 func TestEnvAudioDelayFields_DefaultMatchesDisplayLatency(t *testing.T) {
 	t.Setenv("GROOVY_AUDIO_DELAY_FIELDS", "")
 

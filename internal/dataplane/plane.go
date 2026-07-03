@@ -1724,15 +1724,23 @@ func pullAudioChunk(prebuf *[][]byte, ch <-chan []byte) []byte {
 // escape hatch for diagnostics).
 func envPrebufferFields(max int) int {
 	n := defaultPrebufferFields
+	fromEnv := false
 	if v := os.Getenv("GROOVY_PREBUFFER_FIELDS"); v != "" {
 		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
 			n = parsed
+			fromEnv = true
 		} else {
 			slog.Warn("invalid GROOVY_PREBUFFER_FIELDS; using default",
 				"value", v, "default", defaultPrebufferFields)
 		}
 	}
 	if n > max {
+		// Only operator input warrants a warning; the built-in default
+		// clamping against a small queue is not actionable.
+		if fromEnv {
+			slog.Warn("GROOVY_PREBUFFER_FIELDS clamped to video queue capacity",
+				"requested", n, "max", max)
+		}
 		n = max
 	}
 	return n
