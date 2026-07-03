@@ -12,3 +12,9 @@ Dockerfile text eol=lf
 internal/chassis/static/*.css text eol=lf
 internal/chassis/static/*.js text eol=lf
 internal/chassis/templates/*.html text eol=lf
+
+# The sidecar manifest is parsed field-by-field by scripts/fetch-sidecars.sh.
+# A CRLF checkout appends \r to the last column (output), so ffmpeg.exe becomes
+# "ffmpeg.exe\r": the *.exe case fails, Windows extraction dies ("could not find
+# ffmpeg"), and Linux/macOS silently emit binaries named "ffmpeg\r". Force LF.
+scripts/sidecar-manifest.txt text eol=lf
