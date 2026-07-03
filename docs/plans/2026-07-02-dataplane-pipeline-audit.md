@@ -391,6 +391,18 @@ via the existing `processHandle`/`fieldSender` seams:
 
 ## 6. Recommended sequencing
 
+**Status (2026-07-02): waves 1 and 2 are landed on main.**
+Wave 1: F1 `b100c0c2`, F2 `7e567778`, F3 `4fa9079c`, F4+F10 `488a7043`,
+F14 `dfdb5275`, F17 `7fc2234c`. Wave 2: dataplane telemetry `36180824`
+(LinkHealth accessor, frames-ahead tracking, ACK distress-edge warns,
+eventful-stats Info promotion), meter plumbing `fcb9a9b7` (counters in the
+status view and SSE meter envelope: tornPayloadSendsTotal, enobufTotal,
+audioRingDropsTotal, framesAhead). Front-end rendering of the new envelope
+fields was intentionally left out (matches the existing pattern —
+blitsTotal/underrunsTotal ride the envelope unrendered). Next: validate
+F1/F3 on the affected Windows + real-MiSTer setup using the new counters,
+then plan wave 3.
+
 Hybrid: two inline fix waves now (no formal plan needed — each change is
 small, independently testable, and invariant-safe), then a written
 implementation plan for the behavior-changing work, gated on the telemetry
