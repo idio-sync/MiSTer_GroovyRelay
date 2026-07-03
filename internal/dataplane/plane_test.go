@@ -431,6 +431,115 @@ func TestSendField_DoesNotRememberHistoryWhenSendFails(t *testing.T) {
 	}
 }
 
+// TestSendField_PayloadSendFailureInvalidatesDeltaHistory proves that a
+// mid-field payload abort (ENOBUFS or any send error) forces the next field
+// of BOTH polarities out as full LZ4. After an abort the receiver is short
+// of the announced byte count, so its framebuffer content — and, once
+// framing slips, the byte stream itself — is unknown; a delta against
+// sender-side history would compound the corruption until the periodic
+// forced-full resync (~1 s). Audit finding F3.
+func TestSendField_PayloadSendFailureInvalidatesDeltaHistory(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{failPayloadSend: 3}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.fieldSender = sender
+
+	f0 := repeatedTileField(fieldBytes, deterministicTile(4096))
+	f1 := repeatedTileField(fieldBytes, deterministicTile(2048))
+	p.sendField(1, 0, f0) // payload #1 ok — seeds slot 0
+	p.sendField(2, 1, f1) // payload #2 ok — seeds slot 1
+
+	f0 = nextSmallDeltaField(f0, 1)
+	p.sendField(3, 0, f0) // payload #3 fails mid-field
+
+	f1 = nextSmallDeltaField(f1, 2)
+	p.sendField(4, 1, f1)
+	if got := blitPayloadType(sender.headers[3]); got != groovy.BlitHeaderLZ4 {
+		t.Fatalf("post-abort other-polarity payload type = %d, want full LZ4 (history invalidated)", got)
+	}
+
+	f0 = nextSmallDeltaField(f0, 3)
+	p.sendField(5, 0, f0)
+	if got := blitPayloadType(sender.headers[4]); got != groovy.BlitHeaderLZ4 {
+		t.Fatalf("post-abort same-polarity payload type = %d, want full LZ4 (history invalidated)", got)
+	}
+
+	// Full sends re-seed history, so delta service resumes afterwards.
+	f0 = nextSmallDeltaField(f0, 4)
+	p.sendField(6, 0, f0)
+	if got := blitPayloadType(sender.headers[5]); got != groovy.BlitHeaderLZ4Delta {
+		t.Fatalf("post-resync payload type = %d, want delta to resume", got)
+	}
+}
+
+func TestPlane_TornPayloadSendsCountsMidFieldAborts(t *testing.T) {
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{failPayloadSend: 1}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+	})
+	p.fieldSender = sender
+
+	if got := p.TornPayloadSends(); got != 0 {
+		t.Fatalf("fresh plane TornPayloadSends = %d, want 0", got)
+	}
+	field := repeatedTileField(fieldBytes, deterministicTile(4096))
+	p.sendField(1, 0, field) // payload #1 fails
+	if got := p.TornPayloadSends(); got != 1 {
+		t.Fatalf("TornPayloadSends after abort = %d, want 1", got)
+	}
+	p.sendField(2, 0, field) // payload #2 ok
+	if got := p.TornPayloadSends(); got != 1 {
+		t.Fatalf("TornPayloadSends after clean send = %d, want 1", got)
+	}
+}
+
+// TestSendAudio_PayloadSendFailureInvalidatesDeltaHistory: a torn AUDIO
+// payload desyncs the same shared byte stream (the receiver keeps counting
+// PCM bytes and eats the next BLIT header), so it must invalidate delta
+// history and count as torn exactly like a torn field payload.
+func TestSendAudio_PayloadSendFailureInvalidatesDeltaHistory(t *testing.T) {
+	t.Setenv("GROOVY_DELTA_LZ4", "1")
+
+	const fieldBytes = 720 * 240 * 3
+	sender := &scriptedFieldSender{failPayloadSend: 2}
+	p := NewPlane(PlaneConfig{
+		LZ4Enabled:    true,
+		FieldWidth:    720,
+		FieldHeight:   240,
+		BytesPerPixel: 3,
+		RGBMode:       groovy.RGBMode888,
+		OutputVolume:  100,
+	})
+	p.fieldSender = sender
+
+	f0 := repeatedTileField(fieldBytes, deterministicTile(4096))
+	p.sendField(1, 0, f0) // payload #1 ok — seeds slot 0
+
+	p.sendAudio(make([]byte, 3200)) // payload #2 fails mid-chunk
+
+	if got := p.TornPayloadSends(); got != 1 {
+		t.Fatalf("TornPayloadSends after audio abort = %d, want 1", got)
+	}
+	f0 = nextSmallDeltaField(f0, 1)
+	p.sendField(2, 0, f0)
+	if got := blitPayloadType(sender.headers[2]); got != groovy.BlitHeaderLZ4 {
+		t.Fatalf("post-audio-abort payload type = %d, want full LZ4 (history invalidated)", got)
+	}
+}
+
 func TestLZ4FallbackDebugLogIsThrottled(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()

@@ -348,6 +348,12 @@ type Plane struct {
 	framesTotal    atomic.Uint64 // ffmpeg frames consumed since session start
 	underruns      atomic.Uint64 // dataplane underruns since session start
 	wireBytes      atomic.Uint64 // post-LZ4 bytes sent since session start
+	// tornPayloadSends counts payload streams (BLIT field or AUDIO PCM)
+	// aborted mid-send. The protocol has no per-chunk framing: the receiver
+	// keeps counting bytes toward the announced size, so an abort leaves it
+	// consuming subsequent datagrams (including the next header) as payload.
+	// See audit F3, docs/plans/2026-07-02-dataplane-pipeline-audit.md.
+	tornPayloadSends atomic.Uint64
 	lastACKUnix    atomic.Int64  // unix nanos of last received ACK; 0 = never
 	audioReady     atomic.Bool
 	outputVolume   atomic.Int32
@@ -597,6 +603,12 @@ func (p *Plane) FramesTotal() uint64 { return p.framesTotal.Load() }
 // each time the field-pump goroutine has no frame ready when the field
 // deadline arrives.
 func (p *Plane) Underruns() uint64 { return p.underruns.Load() }
+
+// TornPayloadSends returns the cumulative count of payload streams (BLIT
+// field or AUDIO PCM) aborted mid-send by a send error. Each one leaves the
+// receiver short of the announced byte count — a torn field on screen and a
+// possible framing slip until the receiver realigns.
+func (p *Plane) TornPayloadSends() uint64 { return p.tornPayloadSends.Load() }
 
 // WireBytes returns the cumulative post-LZ4 bytes sent across the
 // Groovy UDP socket. Drives the status home's throughput readout.
@@ -894,7 +906,8 @@ func (p *Plane) Run(ctx context.Context) error {
 			"final_position_s", p.Position().Seconds(),
 			"frame_num_final", frameNum,
 			"frame_echo_final", lastEcho,
-			"enobuf_total", p.cfg.Sender.ENOBUFCount())
+			"enobuf_total", p.cfg.Sender.ENOBUFCount(),
+			"torn_payload_sends_total", p.TornPayloadSends())
 	}()
 	// nextField is the row-stripe parity walking 0,1,0,1 every tick. The
 	// configured TFF/BFF baseline is encoded in fieldOrderFlip alone (set by
@@ -1219,6 +1232,7 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats 
 	stats.wireBytes += len(header)
 	if err := p.fieldSender.SendPayload(payload); err != nil {
 		slog.Warn("blit payload send", "err", err)
+		p.handleTornPayload()
 		stats.total = time.Since(fieldStart)
 		return stats
 	}
@@ -1416,6 +1430,20 @@ func (p *Plane) invalidateFieldHistory(field uint8) {
 	p.fieldPrevID[slot] = fieldHistoryIdentity{}
 }
 
+// handleTornPayload records a payload stream aborted mid-send (BLIT field or
+// AUDIO PCM). The receiver is now short of the announced byte count, so its
+// framebuffer content — and, once framing slips, anything it decodes until
+// it realigns — is unknown. Invalidate BOTH delta-history slots so the next
+// field of each polarity goes out as a full payload; a delta against
+// sender-side history would compound the corruption until the periodic
+// forced-full resync. Called from the tick goroutine only (same ownership
+// discipline as the history slots it touches).
+func (p *Plane) handleTornPayload() {
+	p.tornPayloadSends.Add(1)
+	p.invalidateFieldHistory(0)
+	p.invalidateFieldHistory(1)
+}
+
 func (p *Plane) rememberFieldHistory(field uint8, raw []byte) {
 	slot := int(field & 1)
 	prev := p.fieldPrev[slot]
@@ -1526,6 +1554,7 @@ func (p *Plane) sendAudio(pcm []byte) {
 	p.wireBytes.Add(uint64(len(audioHeader)))
 	if err := p.fieldSender.SendPayload(pcm); err != nil {
 		slog.Warn("audio payload send", "err", err)
+		p.handleTornPayload()
 		return
 	}
 	p.wireBytes.Add(uint64(len(pcm)))
