@@ -35,6 +35,16 @@ type Sender struct {
 	mu           sync.Mutex // serialises Writes + Mark*
 	lastBlitSize int
 	lastBlitTime time.Time
+	// payloadSendStart is stamped at SendPayload entry so MarkBlitSent can
+	// anchor the congestion window at the START of the blit's payload send.
+	// The reference sender (MiSTerCast groovymister.cpp) anchors at the end
+	// of the send, but it has no per-chunk pacing; with pacing enabled an
+	// end anchor stacks the full congestion wait on top of the paced send,
+	// pushing the catch-up floor past one NTSC field period so a late pump
+	// can never recover. A start anchor keeps the inter-blit interval at
+	// K_CONGESTION_TIME without the stack, and with pacing disabled differs
+	// from the reference only by the (short) unpaced send duration.
+	payloadSendStart time.Time
 
 	sndBufActual int           // populated by readSndBuf at NewSender; 0 on unsupported platforms
 	enobufCount  atomic.Uint64 // populated in Task 8
@@ -173,6 +183,7 @@ func (s *Sender) SendPayload(payload []byte) error {
 	chunkIdx := 0
 	pace := s.paceInterval
 	sendStart := time.Now()
+	s.payloadSendStart = sendStart
 	for i := 0; i < len(payload); i += groovy.MaxDatagram {
 		end := i + groovy.MaxDatagram
 		if end > len(payload) {
@@ -261,14 +272,23 @@ func isPowerOfTen(n uint64) bool {
 // reader (e.g. the Drainer goroutine) returns with a net.OpError.
 func (s *Sender) Close() error { return s.conn.Close() }
 
-// MarkBlitSent records the size and time of the last BLIT field sent so
-// WaitForCongestion can enforce the back-off window. Per reference
+// MarkBlitSent records the size and start time of the last BLIT field sent
+// so WaitForCongestion can enforce the back-off window. Per reference
 // (K_CONGESTION_SIZE=500000, K_CONGESTION_TIME~=11 ms): applies to the
-// total payload bytes of the last blit, not the header.
+// total payload bytes of the last blit, not the header. The window is
+// anchored at the start of the payload send (see payloadSendStart) so it
+// overlaps the paced send instead of stacking after it. Callers invoke this
+// immediately after the blit's SendPayload, so payloadSendStart is always
+// that blit's stamp; the time.Now fallback only covers callers that never
+// sent a payload (dup blits pass size=0, which skips the wait anyway).
 func (s *Sender) MarkBlitSent(size int) {
 	s.mu.Lock()
 	s.lastBlitSize = size
-	s.lastBlitTime = time.Now()
+	if !s.payloadSendStart.IsZero() {
+		s.lastBlitTime = s.payloadSendStart
+	} else {
+		s.lastBlitTime = time.Now()
+	}
 	s.mu.Unlock()
 }
 

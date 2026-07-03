@@ -128,6 +128,37 @@ func TestSender_CongestionBackoff(t *testing.T) {
 	}
 }
 
+func TestSender_CongestionWaitDoesNotStackWithPacedSend(t *testing.T) {
+	s, err := NewSender("127.0.0.1", 12345, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// A payload over the congestion threshold, paced so the send itself
+	// takes longer than the 11 ms congestion window: 341 chunks × 40 µs
+	// ≈ 13.6 ms of pacing. The congestion window must be anchored at the
+	// START of the payload send, so by the time the send completes the
+	// window has already elapsed and WaitForCongestion returns without
+	// sleeping. Anchoring at the END of the send (the bug) stacks the
+	// full 11 ms wait on top of the paced send, pushing the catch-up
+	// floor past one NTSC field period (16.68 ms) — a late pump can then
+	// never recover.
+	s.SetPacingInterval(40 * time.Microsecond)
+	payload := make([]byte, groovy.CongestionSize+1)
+	if err := s.SendPayload(payload); err != nil {
+		t.Fatal(err)
+	}
+	s.MarkBlitSent(len(payload))
+
+	start := time.Now()
+	s.WaitForCongestion()
+	elapsed := time.Since(start)
+	if elapsed > 5*time.Millisecond {
+		t.Errorf("congestion wait stacked on paced send: elapsed=%v, expected ~0 (window consumed during send)", elapsed)
+	}
+}
+
 func TestSender_CongestionNoBackoffUnderThreshold(t *testing.T) {
 	s, err := NewSender("127.0.0.1", 12345, 0)
 	if err != nil {
