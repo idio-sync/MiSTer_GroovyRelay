@@ -251,6 +251,32 @@ func TestScenario_Seek(t *testing.T) {
 // should catch a delta of ~30 BLITs when playing and 0 when paused.
 func TestScenario_Pause(t *testing.T) {
 	sample := ensureSampleMP4(t, "10s.mp4", 10)
+
+	// The data plane can occasionally exit early on a loaded/fast CI runner:
+	// ffmpeg finishes (or truncates) its transcode and proc.Done() fires, so
+	// plane.Run returns nil and the Manager flips the FSM to Idle via EvEOF
+	// before this test's ramp window elapses. That leaves nothing to pause —
+	// Pause() then returns "cannot pause from idle" (observed on macOS CI,
+	// where the same commit passed on other runners). Retry the cast→pause
+	// acquisition a few times; a genuinely broken Pause path fails every
+	// attempt, while a transient early exit is absorbed. Once we've caught the
+	// plane playing and paused it, the resume assertions below are stable.
+	const maxAttempts = 4
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attemptPauseScenario(t, sample) {
+			return
+		}
+	}
+	t.Fatalf("data plane exited before pause could be exercised in %d attempts", maxAttempts)
+}
+
+// attemptPauseScenario runs one cast→pause→resume attempt. It returns false
+// (retry me) when the data plane exited before the pause could be exercised —
+// an environmental flake, not a Pause regression. On a completed attempt it
+// runs the pause/resume assertions (reporting any failures on t) and returns
+// true.
+func attemptPauseScenario(t *testing.T, sample string) bool {
+	t.Helper()
 	h := newScenarioHarness(t)
 
 	if err := h.Manager.StartSession(defaultRequest(sample, "pause-clip")); err != nil {
@@ -259,6 +285,13 @@ func TestScenario_Pause(t *testing.T) {
 	time.Sleep(1 * time.Second)
 
 	if err := h.Manager.Pause(); err != nil {
+		if h.Manager.Status().State == core.StateIdle {
+			// Plane exited on its own during the ramp window; nothing to
+			// pause. Free this attempt's harness and signal a retry.
+			t.Logf("pause: plane exited before ramp completed (%v); retrying", err)
+			h.cleanup()
+			return false
+		}
 		t.Fatalf("pause: %v", err)
 	}
 	// Settle: allow in-flight packets to land, then take the reference
@@ -300,6 +333,7 @@ func TestScenario_Pause(t *testing.T) {
 		t.Errorf("resume: expected BLIT count to grow post-Play within deadline, delta=%d",
 			afterResume-duringPause)
 	}
+	return true
 }
 
 // TestScenario_Preempt starts clip A, and mid-playback starts clip B on the
