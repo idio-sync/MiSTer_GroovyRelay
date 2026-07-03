@@ -35,25 +35,45 @@ jobs:
       - name: Detect extension release changes
         id: extension_release
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          previous_tag="$(git describe --tags --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null || true)"
-          extension_changed=true
-          if [ -n "$previous_tag" ]; then
-            if git diff --quiet "$previous_tag" "$GITHUB_SHA" -- \
-              extension/firefox/manifest.json \
-              extension/firefox/src \
-              extension/firefox/icons; then
-              extension_changed=false
+          version="$(node -p "require('./extension/firefox/package.json').version")"
+          # Reuse a previously AMO-signed XPI only when THIS release's extension
+          # version was already signed on an earlier release — AMO refuses to
+          # re-sign a version it has already accepted. Walk the release list
+          # newest-first for the most recent release that actually carries a
+          # signed XPI and read the signed version out of its asset name. This
+          # deliberately skips failed/empty releases (whose CI died before
+          # publishing) rather than trusting the immediately-previous tag, which
+          # is what broke v1.10.2 (previous tag v1.10.1 published nothing).
+          reuse_tag=""
+          reuse_asset=""
+          signed_version=""
+          for tag in $(gh release list --limit 50 --json tagName,createdAt \
+            --jq 'sort_by(.createdAt) | reverse | .[].tagName'); do
+            [ "$tag" = "${GITHUB_REF_NAME}" ] && continue
+            asset="$(gh release view "$tag" --json assets --jq '.assets[].name' 2>/dev/null |
+              awk '/^companion-extension-.*-signed\.xpi$/ { print; exit }')"
+            if [ -n "$asset" ]; then
+              reuse_tag="$tag"
+              reuse_asset="$asset"
+              signed_version="$(printf '%s\n' "$asset" |
+                sed -E 's/^companion-extension-(.+)-signed\.xpi$/\1/')"
+              break
             fi
+          done
+          if [ -n "$signed_version" ] && [ "$signed_version" = "$version" ]; then
+            extension_changed=false
+          else
+            extension_changed=true
           fi
           echo "changed=$extension_changed" >> "$GITHUB_OUTPUT"
-          echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
-          echo "Extension payload changed: $extension_changed"
-          if [ -n "$previous_tag" ]; then
-            echo "Previous release tag: $previous_tag"
-          else
-            echo "No previous release tag found."
-          fi
+          echo "reuse_tag=$reuse_tag" >> "$GITHUB_OUTPUT"
+          echo "reuse_asset=$reuse_asset" >> "$GITHUB_OUTPUT"
+          echo "Extension version: $version"
+          echo "Most recent signed version: ${signed_version:-<none>} (tag ${reuse_tag:-<none>})"
+          echo "Sign fresh via AMO: $extension_changed"
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -92,24 +112,17 @@ jobs:
             fi
             cp "$signed_xpi" "$signed_asset"
           else
-            previous_tag="${{ steps.extension_release.outputs.previous_tag }}"
-            if [ -z "$previous_tag" ]; then
-              echo "No previous release tag found to reuse a signed Firefox XPI." >&2
+            reuse_tag="${{ steps.extension_release.outputs.reuse_tag }}"
+            reuse_asset="${{ steps.extension_release.outputs.reuse_asset }}"
+            if [ -z "$reuse_tag" ] || [ -z "$reuse_asset" ]; then
+              echo "No earlier release carries a signed Firefox XPI to reuse." >&2
               exit 1
             fi
-            previous_asset="$(
-              gh release view "$previous_tag" --json assets --jq '.assets[].name' |
-                awk '/^companion-extension-.*-signed\.xpi$/ { print; exit }'
-            )"
-            if [ -z "$previous_asset" ]; then
-              echo "No signed Firefox XPI asset found on previous release $previous_tag." >&2
-              exit 1
-            fi
-            gh release download "$previous_tag" \
-              --pattern "$previous_asset" \
+            gh release download "$reuse_tag" \
+              --pattern "$reuse_asset" \
               --dir "$release_dir" \
               --clobber
-            downloaded_asset="$release_dir/$previous_asset"
+            downloaded_asset="$release_dir/$reuse_asset"
             if [ "$downloaded_asset" != "$signed_asset" ]; then
               mv "$downloaded_asset" "$signed_asset"
             fi
