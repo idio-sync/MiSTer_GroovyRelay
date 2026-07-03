@@ -3,11 +3,18 @@
 package groovynet
 
 import (
+	"errors"
 	"net"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
+
+// isSendBufferFull reports whether err means the kernel send queue was full
+// (ENOBUFS from sendto).
+func isSendBufferFull(err error) bool {
+	return errors.Is(err, syscall.ENOBUFS)
+}
 
 // controlSocket on Linux sets IP_MTU_DISCOVER=PMTUDISC_DO so oversized
 // datagrams are dropped at the IP layer rather than fragmented (the MiSTer

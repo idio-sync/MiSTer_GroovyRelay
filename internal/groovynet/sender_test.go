@@ -3,6 +3,8 @@ package groovynet
 import (
 	"errors"
 	"net"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -243,6 +245,33 @@ func TestSender_ENOBUFCountAccessor(t *testing.T) {
 	defer s.Close()
 	if s.ENOBUFCount() != 0 {
 		t.Errorf("fresh sender ENOBUFCount = %d, want 0", s.ENOBUFCount())
+	}
+}
+
+// TestIsSendBufferFull_MatchesENOBUFS covers the POSIX errno path (Linux and
+// the other-platform fallback; on Windows the matcher accepts it too for
+// uniformity even though Winsock never produces it).
+func TestIsSendBufferFull_MatchesENOBUFS(t *testing.T) {
+	err := &net.OpError{
+		Op:  "write",
+		Net: "udp",
+		Err: os.NewSyscallError("sendto", syscall.ENOBUFS),
+	}
+	if !isSendBufferFull(err) {
+		t.Error("isSendBufferFull() = false for wrapped ENOBUFS, want true")
+	}
+}
+
+func TestIsSendBufferFull_RejectsOtherErrors(t *testing.T) {
+	cases := []error{
+		nil,
+		errors.New("plain error"),
+		&net.OpError{Op: "write", Net: "udp", Err: os.NewSyscallError("sendto", syscall.ECONNREFUSED)},
+	}
+	for _, err := range cases {
+		if isSendBufferFull(err) {
+			t.Errorf("isSendBufferFull(%v) = true, want false", err)
+		}
 	}
 }
 

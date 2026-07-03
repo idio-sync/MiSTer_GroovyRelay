@@ -3,9 +3,16 @@
 package groovynet
 
 import (
+	"errors"
 	"net"
 	"syscall"
 )
+
+// isSendBufferFull reports whether err means the kernel send queue was full
+// (ENOBUFS from sendto).
+func isSendBufferFull(err error) bool {
+	return errors.Is(err, syscall.ENOBUFS)
+}
 
 // controlSocket on non-Linux / non-Windows dev platforms is a no-op.
 // Production target is Linux (see sender_linux.go for SO_REUSEADDR +

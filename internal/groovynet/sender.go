@@ -15,7 +15,6 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
@@ -190,7 +189,10 @@ func (s *Sender) SendPayload(payload []byte) error {
 			end = len(payload)
 		}
 		if _, err := s.conn.WriteToUDP(payload[i:end], s.dstAddr); err != nil {
-			if errors.Is(err, syscall.ENOBUFS) {
+			// Platform-specific matcher: Winsock reports a full send queue
+			// as WSAENOBUFS, which Go's generic syscall.ENOBUFS never
+			// matches on Windows (see sender_windows.go).
+			if isSendBufferFull(err) {
 				n := s.enobufCount.Add(1)
 				if n == 1 || isPowerOfTen(n) {
 					slog.Warn("send buffer overflow (ENOBUFS); torn field — aborting remaining chunks",
