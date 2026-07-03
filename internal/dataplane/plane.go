@@ -800,9 +800,10 @@ func (p *Plane) Run(ctx context.Context) error {
 	// buffer before sending. The default is modeline-derived from roughly
 	// 67 ms of display latency (4 NTSC fields, 3 PAL fields). Set
 	// GROOVY_AUDIO_DELAY_FIELDS=0 to disable for diagnostics, or override
-	// with an empirically tuned field count.
-	audioRing := make([][]byte, audioDelayN+1)
-	audioRingHead, audioRingLen := 0, 0
+	// with an empirically tuned field count. When the receiver stalls
+	// (audio-ready low) long enough to fill the ring, the OLDEST chunk is
+	// shed per push so recovery resumes with the freshest audio (F14).
+	audioRing := newAudioDelayRing(audioDelayN)
 
 	// 4b. Startup prebuffer. Wait for ffmpeg to ramp up (open input,
 	//     init decoder, build filter chain) before the field tick fires.
@@ -912,7 +913,8 @@ func (p *Plane) Run(ctx context.Context) error {
 			"frame_num_final", frameNum,
 			"frame_echo_final", lastEcho,
 			"enobuf_total", p.cfg.Sender.ENOBUFCount(),
-			"torn_payload_sends_total", p.TornPayloadSends())
+			"torn_payload_sends_total", p.TornPayloadSends(),
+			"audio_ring_drops_total", audioRing.Drops())
 	}()
 	// nextField is the row-stripe parity walking 0,1,0,1 every tick. The
 	// configured TFF/BFF baseline is encoded in fieldOrderFlip alone (set by
@@ -949,7 +951,7 @@ func (p *Plane) Run(ctx context.Context) error {
 			if frameNum > lastEcho {
 				currentFramesAhead = frameNum - lastEcho
 			}
-			statWindow.observeQueues(len(videoCh), len(videoPrebuffer), len(audioCh), len(audioPrebuffer), audioRingLen)
+			statWindow.observeQueues(len(videoCh), len(videoPrebuffer), len(audioCh), len(audioPrebuffer), audioRing.Len())
 			wireBytesTotal := p.wireBytes.Load()
 			snap := dataplaneStatsSnapshot{
 				window:             5 * time.Second,
@@ -959,8 +961,8 @@ func (p *Plane) Run(ctx context.Context) error {
 				audioQueueLen:      len(audioCh),
 				audioQueueCap:      cap(audioCh),
 				audioPrebufferLen:  len(audioPrebuffer),
-				audioRingLen:       audioRingLen,
-				audioRingCap:       len(audioRing),
+				audioRingLen:       audioRing.Len(),
+				audioRingCap:       audioRing.Cap(),
 				framesTotal:        p.framesTotal.Load(),
 				underrunsTotal:     p.underruns.Load(),
 				blitsTotal:         p.BlitsTotal(),
@@ -1011,7 +1013,7 @@ func (p *Plane) Run(ctx context.Context) error {
 			// the header would send top-field pixels tagged as bottom-field.
 			emitField := p.emitField(nextField)
 			fb, fbOK, fbClosed := pullVideoFrame(&videoPrebuffer, videoCh)
-			statWindow.observeQueues(len(videoCh), len(videoPrebuffer), len(audioCh), len(audioPrebuffer), audioRingLen)
+			statWindow.observeQueues(len(videoCh), len(videoPrebuffer), len(audioCh), len(audioPrebuffer), audioRing.Len())
 			statWindow.observeVideoBacklogAfterPull(len(videoPrebuffer) + len(videoCh))
 			if fbClosed {
 				sessionEndReason = "video_pipe_eof"
@@ -1073,17 +1075,15 @@ func (p *Plane) Run(ctx context.Context) error {
 			// before starting to send, shifting playback later relative to
 			// video on the CRT. Never blocks the pump.
 			if audioEnabled {
-				if pcm := pullAudioChunk(&audioPrebuffer, audioCh); len(pcm) > 0 && audioRingLen < len(audioRing) {
-					tail := (audioRingHead + audioRingLen) % len(audioRing)
-					audioRing[tail] = pcm
-					audioRingLen++
+				if pcm := pullAudioChunk(&audioPrebuffer, audioCh); len(pcm) > 0 {
+					if audioRing.Push(pcm) {
+						slog.Debug("audio delay ring full; dropped oldest chunk",
+							"drops_total", audioRing.Drops(),
+							"audio_ready", p.audioReady.Load())
+					}
 				}
-				if audioRingLen > audioDelayN && p.audioReady.Load() {
-					oldest := audioRing[audioRingHead]
-					audioRing[audioRingHead] = nil
-					audioRingHead = (audioRingHead + 1) % len(audioRing)
-					audioRingLen--
-					if len(oldest) > 0 {
+				if p.audioReady.Load() {
+					if oldest := audioRing.PopIfBeyond(audioDelayN); len(oldest) > 0 {
 						if p.audioMeter != nil {
 							p.audioMeter.Observe(oldest, audioChans, audioRate)
 						}
@@ -1091,7 +1091,7 @@ func (p *Plane) Run(ctx context.Context) error {
 					}
 				}
 			}
-			statWindow.observeQueues(len(videoCh), len(videoPrebuffer), len(audioCh), len(audioPrebuffer), audioRingLen)
+			statWindow.observeQueues(len(videoCh), len(videoPrebuffer), len(audioCh), len(audioPrebuffer), audioRing.Len())
 			// Advance reported position by one field period.
 			p.advancePosition()
 			if correction, ok := rasterCorrection(latestACK, p.cfg.Modeline, linePeriod, fieldPeriod, lastCorrectedEcho); ok {
