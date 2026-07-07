@@ -18,7 +18,8 @@ In scope:
 
 - URL adapter casts resolved through yt-dlp, including SoundCloud and Bandcamp.
 - URL adapter direct HTTP(S) casts that point to audio-only media.
-- Streams adapter items and user-provider entries resolved through yt-dlp.
+- Streams adapter bundled items and user-provider entries, including both
+  yt-dlp-resolved items and direct media/HLS items.
 - Local Files browser casts for supported audio extensions.
 - Metadata-only visualizer sessions. Title, source/channel, and duration should
   be populated when available.
@@ -66,19 +67,37 @@ probe into a visualizer session because that would change semantics for adapters
 outside this feature.
 
 Add a small helper in the adapter layer that can apply the visualizer shape to a
-session request when a source is known to be audio-only. The helper should:
+session request when a source is known to be audio-only. The intended home is
+`internal/adapters`, for example:
+
+```go
+type AudioOnlyVisualizerMetadata struct {
+	Title    string
+	Artist   string
+	Album    string
+	Duration time.Duration
+}
+
+func ApplyAudioOnlyVisualizer(req *core.SessionRequest, meta AudioOnlyVisualizerMetadata)
+```
+
+The exact helper name can be finalized during implementation, but the behavior
+must be shared by URL, Streams, and Local Files where practical. The helper
+should:
 
 - set `MediaKind` to `core.MediaKindMusic`
 - set `Visualizer.Enabled`
 - set the default request mode to `core.VisualizerModeRetroAnalyzer`
 - populate `Visualizer.Metadata.Title`
+- populate `Visualizer.Metadata.Artist` and `.Album` from source context when
+  available
 - populate `Visualizer.Metadata.Duration` when known
 - leave `ArtworkPath` empty for this pass
 
 Core will still normalize the actual visualizer mode from bridge config at
 session start, matching Plex/Jellyfin behavior.
 
-## Audio-Only Classification
+## Classification Contract
 
 Audio-only means the source has at least one audio stream and no video stream.
 
@@ -88,6 +107,25 @@ Classification sources, in priority order:
 2. A bounded ffprobe fallback when yt-dlp metadata is ambiguous or the source is
    a direct URL.
 3. Existing video fallback when classification cannot complete.
+
+The classifier should return one of three values: `video`, `audio-only`, or
+`unknown`. Only `audio-only` may trigger the visualizer helper.
+
+Codec strings must be normalized with trim + lowercase. yt-dlp uses `"none"`
+as the explicit sentinel for a missing stream; ffprobe-derived missing values
+usually arrive as empty strings.
+
+Truth table for a single stream or single requested format:
+
+| vcodec | acodec | Result |
+| --- | --- | --- |
+| non-empty and not `none` | any value | `video` |
+| `none` | non-empty and not `none` | `audio-only` |
+| `none` | `none` or empty | `unknown` |
+| empty | any value | `unknown` |
+
+Missing codec fields are unknown, not audio-only. This preserves video playback
+for extractors that omit codec hints.
 
 yt-dlp resolver results should expose enough media shape to make this decision:
 
@@ -108,6 +146,42 @@ and failure advancement.
 For Local Files, the existing `isAudioOnlyProbe` behavior should remain. If a
 shared helper removes duplication without expanding scope, Local Files can use
 it; otherwise its current behavior is acceptable.
+
+## Probe Contract
+
+Classification probes must be bounded, non-fatal, and use the same trust posture
+as the media path they are checking.
+
+- URL and Streams adapters should receive the shared `ffprobe` resolver in
+  their adapter config, matching Local Files' existing `FFprobe` wiring. Tests
+  should keep a probe function seam so classification can be exercised without
+  spawning a real binary.
+- Default timeout for classification probes should be short enough to avoid
+  making casts feel stuck. Use the existing Local Files `800ms` timeout as the
+  starting point unless implementation discovers it is too short for direct
+  network URLs; any longer timeout must be explicitly justified in the plan.
+- Probe errors, missing `ffprobe`, context cancellation, and timeouts are
+  non-fatal classification failures. Log at debug or warning level with redacted
+  URLs, then continue through the existing video path.
+- Probe policy must match the source:
+  - Local Files use `localFilePolicy()`.
+  - Streams user-provider direct items use `userDirectInputPolicy()` after the
+    existing redirect/host prevalidation returns the final URL.
+  - Streams bundled direct items use the same policy they would hand to FFmpeg
+    if the item were not buffered.
+  - URL direct public media uses the same policy the URL adapter would hand to
+    core for that cast. For current non-buffered URL direct casts this is the
+    zero-value policy.
+  - Buffered HLS probe-before-buffer uses the original URL and the policy that
+    would be used if the buffer were bypassed.
+- Probe headers should follow the media input headers. Extend
+  `ffmpeg.ProbeInputSpec` with headers if needed so URL/Streams can probe
+  yt-dlp-resolved media that requires `User-Agent`, `Referer`, or similar
+  sanitized headers. Headers must pass through the same policy filtering used
+  before FFmpeg execution.
+- Core's normal start probe should also receive filtered input headers for the
+  primary input. Otherwise a header-dependent audio-only URL could classify
+  correctly, then fail core's "visualizer source has no audio" gate.
 
 ## URL Adapter Flow
 
@@ -142,7 +216,7 @@ than teaching the buffer to cache audio-only media.
 
 ## Streams Flow
 
-For resolved queue items:
+For yt-dlp-resolved queue items:
 
 1. Preserve the existing queue selection and item-resolution lifecycle.
 2. Resolve the item through yt-dlp.
@@ -156,6 +230,23 @@ For resolved queue items:
 Audio-only item failures should use the same error paths as other item start
 failures: item-level failures can advance to the next queue item, while global
 resolver/tool failures stop the queue.
+
+For direct bundled and user-provider queue items:
+
+1. Preserve the existing direct-item path and queue lifecycle.
+2. For user-provider direct items, run the existing redirect/host prevalidation
+   before any classification probe.
+3. For direct `.m3u8` items that would normally open the Streams HLS buffer, run
+   the bounded classification probe before opening the buffer.
+4. If the probe clearly reports audio-only media, skip the HLS buffer and build
+   a direct visualizer request against the validated original/final URL.
+5. If the probe reports video, is unknown, or fails, continue through the
+   existing direct video/HLS buffer path.
+6. Preserve current direct-item capabilities. Bundled direct streams that
+   currently disallow pause/seek should still disallow pause/seek when
+   visualized.
+7. Preserve queue advancement and cleanup semantics, including HLS buffer
+   cleanup when the video path opens a buffer.
 
 ## Local Files Flow
 
@@ -194,6 +285,13 @@ Minimum metadata:
   library name for Local Files.
 - Tertiary row: upload date or other existing adapter detail where available.
 - Duration: yt-dlp duration or ffprobe duration when known.
+- Visualizer metadata mapping:
+  - URL: `Title` from resolved/direct title, `Artist` from channel/uploader,
+    `Album` empty unless yt-dlp exposes a stable album field.
+  - Streams: `Title` from item/resolved title, `Artist` from channel name,
+    `Album` from provider name.
+  - Local Files: `Title` from basename, `Artist` empty, `Album` from library
+    name.
 
 Artist and album can be carried if yt-dlp exposes stable fields, but this
 feature does not depend on them.
@@ -207,14 +305,23 @@ Unit tests:
 - yt-dlp resolver parses single-stream `vcodec`, `acodec`, and `duration`.
 - yt-dlp dual-stream YouTube-style results remain video.
 - yt-dlp single audio-only fixtures classify as music.
+- Missing or empty yt-dlp codec fields classify as unknown and fall back safely.
 - URL adapter starts `MediaKindMusic` with `Visualizer.Enabled` for
   SoundCloud/Bandcamp-like resolver output.
 - URL adapter keeps video behavior for dual-stream and progressive video.
 - URL adapter starts a visualizer for direct audio URLs when the probe reports
   audio/no video.
 - URL adapter falls back to video when direct probing fails.
+- URL adapter skips the HLS buffer for direct audio-only `.m3u8` when the probe
+  reports audio/no video.
+- URL adapter uses the existing HLS buffer for direct `.m3u8` when the probe
+  reports video, is unknown, or fails.
 - Streams starts a visualizer for audio-only resolved items while preserving
   queue metadata and controls.
+- Streams starts a visualizer for direct bundled and user-provider audio-only
+  items while preserving queue metadata, security validation, and controls.
+- Streams direct `.m3u8` audio-only skips the HLS buffer; direct video/probe
+  failure keeps the existing HLS buffer path.
 - Streams video items remain unchanged.
 - Streams audio-only start failures advance like other item failures.
 - Local Files existing audio visualizer tests remain passing; add helper tests if
