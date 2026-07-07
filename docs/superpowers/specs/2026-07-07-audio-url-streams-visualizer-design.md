@@ -242,10 +242,12 @@ For direct bundled and user-provider queue items:
    a direct visualizer request against the validated original/final URL.
 5. If the probe reports video, is unknown, or fails, continue through the
    existing direct video/HLS buffer path.
-6. Preserve current direct-item capabilities. Bundled direct streams that
+6. For non-HLS direct media items, run the same bounded classification probe
+   against the validated playback URL before starting core.
+7. Preserve current direct-item capabilities. Bundled direct streams that
    currently disallow pause/seek should still disallow pause/seek when
    visualized.
-7. Preserve queue advancement and cleanup semantics, including HLS buffer
+8. Preserve queue advancement and cleanup semantics, including HLS buffer
    cleanup when the video path opens a buffer.
 
 ## Local Files Flow
