@@ -21,8 +21,8 @@ Do not execute this plan until the user approves it. This document is the review
 - Modify `internal/ffmpeg/probe_test.go`: pin probe header argv ordering.
 - Modify `internal/core/manager.go`: pass filtered primary input headers into core's normal start probe.
 - Modify `internal/core/manager_test.go`: prove filtered headers reach `probeInputFn`.
-- Create `internal/adapters/audio_visualizer.go`: shared audio classifier and visualizer request helper.
-- Create `internal/adapters/audio_visualizer_test.go`: helper and classifier tests.
+- Create `internal/adapters/audio_visualizer.go`: shared audio classifier, visualizer request helper, and classification log redaction helpers.
+- Create `internal/adapters/audio_visualizer_test.go`: helper, classifier, and redaction tests.
 - Modify `internal/adapters/url/ytdlp/resolver.go`: parse top-level `vcodec`, `acodec`, and `duration`.
 - Modify `internal/adapters/url/ytdlp/resolver_test.go`: resolver media-shape tests.
 - Modify `internal/adapters/url/adapter.go`: add ffprobe resolver and probe seam.
@@ -222,6 +222,8 @@ Create `internal/adapters/audio_visualizer_test.go`:
 package adapters
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -285,6 +287,30 @@ func TestApplyAudioOnlyVisualizer(t *testing.T) {
 		t.Fatalf("metadata = %+v", req.Visualizer.Metadata)
 	}
 }
+
+func TestRedactMediaURLForLogStripsSecrets(t *testing.T) {
+	raw := "https://user:secret@cdn.example/audio.m4a?sig=supersecret#fragment"
+	got := RedactMediaURLForLog(raw)
+	if got != "https://cdn.example/audio.m4a" {
+		t.Fatalf("RedactMediaURLForLog = %q", got)
+	}
+	for _, leak := range []string{"user", "secret", "sig=", "supersecret", "fragment"} {
+		if strings.Contains(got, leak) {
+			t.Fatalf("redacted URL leaked %q: %q", leak, got)
+		}
+	}
+}
+
+func TestSanitizeMediaProbeErrorReplacesRawURL(t *testing.T) {
+	raw := "https://user:secret@cdn.example/audio.m4a?sig=supersecret#fragment"
+	got := SanitizeMediaProbeError(raw, errors.New("ffprobe failed opening "+raw))
+	if strings.Contains(got, "secret") || strings.Contains(got, "sig=") || strings.Contains(got, "fragment") {
+		t.Fatalf("sanitized error leaked URL secret: %q", got)
+	}
+	if !strings.Contains(got, "https://cdn.example/audio.m4a") {
+		t.Fatalf("sanitized error missing safe URL context: %q", got)
+	}
+}
 ```
 
 - [ ] **Step 2: Run helper tests to verify RED**
@@ -292,7 +318,7 @@ func TestApplyAudioOnlyVisualizer(t *testing.T) {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters -run "TestClassify|TestApplyAudioOnlyVisualizer"
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters -run "TestClassify|TestApplyAudioOnlyVisualizer|TestRedactMediaURLForLogStripsSecrets|TestSanitizeMediaProbeErrorReplacesRawURL"
 ```
 
 Expected: FAIL because the helper types and functions do not exist.
@@ -305,6 +331,7 @@ Create `internal/adapters/audio_visualizer.go`:
 package adapters
 
 import (
+	"net/url"
 	"strings"
 	"time"
 
@@ -368,6 +395,29 @@ func ApplyAudioOnlyVisualizer(req *core.SessionRequest, meta AudioOnlyVisualizer
 			ArtworkPath: "",
 		},
 	}
+}
+
+func RedactMediaURLForLog(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u == nil {
+		return "<unparseable url>"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	return u.String()
+}
+
+func SanitizeMediaProbeError(mediaURL string, err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if strings.TrimSpace(mediaURL) == "" {
+		return msg
+	}
+	return strings.ReplaceAll(msg, mediaURL, RedactMediaURLForLog(mediaURL))
 }
 ```
 
@@ -478,7 +528,7 @@ Expected: FAIL because `Resolution.VCodec`, `Resolution.ACodec`, and `Resolution
 
 - [ ] **Step 3: Implement yt-dlp media-shape parsing**
 
-Update `Resolution` in `resolver.go`:
+Update the `Resolution` comment in `resolver.go` so it no longer says `duration` and codec fields are ignored, then add fields:
 
 ```go
 	VCodec   string
@@ -545,6 +595,22 @@ git commit -m "feat(ytdlp): expose resolved media shape"
 Add to `internal/adapters/url/play_test.go`:
 
 ```go
+type staticProbeResolver struct {
+	path string
+	err  error
+}
+
+func (s staticProbeResolver) Resolve() (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.path, nil
+}
+
+func enableURLProbeForTest(a *Adapter) {
+	a.ffprobe = staticProbeResolver{path: "ffprobe"}
+}
+
 func TestCastURL_YTDLPAudioOnlyStartsVisualizer(t *testing.T) {
 	fc := &fakeCore{}
 	a := newAdapterWithResolver(t, &fakeResolver{res: &ytdlp.Resolution{
@@ -596,9 +662,40 @@ func TestCastURL_YTDLPUnknownCodecsFallBackToVideoWhenProbeUnavailable(t *testin
 	}
 }
 
+func TestCastURL_YTDLPAmbiguousCodecsProbeUsesResolvedHeaders(t *testing.T) {
+	fc := &fakeCore{}
+	a := newAdapterWithResolver(t, &fakeResolver{res: &ytdlp.Resolution{
+		URL:     "https://cdn.example/audio?sig=secret",
+		Headers: map[string]string{"User-Agent": "yt-dlp", "Referer": "https://soundcloud.com/"},
+		Title:   "Header Track",
+	}})
+	a.core = fc
+	a.cfg.YtdlpHosts = []string{"soundcloud.com"}
+	enableURLProbeForTest(a)
+	var captured ffmpeg.ProbeInputSpec
+	a.probeMedia = func(_ context.Context, _ string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		captured = input
+		return &ffmpeg.ProbeResult{AudioRate: 44100}, nil
+	}
+
+	if _, _, _, err := a.castURL(t.Context(), "https://soundcloud.com/tape/header-track", "auto"); err != nil {
+		t.Fatalf("castURL: %v", err)
+	}
+	if captured.URL != "https://cdn.example/audio?sig=secret" {
+		t.Fatalf("probe URL = %q", captured.URL)
+	}
+	if captured.Headers["User-Agent"] != "yt-dlp" || captured.Headers["Referer"] != "https://soundcloud.com/" {
+		t.Fatalf("probe headers = %v", captured.Headers)
+	}
+	if fc.snapshot().MediaKind != core.MediaKindMusic {
+		t.Fatalf("ambiguous probed audio should visualize: %+v", fc.snapshot())
+	}
+}
+
 func TestCastURL_DirectAudioProbeStartsVisualizer(t *testing.T) {
 	fc := &fakeCore{}
 	a := newTestAdapter(t, fc)
+	enableURLProbeForTest(a)
 	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 44100, Duration: 12}, nil
 	}
@@ -619,6 +716,7 @@ func TestCastURL_DirectAudioOnlyHLSBypassesBuffer(t *testing.T) {
 	fc := &fakeCore{}
 	a := newTestAdapter(t, fc)
 	enableURLBridgeHLSBufferForTest(a)
+	enableURLProbeForTest(a)
 	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 44100}, nil
 	}
@@ -637,6 +735,8 @@ func TestCastURL_DirectAudioOnlyHLSBypassesBuffer(t *testing.T) {
 	}
 }
 ```
+
+Ensure `internal/adapters/url/play_test.go` imports `github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg`.
 
 Add this compact helper near the existing URL HLS tests:
 
@@ -661,7 +761,7 @@ func enableURLBridgeHLSBufferForTest(a *Adapter) {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url -run "TestCastURL_YTDLPAudioOnlyStartsVisualizer|TestCastURL_YTDLPUnknownCodecsFallBackToVideoWhenProbeUnavailable|TestCastURL_DirectAudioProbeStartsVisualizer|TestCastURL_DirectAudioOnlyHLSBypassesBuffer"
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url -run "TestCastURL_YTDLPAudioOnlyStartsVisualizer|TestCastURL_YTDLPAmbiguousCodecsProbeUsesResolvedHeaders|TestCastURL_YTDLPUnknownCodecsFallBackToVideoWhenProbeUnavailable|TestCastURL_DirectAudioProbeStartsVisualizer|TestCastURL_DirectAudioOnlyHLSBypassesBuffer"
 ```
 
 Expected: FAIL because URL adapter has no ffprobe seam and does not apply visualizer classification.
@@ -718,7 +818,8 @@ func (a *Adapter) classifyURLByProbe(ctx context.Context, mediaURL string, heade
 	}
 	ffprobePath, err := a.ffprobe.Resolve()
 	if err != nil {
-		slog.Warn("url audio classification skipped", "url", redactURL(mediaURL), "err", err)
+		safeErr := adapters.SanitizeMediaProbeError(mediaURL, err)
+		slog.Warn("url audio classification skipped", "url", adapters.RedactMediaURLForLog(mediaURL), "err", safeErr)
 		return adapters.AudioClassificationUnknown, nil
 	}
 	result, err := a.probeMedia(ctx, ffprobePath, ffmpeg.ProbeInputSpec{
@@ -728,12 +829,15 @@ func (a *Adapter) classifyURLByProbe(ctx context.Context, mediaURL string, heade
 		Timeout: audioClassificationProbeTimeout,
 	})
 	if err != nil {
-		slog.Warn("url audio classification failed", "url", redactURL(mediaURL), "err", err)
+		safeErr := adapters.SanitizeMediaProbeError(mediaURL, err)
+		slog.Warn("url audio classification failed", "url", adapters.RedactMediaURLForLog(mediaURL), "err", safeErr)
 		return adapters.AudioClassificationUnknown, nil
 	}
 	return adapters.ClassifyProbeResult(result), result
 }
 ```
+
+Ensure `internal/adapters/url/play.go` imports `github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg`.
 
 - [ ] **Step 5: Apply URL visualizer classification in request construction**
 
@@ -802,7 +906,7 @@ In `cmd/mister-groovy-relay/main.go`, update URL adapter construction:
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url ./cmd/mister-groovy-relay -run "TestCastURL_YTDLPAudioOnlyStartsVisualizer|TestCastURL_YTDLPUnknownCodecsFallBackToVideoWhenProbeUnavailable|TestCastURL_DirectAudioProbeStartsVisualizer|TestCastURL_DirectAudioOnlyHLSBypassesBuffer|Test.*URL"
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url ./cmd/mister-groovy-relay -run "TestCastURL_YTDLPAudioOnlyStartsVisualizer|TestCastURL_YTDLPAmbiguousCodecsProbeUsesResolvedHeaders|TestCastURL_YTDLPUnknownCodecsFallBackToVideoWhenProbeUnavailable|TestCastURL_DirectAudioProbeStartsVisualizer|TestCastURL_DirectAudioOnlyHLSBypassesBuffer|Test.*URL"
 ```
 
 Expected: PASS.
@@ -829,6 +933,7 @@ func TestCastURL_DirectHLSProbeFailureUsesBuffer(t *testing.T) {
 	fc := &fakeCore{}
 	a := newTestAdapter(t, fc)
 	enableURLBridgeHLSBufferForTest(a)
+	enableURLProbeForTest(a)
 	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return nil, errors.New("probe failed")
 	}
@@ -853,6 +958,7 @@ func TestCastURL_DirectHLSVideoProbeUsesBuffer(t *testing.T) {
 	fc := &fakeCore{}
 	a := newTestAdapter(t, fc)
 	enableURLBridgeHLSBufferForTest(a)
+	enableURLProbeForTest(a)
 	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 1280, AudioRate: 48000}, nil
 	}
@@ -903,8 +1009,24 @@ git commit -m "test(url): cover direct hls audio fallback"
 Add to `internal/adapters/streams/playback_test.go`:
 
 ```go
+type staticProbeResolver struct {
+	path string
+	err  error
+}
+
+func (s staticProbeResolver) Resolve() (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.path, nil
+}
+
+func enableStreamsProbeForTest(a *Adapter) {
+	a.ffprobe = staticProbeResolver{path: "ffprobe"}
+}
+
 func TestStartResolvedStreamAudioOnlyYTDLPStartsVisualizer(t *testing.T) {
-	a, core := newTestAdapterWithFakeCore(t)
+	a, fc := newTestAdapterWithFakeCore(t)
 	a.resolver = &fakeResolver{res: &ytdlp.Resolution{
 		URL:      "https://media.example/song.opus",
 		Title:    "Station ID",
@@ -917,8 +1039,8 @@ func TestStartResolvedStreamAudioOnlyYTDLPStartsVisualizer(t *testing.T) {
 	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"}); err != nil {
 		t.Fatalf("StartResolvedStream: %v", err)
 	}
-	req := core.lastReq
-	if req.MediaKind != corepkg.MediaKindMusic || !req.Visualizer.Enabled {
+	req := fc.lastReq
+	if req.MediaKind != core.MediaKindMusic || !req.Visualizer.Enabled {
 		t.Fatalf("request did not start visualizer: %+v", req)
 	}
 	if req.Visualizer.Metadata.Title != "Station ID" ||
@@ -931,20 +1053,44 @@ func TestStartResolvedStreamAudioOnlyYTDLPStartsVisualizer(t *testing.T) {
 		t.Fatalf("resolved stream capabilities changed: %+v", req.Capabilities)
 	}
 }
+
+func TestStartResolvedStreamAmbiguousYTDLPProbeUsesResolvedHeaders(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	a.resolver = &fakeResolver{res: &ytdlp.Resolution{
+		URL:     "https://media.example/audio?sig=secret",
+		Headers: map[string]string{"User-Agent": "yt-dlp", "Referer": "https://provider.example/"},
+		Title:   "Header Track",
+	}}
+	enableStreamsProbeForTest(a)
+	var captured ffmpeg.ProbeInputSpec
+	a.probeMedia = func(_ context.Context, _ string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		captured = input
+		return &ffmpeg.ProbeResult{AudioRate: 44100}, nil
+	}
+
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if captured.URL != "https://media.example/audio?sig=secret" {
+		t.Fatalf("probe URL = %q", captured.URL)
+	}
+	if captured.Headers["User-Agent"] != "yt-dlp" || captured.Headers["Referer"] != "https://provider.example/" {
+		t.Fatalf("probe headers = %v", captured.Headers)
+	}
+	if fc.lastReq.MediaKind != core.MediaKindMusic {
+		t.Fatalf("ambiguous probed audio should visualize: %+v", fc.lastReq)
+	}
+}
 ```
 
-If the package alias conflicts with the existing `core` test variable, import core as:
-
-```go
-corepkg "github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
-```
+Ensure `internal/adapters/streams/playback_test.go` imports `errors` and `github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg`.
 
 - [ ] **Step 2: Run Streams resolved-audio test to verify RED**
 
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run TestStartResolvedStreamAudioOnlyYTDLPStartsVisualizer
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStartResolvedStreamAudioOnlyYTDLPStartsVisualizer|TestStartResolvedStreamAmbiguousYTDLPProbeUsesResolvedHeaders"
 ```
 
 Expected: FAIL because resolved audio-only streams still build video requests.
@@ -1001,7 +1147,8 @@ func (a *Adapter) classifyStreamURLByProbe(ctx context.Context, mediaURL string,
 	}
 	ffprobePath, err := a.ffprobe.Resolve()
 	if err != nil {
-		slog.Warn("streams audio classification skipped", "url", redactStreamURL(mediaURL), "err", err)
+		safeErr := adapters.SanitizeMediaProbeError(mediaURL, err)
+		slog.Warn("streams audio classification skipped", "url", adapters.RedactMediaURLForLog(mediaURL), "err", safeErr)
 		return adapters.AudioClassificationUnknown, nil
 	}
 	result, err := a.probeMedia(ctx, ffprobePath, ffmpeg.ProbeInputSpec{
@@ -1011,22 +1158,15 @@ func (a *Adapter) classifyStreamURLByProbe(ctx context.Context, mediaURL string,
 		Timeout: audioClassificationProbeTimeout,
 	})
 	if err != nil {
-		slog.Warn("streams audio classification failed", "url", redactStreamURL(mediaURL), "err", err)
+		safeErr := adapters.SanitizeMediaProbeError(mediaURL, err)
+		slog.Warn("streams audio classification failed", "url", adapters.RedactMediaURLForLog(mediaURL), "err", safeErr)
 		return adapters.AudioClassificationUnknown, nil
 	}
 	return adapters.ClassifyProbeResult(result), result
 }
-
-func redactStreamURL(raw string) string {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u == nil {
-		return "<unparseable url>"
-	}
-	return u.Redacted()
-}
 ```
 
-Add `net/url`, `github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp`, and `github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg` imports. Add a package-local timeout constant in `internal/adapters/streams/playback.go`:
+Add `github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp` and `github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg` imports. Add a package-local timeout constant in `internal/adapters/streams/playback.go`:
 
 ```go
 const audioClassificationProbeTimeout = 800 * time.Millisecond
@@ -1072,7 +1212,7 @@ In `cmd/mister-groovy-relay/main.go`, update Streams construction:
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams ./cmd/mister-groovy-relay -run "TestStartResolvedStreamAudioOnlyYTDLPStartsVisualizer|TestStartResolvedStreamStartsCoreSession|Test.*Streams"
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams ./cmd/mister-groovy-relay -run "TestStartResolvedStreamAudioOnlyYTDLPStartsVisualizer|TestStartResolvedStreamAmbiguousYTDLPProbeUsesResolvedHeaders|TestStartResolvedStreamStartsCoreSession|Test.*Streams"
 ```
 
 Expected: PASS.
@@ -1105,6 +1245,7 @@ func TestStreamsDirectHLSAudioOnlyBypassesBuffer(t *testing.T) {
 	}
 	a.replaceDefinitionsForTest([]ProviderDefinition{def})
 	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	enableStreamsProbeForTest(a)
 	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{AudioRate: 44100, Duration: 30}, nil
 	}
@@ -1125,6 +1266,11 @@ func TestStreamsDirectHLSAudioOnlyBypassesBuffer(t *testing.T) {
 	if req.Capabilities.CanPause || req.Capabilities.CanSeek {
 		t.Fatalf("direct stream capabilities changed: %+v", req.Capabilities)
 	}
+	if req.Visualizer.Metadata.Title != "East" ||
+		req.Visualizer.Metadata.Artist != "East" ||
+		req.Visualizer.Metadata.Album != "Toonami Aftermath" {
+		t.Fatalf("visualizer metadata = %+v", req.Visualizer.Metadata)
+	}
 }
 
 func TestStreamsDirectHLSVideoProbeKeepsBuffer(t *testing.T) {
@@ -1137,6 +1283,7 @@ func TestStreamsDirectHLSVideoProbeKeepsBuffer(t *testing.T) {
 	}
 	a.replaceDefinitionsForTest([]ProviderDefinition{def})
 	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	enableStreamsProbeForTest(a)
 	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 640, AudioRate: 48000}, nil
 	}
@@ -1156,9 +1303,61 @@ func TestStreamsDirectHLSVideoProbeKeepsBuffer(t *testing.T) {
 	}
 }
 
+func TestStreamsDirectHLSUnknownOrFailedProbeKeepsBuffer(t *testing.T) {
+	cases := []struct {
+		name   string
+		result *ffmpeg.ProbeResult
+		err    error
+	}{
+		{name: "unknown", result: &ffmpeg.ProbeResult{}},
+		{name: "failure", err: errors.New("probe failed")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, c := newTestAdapterWithFakeCore(t)
+			enableBridgeHLSBufferForTest(a)
+			def := bundledToonamiAftermathDefinition()
+			cat, err := buildDirectStreamsCatalog(def)
+			if err != nil {
+				t.Fatalf("buildDirectStreamsCatalog: %v", err)
+			}
+			a.replaceDefinitionsForTest([]ProviderDefinition{def})
+			a.replaceCatalogsForTest([]ProviderCatalog{cat})
+			enableStreamsProbeForTest(a)
+			a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+				return tc.result, tc.err
+			}
+			a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+				return &hlsbuffer.Session{
+					PlaybackPath: "/tmp/streams-buffered.m3u8",
+					Policy:       core.MediaInputPolicy{ProtocolWhitelist: []string{"file"}},
+					Stats:        func() hlsbuffer.Stats { return hlsbuffer.Stats{} },
+				}, nil
+			}
+
+			if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "toonami-aftermath", ChannelID: "east"}); err != nil {
+				t.Fatalf("StartResolvedStream: %v", err)
+			}
+			if c.lastReq.StreamURL != "/tmp/streams-buffered.m3u8" || c.lastReq.Visualizer.Enabled {
+				t.Fatalf("request = %+v, want buffered video fallback", c.lastReq)
+			}
+		})
+	}
+}
+
 func TestUserDirectAudioOnlyStartsVisualizerWithUserPolicy(t *testing.T) {
 	a, c := installUserDirectAdapter(t)
-	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{
+		"cdn.example.com":   {"93.184.216.34"},
+		"media.example.com": {"93.184.216.35"},
+	}}
+	a.userRedirectDoer = stubDoer{resp: map[string]*http.Response{
+		"https://cdn.example.com/live.m3u8": redirectResp("https://media.example.com/live.m3u8"),
+	}}
+	enableStreamsProbeForTest(a)
+	var captured ffmpeg.ProbeInputSpec
+	a.probeMedia = func(_ context.Context, _ string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		captured = input
 		return &ffmpeg.ProbeResult{AudioRate: 44100}, nil
 	}
 
@@ -1169,8 +1368,51 @@ func TestUserDirectAudioOnlyStartsVisualizerWithUserPolicy(t *testing.T) {
 	if req.MediaKind != core.MediaKindMusic || !req.Visualizer.Enabled {
 		t.Fatalf("user direct audio should visualize: %+v", req)
 	}
-	if req.MediaInputPolicy.ProtocolWhitelist[0] != "http" {
+	wantPolicy := userDirectInputPolicy()
+	if strings.Join(req.MediaInputPolicy.ProtocolWhitelist, ",") != strings.Join(wantPolicy.ProtocolWhitelist, ",") ||
+		req.MediaInputPolicy.RWTimeout != wantPolicy.RWTimeout {
 		t.Fatalf("user direct policy not preserved: %+v", req.MediaInputPolicy)
+	}
+	if captured.URL != "https://media.example.com/live.m3u8" {
+		t.Fatalf("probe URL = %q, want prevalidated redirect target", captured.URL)
+	}
+	if strings.Join(captured.Policy.ProtocolWhitelist, ",") != strings.Join(wantPolicy.ProtocolWhitelist, ",") ||
+		captured.Policy.RWTimeout != wantPolicy.RWTimeout {
+		t.Fatalf("probe policy = %+v, want user direct policy", captured.Policy)
+	}
+}
+
+func TestStreamsAudioOnlyDirectStartFailureAdvancesQueue(t *testing.T) {
+	a, c := newTestAdapterWithFakeCore(t)
+	c.startErrs = []error{errors.New("first failed"), nil}
+	a.replaceDefinitionsForTest([]ProviderDefinition{{ID: "direct-audio", Type: directStreamsProviderType, DisplayName: "Direct Audio"}})
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "direct-audio",
+		Name:       "Direct Audio",
+		Channels: []Channel{{
+			ID:       "mix",
+			Name:     "Mix",
+			PlayMode: PlaySequential,
+			Items: []StreamItem{
+				{ID: "first", Title: "First", URL: "https://media.example/first.mp3", SourceID: "first", Direct: true},
+				{ID: "second", Title: "Second", URL: "https://media.example/second.mp3", SourceID: "second", Direct: true},
+			},
+		}},
+	}})
+	enableStreamsProbeForTest(a)
+	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{AudioRate: 44100}, nil
+	}
+
+	started, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "direct-audio", ChannelID: "mix"})
+	if err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if c.startCalls != 2 {
+		t.Fatalf("StartSession calls = %d, want retry on next direct item", c.startCalls)
+	}
+	if started.ItemID != "second" || c.lastReq.Title != "Second" || c.lastReq.MediaKind != core.MediaKindMusic {
+		t.Fatalf("started=%+v lastReq=%+v, want second audio item visualized", started, c.lastReq)
 	}
 }
 ```
@@ -1180,7 +1422,7 @@ func TestUserDirectAudioOnlyStartsVisualizerWithUserPolicy(t *testing.T) {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStreamsDirectHLSAudioOnlyBypassesBuffer|TestStreamsDirectHLSVideoProbeKeepsBuffer|TestUserDirectAudioOnlyStartsVisualizerWithUserPolicy"
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStreamsDirectHLSAudioOnlyBypassesBuffer|TestStreamsDirectHLSVideoProbeKeepsBuffer|TestStreamsDirectHLSUnknownOrFailedProbeKeepsBuffer|TestUserDirectAudioOnlyStartsVisualizerWithUserPolicy|TestStreamsAudioOnlyDirectStartFailureAdvancesQueue"
 ```
 
 Expected: FAIL because the direct branch does not classify audio-only media before buffer/core start.
@@ -1206,7 +1448,7 @@ When building the direct `req`, after the HLS buffer block and before starting c
 				duration = time.Duration(audioProbe.Duration * float64(time.Second))
 			}
 			adapters.ApplyAudioOnlyVisualizer(&req, adapters.AudioOnlyVisualizerMetadata{
-				Title:    title,
+				Title:    streamSessionTitle(item, ""),
 				Artist:   q.ChannelName,
 				Album:    q.ProviderName,
 				Duration: duration,
@@ -1221,7 +1463,7 @@ Important: if `shouldBuffer` is true and classification is video, unknown, or fa
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStreamsDirectHLS|TestUserDirect_|TestStartResolvedDirectStreamSkipsResolverAndSetsPolicy"
+cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStreamsDirectHLS|TestUserDirect_|TestStartResolvedDirectStreamSkipsResolverAndSetsPolicy|TestStreamsAudioOnlyDirectStartFailureAdvancesQueue"
 ```
 
 Expected: PASS.
