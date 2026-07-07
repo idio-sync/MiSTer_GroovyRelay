@@ -1,3 +1,5 @@
+import { requireBridgeHostPermission } from "./permissions.js";
+
 const DEFAULT_TIMEOUT_MS = 15000;
 let timeoutMs = DEFAULT_TIMEOUT_MS;
 let plexIdentityCache = { bridgeURL: "", clientID: "" };
@@ -18,6 +20,9 @@ export async function getBridgeURL() {
 async function companionFetch(path, options = {}) {
   const bridgeURL = await getBridgeURL();
   if (!bridgeURL) return { ok: false, error: "Bridge not configured" };
+
+  const permission = await requireBridgeHostPermission(bridgeURL);
+  if (!permission.ok) return permission;
 
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -95,6 +100,9 @@ export async function plexTimelinePoll(originalURL) {
 
   const bridgeURL = await getBridgeURL();
   if (!bridgeURL) return { ok: false, handled: false, error: "Bridge not configured" };
+
+  const permission = await requireBridgeHostPermission(bridgeURL);
+  if (!permission.ok) return { ...permission, handled: false };
 
   const targetID = plexTargetClientIdentifier(originalURL);
   if (!targetID) return { ok: true, handled: false };

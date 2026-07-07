@@ -44,7 +44,7 @@ After install, the options page should open automatically. If not:
 - Firefox: `about:addons` -> MiSTer GroovyRelay Companion -> Preferences.
 - Chrome: `chrome://extensions` -> Details -> Extension options.
 
-Enter the bridge URL, for example `http://192.168.1.50:32500`, click "Test Connection" to verify, then "Save."
+Enter the bridge URL, for example `http://192.168.1.50:32500`, click "Test Connection" to verify, then "Save." If Firefox asks whether the extension may access that bridge host, allow it.
 
 ## Data collection
 

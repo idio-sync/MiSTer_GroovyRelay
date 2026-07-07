@@ -1,3 +1,5 @@
+import { ensureBridgeHostPermission } from "../lib/permissions.js";
+
 export function validateBridgeURL(input) {
   const trimmed = (input || "").trim();
   if (trimmed === "") return { ok: true, url: "" };
@@ -21,6 +23,9 @@ export function validateBridgeURL(input) {
 
 export async function testConnection(bridgeURL) {
   if (!bridgeURL) return { ok: false, error: "Bridge not configured" };
+
+  const permission = await ensureBridgeHostPermission(bridgeURL);
+  if (!permission.ok) return permission;
 
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 10000);
@@ -84,6 +89,13 @@ export async function initOptionsPage(doc = document) {
     if (!result.ok) {
       setStatus(statusEl, "err", result.error);
       return;
+    }
+    if (result.url) {
+      const permission = await ensureBridgeHostPermission(result.url);
+      if (!permission.ok) {
+        setStatus(statusEl, "err", permission.error);
+        return;
+      }
     }
     await browser.storage.sync.set({ bridgeURL: result.url });
     input.value = result.url;

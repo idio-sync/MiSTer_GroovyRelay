@@ -4,6 +4,7 @@
   "version": "0.3.1",
   "description": "Cast pages, links, and videos to a MiSTer GroovyRelay bridge.",
   "permissions": ["activeTab", "contextMenus", "storage", "notifications"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
   "content_scripts": [
     {
       "matches": ["https://app.plex.tv/desktop/*"],
