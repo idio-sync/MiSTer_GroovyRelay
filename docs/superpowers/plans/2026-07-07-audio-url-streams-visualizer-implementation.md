@@ -81,7 +81,7 @@ func TestProbeInputURLAppliesHeadersBeforeURL(t *testing.T) {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/ffmpeg -run TestProbeInputURLAppliesHeadersBeforeURL
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/ffmpeg -run TestProbeInputURLAppliesHeadersBeforeURL
 ```
 
 Expected: FAIL because `ProbeInputSpec.Headers` does not exist.
@@ -117,7 +117,7 @@ Update the `Probe` comment to remove the old statement that headers are not thre
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/ffmpeg -run "TestProbeInputURLApplies"
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/ffmpeg -run "TestProbeInputURLApplies"
 ```
 
 Expected: PASS.
@@ -170,7 +170,7 @@ func TestProbeForStart_ThreadsFilteredHeadersToProbeInput(t *testing.T) {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/core -run TestProbeForStart_ThreadsFilteredHeadersToProbeInput
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/core -run TestProbeForStart_ThreadsFilteredHeadersToProbeInput
 ```
 
 Expected: FAIL because `probeForStart` does not populate `ProbeInputSpec.Headers`.
@@ -194,7 +194,7 @@ Update `probeInput` construction in `internal/core/manager.go`:
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/ffmpeg ./internal/core -run "TestProbeInputURLAppliesHeadersBeforeURL|TestProbeForStart_ThreadsFilteredHeadersToProbeInput|TestProbeForStart_ThreadsPolicyToProbeAndProbeCrop"
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/ffmpeg ./internal/core -run "TestProbeInputURLAppliesHeadersBeforeURL|TestProbeForStart_ThreadsFilteredHeadersToProbeInput|TestProbeForStart_ThreadsPolicyToProbeAndProbeCrop"
 ```
 
 Expected: PASS.
@@ -318,7 +318,7 @@ func TestSanitizeMediaProbeErrorReplacesRawURL(t *testing.T) {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters -run "TestClassify|TestApplyAudioOnlyVisualizer|TestRedactMediaURLForLogStripsSecrets|TestSanitizeMediaProbeErrorReplacesRawURL"
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters -run "TestClassify|TestApplyAudioOnlyVisualizer|TestRedactMediaURLForLogStripsSecrets|TestSanitizeMediaProbeErrorReplacesRawURL"
 ```
 
 Expected: FAIL because the helper types and functions do not exist.
@@ -397,6 +397,11 @@ func ApplyAudioOnlyVisualizer(req *core.SessionRequest, meta AudioOnlyVisualizer
 	}
 }
 
+// RedactMediaURLForLog strips userinfo, the entire query string, and the
+// fragment. It is intentionally stricter than the url adapter's redactURL
+// (which keeps the query) so signed CDN / yt-dlp probe URLs never leak
+// ?sig=… tokens into logs. The url subpackage now imports this package, so
+// its unexported redactURL cannot be reused here without an import cycle.
 func RedactMediaURLForLog(raw string) string {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u == nil {
@@ -454,7 +459,7 @@ In `TestCastStartsAudioVisualizerSession` in `internal/adapters/localfiles/cast_
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters ./internal/adapters/localfiles
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters ./internal/adapters/localfiles
 ```
 
 Expected: PASS.
@@ -521,7 +526,7 @@ func TestResolve_MissingSingleStreamCodecsStayEmpty(t *testing.T) {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url/ytdlp -run "TestResolve_ParsesSingleStreamCodecsAndDuration|TestResolve_MissingSingleStreamCodecsStayEmpty"
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url/ytdlp -run "TestResolve_ParsesSingleStreamCodecsAndDuration|TestResolve_MissingSingleStreamCodecsStayEmpty"
 ```
 
 Expected: FAIL because `Resolution.VCodec`, `Resolution.ACodec`, and `Resolution.Duration` do not exist.
@@ -570,7 +575,7 @@ Dual-stream results should keep `VCodec` and `ACodec` empty because `AudioURL !=
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url/ytdlp
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url/ytdlp
 ```
 
 Expected: PASS.
@@ -761,7 +766,7 @@ func enableURLBridgeHLSBufferForTest(a *Adapter) {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url -run "TestCastURL_YTDLPAudioOnlyStartsVisualizer|TestCastURL_YTDLPAmbiguousCodecsProbeUsesResolvedHeaders|TestCastURL_YTDLPUnknownCodecsFallBackToVideoWhenProbeUnavailable|TestCastURL_DirectAudioProbeStartsVisualizer|TestCastURL_DirectAudioOnlyHLSBypassesBuffer"
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url -run "TestCastURL_YTDLPAudioOnlyStartsVisualizer|TestCastURL_YTDLPAmbiguousCodecsProbeUsesResolvedHeaders|TestCastURL_YTDLPUnknownCodecsFallBackToVideoWhenProbeUnavailable|TestCastURL_DirectAudioProbeStartsVisualizer|TestCastURL_DirectAudioOnlyHLSBypassesBuffer"
 ```
 
 Expected: FAIL because URL adapter has no ffprobe seam and does not apply visualizer classification.
@@ -906,7 +911,7 @@ In `cmd/mister-groovy-relay/main.go`, update URL adapter construction:
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url ./cmd/mister-groovy-relay -run "TestCastURL_YTDLPAudioOnlyStartsVisualizer|TestCastURL_YTDLPAmbiguousCodecsProbeUsesResolvedHeaders|TestCastURL_YTDLPUnknownCodecsFallBackToVideoWhenProbeUnavailable|TestCastURL_DirectAudioProbeStartsVisualizer|TestCastURL_DirectAudioOnlyHLSBypassesBuffer|Test.*URL"
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url ./cmd/mister-groovy-relay -run "TestCastURL_YTDLPAudioOnlyStartsVisualizer|TestCastURL_YTDLPAmbiguousCodecsProbeUsesResolvedHeaders|TestCastURL_YTDLPUnknownCodecsFallBackToVideoWhenProbeUnavailable|TestCastURL_DirectAudioProbeStartsVisualizer|TestCastURL_DirectAudioOnlyHLSBypassesBuffer|Test.*URL"
 ```
 
 Expected: PASS.
@@ -984,7 +989,7 @@ func TestCastURL_DirectHLSVideoProbeUsesBuffer(t *testing.T) {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url -run "TestCastURL_DirectHLS.*(UsesBuffer|BypassesBuffer)"
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/url -run "TestCastURL_DirectHLS.*(UsesBuffer|BypassesBuffer)"
 ```
 
 Expected: PASS after Task 4. If either test fails, fix only the direct HLS classification branch so audio-only bypasses and video/unknown/error opens the buffer.
@@ -1090,7 +1095,7 @@ Ensure `internal/adapters/streams/playback_test.go` imports `errors` and `github
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStartResolvedStreamAudioOnlyYTDLPStartsVisualizer|TestStartResolvedStreamAmbiguousYTDLPProbeUsesResolvedHeaders"
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStartResolvedStreamAudioOnlyYTDLPStartsVisualizer|TestStartResolvedStreamAmbiguousYTDLPProbeUsesResolvedHeaders"
 ```
 
 Expected: FAIL because resolved audio-only streams still build video requests.
@@ -1212,7 +1217,7 @@ In `cmd/mister-groovy-relay/main.go`, update Streams construction:
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams ./cmd/mister-groovy-relay -run "TestStartResolvedStreamAudioOnlyYTDLPStartsVisualizer|TestStartResolvedStreamAmbiguousYTDLPProbeUsesResolvedHeaders|TestStartResolvedStreamStartsCoreSession|Test.*Streams"
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams ./cmd/mister-groovy-relay -run "TestStartResolvedStreamAudioOnlyYTDLPStartsVisualizer|TestStartResolvedStreamAmbiguousYTDLPProbeUsesResolvedHeaders|TestStartResolvedStreamStartsCoreSession|Test.*Streams"
 ```
 
 Expected: PASS.
@@ -1411,7 +1416,9 @@ func TestStreamsAudioOnlyDirectStartFailureAdvancesQueue(t *testing.T) {
 	if c.startCalls != 2 {
 		t.Fatalf("StartSession calls = %d, want retry on next direct item", c.startCalls)
 	}
-	if started.ItemID != "second" || c.lastReq.Title != "Second" || c.lastReq.MediaKind != core.MediaKindMusic {
+	// req.Title is the composite "Direct Audio / Mix" for direct items; the
+	// per-item title lands in Visualizer.Metadata.Title via ApplyAudioOnlyVisualizer.
+	if started.ItemID != "second" || c.lastReq.Visualizer.Metadata.Title != "Second" || c.lastReq.MediaKind != core.MediaKindMusic {
 		t.Fatalf("started=%+v lastReq=%+v, want second audio item visualized", started, c.lastReq)
 	}
 }
@@ -1422,7 +1429,7 @@ func TestStreamsAudioOnlyDirectStartFailureAdvancesQueue(t *testing.T) {
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStreamsDirectHLSAudioOnlyBypassesBuffer|TestStreamsDirectHLSVideoProbeKeepsBuffer|TestStreamsDirectHLSUnknownOrFailedProbeKeepsBuffer|TestUserDirectAudioOnlyStartsVisualizerWithUserPolicy|TestStreamsAudioOnlyDirectStartFailureAdvancesQueue"
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStreamsDirectHLSAudioOnlyBypassesBuffer|TestStreamsDirectHLSVideoProbeKeepsBuffer|TestStreamsDirectHLSUnknownOrFailedProbeKeepsBuffer|TestUserDirectAudioOnlyStartsVisualizerWithUserPolicy|TestStreamsAudioOnlyDirectStartFailureAdvancesQueue"
 ```
 
 Expected: FAIL because the direct branch does not classify audio-only media before buffer/core start.
@@ -1463,7 +1470,7 @@ Important: if `shouldBuffer` is true and classification is video, unknown, or fa
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStreamsDirectHLS|TestUserDirect_|TestStartResolvedDirectStreamSkipsResolverAndSetsPolicy|TestStreamsAudioOnlyDirectStartFailureAdvancesQueue"
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/streams -run "TestStreamsDirectHLS|TestUserDirect_|TestStartResolvedDirectStreamSkipsResolverAndSetsPolicy|TestStreamsAudioOnlyDirectStartFailureAdvancesQueue"
 ```
 
 Expected: PASS.
@@ -1485,7 +1492,7 @@ git commit -m "feat(streams): visualize direct audio-only items"
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/... ./cmd/mister-groovy-relay
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/... ./cmd/mister-groovy-relay
 ```
 
 Expected: PASS. Likely failures, if any, will be test constructors that need the new optional `FFprobe` field or package imports.
@@ -1515,7 +1522,7 @@ For tests that should avoid probing, leave `FFprobe` nil and assert video fallba
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/... ./cmd/mister-groovy-relay
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/adapters/... ./cmd/mister-groovy-relay
 ```
 
 Expected: PASS.
@@ -1541,7 +1548,7 @@ If no files changed, record in the execution notes that Task 8 required no commi
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/gofmt.exe -w internal/ffmpeg/input.go internal/ffmpeg/probe.go internal/ffmpeg/probe_test.go internal/core/manager.go internal/core/manager_test.go internal/adapters/audio_visualizer.go internal/adapters/audio_visualizer_test.go internal/adapters/url/ytdlp/resolver.go internal/adapters/url/ytdlp/resolver_test.go internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/play_test.go internal/adapters/streams/adapter.go internal/adapters/streams/playback.go internal/adapters/streams/playback_test.go internal/adapters/localfiles/cast.go internal/adapters/localfiles/cast_test.go cmd/mister-groovy-relay/main.go
+C:/Users/Jake/sdk/go/bin/gofmt.exe -w internal/ffmpeg/input.go internal/ffmpeg/probe.go internal/ffmpeg/probe_test.go internal/core/manager.go internal/core/manager_test.go internal/adapters/audio_visualizer.go internal/adapters/audio_visualizer_test.go internal/adapters/url/ytdlp/resolver.go internal/adapters/url/ytdlp/resolver_test.go internal/adapters/url/adapter.go internal/adapters/url/play.go internal/adapters/url/play_test.go internal/adapters/streams/adapter.go internal/adapters/streams/playback.go internal/adapters/streams/playback_test.go internal/adapters/localfiles/cast.go internal/adapters/localfiles/cast_test.go cmd/mister-groovy-relay/main.go
 ```
 
 Expected: command exits 0.
@@ -1551,7 +1558,7 @@ Expected: command exits 0.
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./internal/ffmpeg ./internal/core ./internal/adapters ./internal/adapters/localfiles ./internal/adapters/url/ytdlp ./internal/adapters/url ./internal/adapters/streams ./cmd/mister-groovy-relay
+C:/Users/Jake/sdk/go/bin/go.exe test ./internal/ffmpeg ./internal/core ./internal/adapters ./internal/adapters/localfiles ./internal/adapters/url/ytdlp ./internal/adapters/url ./internal/adapters/streams ./cmd/mister-groovy-relay
 ```
 
 Expected: PASS.
@@ -1561,7 +1568,7 @@ Expected: PASS.
 Run:
 
 ```bash
-cmd.exe /c C:/Users/Jake/sdk/go/bin/go.exe test ./...
+C:/Users/Jake/sdk/go/bin/go.exe test ./...
 ```
 
 Expected: PASS.
@@ -1571,7 +1578,7 @@ Expected: PASS.
 Run:
 
 ```bash
-cmd.exe /c set CGO_ENABLED=1&&C:\Users\Jake\sdk\go\bin\go.exe test -race ./...
+CGO_ENABLED=1 C:/Users/Jake/sdk/go/bin/go.exe test -race ./...
 ```
 
 Expected: PASS. If this fails for an existing unrelated race, capture the package/test name and decide whether to fix or defer before merge.
