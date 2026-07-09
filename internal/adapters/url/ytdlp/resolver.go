@@ -39,12 +39,12 @@ func (OSRunner) Run(ctx context.Context, name string, args ...string) (stdout, s
 }
 
 // Resolution is the parsed yt-dlp JSON output, narrowed to fields the
-// URL adapter cares about. Other JSON keys (formats[], duration, etc.)
-// are ignored.
+// URL adapter cares about. Other JSON keys (formats[], etc.) are ignored.
 //
 // Single-stream sources (progressive YouTube, generic direct URLs,
 // HLS, etc.) populate URL/Headers and leave AudioURL/AudioHeaders
-// empty. The bridge feeds one ffmpeg input.
+// empty. They also surface top-level codec and duration metadata. The
+// bridge feeds one ffmpeg input.
 //
 // DASH (separate video + audio) sources populate URL with the
 // video-only stream and AudioURL with the audio-only stream. yt-dlp
@@ -60,6 +60,9 @@ type Resolution struct {
 	Title        string            // surfaced in the URL adapter's history panel + slog
 	Channel      string            // yt-dlp channel/uploader — VFD secondary
 	UploadDate   string            // yt-dlp upload_date, raw "YYYYMMDD" — formatted by the caller
+	VCodec       string            // top-level yt-dlp vcodec in single-stream case
+	ACodec       string            // top-level yt-dlp acodec in single-stream case
+	Duration     time.Duration     // top-level yt-dlp duration in seconds
 }
 
 // PlaylistEntry is one entry from a flat-playlist enumeration: the item's
@@ -162,6 +165,9 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 		Channel          string            `json:"channel"`
 		Uploader         string            `json:"uploader"`
 		UploadDate       string            `json:"upload_date"`
+		VCodec           string            `json:"vcodec"`
+		ACodec           string            `json:"acodec"`
+		Duration         float64           `json:"duration"`
 		RequestedFormats []struct {
 			URL         string            `json:"url"`
 			HTTPHeaders map[string]string `json:"http_headers"`
@@ -203,6 +209,7 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 			Title:        raw.Title,
 			Channel:      firstNonEmptyStr(raw.Channel, raw.Uploader),
 			UploadDate:   raw.UploadDate,
+			Duration:     durationFromSeconds(raw.Duration),
 		}, nil
 	}
 
@@ -230,6 +237,9 @@ func (r *Resolver) Resolve(ctx context.Context, pageURL, format, cookiesPath str
 		Title:      raw.Title,
 		Channel:    firstNonEmptyStr(raw.Channel, raw.Uploader),
 		UploadDate: raw.UploadDate,
+		VCodec:     raw.VCodec,
+		ACodec:     raw.ACodec,
+		Duration:   durationFromSeconds(raw.Duration),
 	}, nil
 }
 
@@ -325,6 +335,13 @@ func firstNonEmptyStr(a, b string) string {
 		return a
 	}
 	return b
+}
+
+func durationFromSeconds(seconds float64) time.Duration {
+	if seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds * float64(time.Second))
 }
 
 // classifyDualFormats inspects the (vcodec, acodec) of two requested_formats

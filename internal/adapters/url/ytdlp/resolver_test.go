@@ -144,6 +144,50 @@ func TestResolve_ParsesJSONIntoResolution(t *testing.T) {
 	}
 }
 
+func TestResolve_ParsesSingleStreamCodecsAndDuration(t *testing.T) {
+	const audioJSON = `{
+"url": "https://audio.example/track.m4a",
+"http_headers": {"User-Agent": "yt-dlp"},
+"title": "Synth Jam",
+"channel": "Patch Notes",
+"vcodec": "none",
+"acodec": "mp4a.40.2",
+"duration": 123.5
+}`
+	r := &stubRunner{stdouts: [][]byte{[]byte(audioJSON)}}
+	res := Resolver{Binary: "yt-dlp", Timeout: 5 * time.Second, Runner: r}
+
+	got, err := res.Resolve(context.Background(), "https://example.com/track", "best", "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.VCodec != "none" {
+		t.Errorf("VCodec = %q, want none", got.VCodec)
+	}
+	if got.ACodec != "mp4a.40.2" {
+		t.Errorf("ACodec = %q, want mp4a.40.2", got.ACodec)
+	}
+	if got.Duration != 123500*time.Millisecond {
+		t.Errorf("Duration = %v, want %v", got.Duration, 123500*time.Millisecond)
+	}
+}
+
+func TestResolve_MissingSingleStreamCodecsStayEmpty(t *testing.T) {
+	r := &stubRunner{stdouts: [][]byte{[]byte(validJSON)}}
+	res := Resolver{Binary: "yt-dlp", Timeout: 5 * time.Second, Runner: r}
+
+	got, err := res.Resolve(context.Background(), "https://youtu.be/x", "best", "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.VCodec != "" {
+		t.Errorf("VCodec = %q, want empty", got.VCodec)
+	}
+	if got.ACodec != "" {
+		t.Errorf("ACodec = %q, want empty", got.ACodec)
+	}
+}
+
 func TestResolve_NonZeroExit_ReturnsTrimmedStderr(t *testing.T) {
 	r := &stubRunner{
 		stderrs: [][]byte{[]byte("WARNING: nothing\nERROR: This video is unavailable\n")},
@@ -225,11 +269,11 @@ func TestSanitizeHeaders_StripsControlBytes(t *testing.T) {
 	// CR/LF — these escapes survive the build-tooling pipeline
 	// safely (unlike literal control bytes in raw strings).
 	in := map[string]string{
-		"GoodKey":    "good value",
-		"BadKey\r\n": "bad-key-payload",
-		"NullKey\x00":  "nul-key-payload",
-		"BadValue":   "tainted\r\nX-Smuggled: yes",
-		"NullValue":  "tainted\x00",
+		"GoodKey":     "good value",
+		"BadKey\r\n":  "bad-key-payload",
+		"NullKey\x00": "nul-key-payload",
+		"BadValue":    "tainted\r\nX-Smuggled: yes",
+		"NullValue":   "tainted\x00",
 	}
 	out := sanitizeHeaders(in)
 	if len(out) != 1 {
