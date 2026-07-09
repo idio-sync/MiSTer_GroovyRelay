@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 )
@@ -57,16 +58,11 @@ func (a *Adapter) Cast(ctx context.Context, libName, rel string) error {
 		MediaKind: core.MediaKindVideo,
 	}
 	if isAudioOnlyProbe(probeResult) {
-		req.MediaKind = core.MediaKindMusic
-		req.Visualizer = core.VisualizerRequest{
-			Enabled: true,
-			Mode:    core.VisualizerModeRetroAnalyzer,
-			Metadata: core.VisualizerMetadata{
-				Title:       title,
-				Duration:    time.Duration(probeResult.Duration * float64(time.Second)),
-				ArtworkPath: "",
-			},
-		}
+		adapters.ApplyAudioOnlyVisualizer(&req, adapters.AudioOnlyVisualizerMetadata{
+			Title:    title,
+			Album:    lib.Name,
+			Duration: time.Duration(probeResult.Duration * float64(time.Second)),
+		})
 	}
 	if err := a.core.StartSession(req); err != nil {
 		return err
@@ -90,7 +86,7 @@ func (a *Adapter) probeBestEffort(ctx context.Context, url string, policy ffmpeg
 }
 
 func isAudioOnlyProbe(result *ffmpeg.ProbeResult) bool {
-	return result != nil && result.AudioRate > 0 && result.Width == 0
+	return adapters.ClassifyProbeResult(result) == adapters.AudioOnly
 }
 
 func titleFromPath(path string) string {

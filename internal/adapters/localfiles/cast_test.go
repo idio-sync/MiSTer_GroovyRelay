@@ -172,7 +172,7 @@ func TestCastStartsAudioVisualizerSession(t *testing.T) {
 	if !req.Visualizer.Enabled || req.Visualizer.Mode != core.VisualizerModeRetroAnalyzer {
 		t.Fatalf("Visualizer = %+v, want retro analyzer enabled", req.Visualizer)
 	}
-	if req.Visualizer.Metadata.Title != "Song" || req.Visualizer.Metadata.ArtworkPath != "" {
+	if req.Visualizer.Metadata.Title != "Song" || req.Visualizer.Metadata.Album != "Music" || req.Visualizer.Metadata.ArtworkPath != "" {
 		t.Fatalf("visualizer metadata = %+v", req.Visualizer.Metadata)
 	}
 }
