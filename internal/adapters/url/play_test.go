@@ -19,6 +19,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 )
 
@@ -818,6 +819,11 @@ func TestURLDirectM3U8OffBypassesBuffer(t *testing.T) {
 	fr := &fakeResolver{}
 	a := newAdapterWithResolver(t, fr)
 	enableURLHLSBufferForTest(a)
+	enableURLProbeForTest(a)
+	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		t.Fatal("hls_buffer=off should preserve raw HLS video fallback without audio classification probe")
+		return nil, nil
+	}
 	a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
 		t.Fatal("hlsBufferOpen should not be called when hls_buffer=off")
 		return nil, nil
@@ -834,6 +840,269 @@ func TestURLDirectM3U8OffBypassesBuffer(t *testing.T) {
 	got := a.core.(*fakeCore).snapshot()
 	if got.StreamURL != "https://public.example/live.m3u8" {
 		t.Fatalf("StreamURL = %q, want direct URL", got.StreamURL)
+	}
+}
+
+func TestCastURL_YTDLPAudioOnlyStartsVisualizer(t *testing.T) {
+	fr := &fakeResolver{
+		res: &ytdlp.Resolution{
+			URL:      "https://media.example/audio.opus",
+			Title:    "Signal",
+			Channel:  "Relay FM",
+			VCodec:   "none",
+			ACodec:   "opus",
+			Duration: 3*time.Minute + 12*time.Second,
+		},
+	}
+	a := newAdapterWithResolver(t, fr)
+	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		t.Fatal("codec-classified audio-only yt-dlp result should not be probed")
+		return nil, nil
+	}
+
+	_, _, status, err := a.castURL(t.Context(), "https://youtu.be/audio", "ytdlp")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("castURL status=%d err=%v", status, err)
+	}
+	req := a.core.(*fakeCore).snapshot()
+	if req.MediaKind != core.MediaKindMusic {
+		t.Fatalf("MediaKind = %q, want music", req.MediaKind)
+	}
+	if !req.Visualizer.Enabled || req.Visualizer.Mode != core.VisualizerModeRetroAnalyzer {
+		t.Fatalf("Visualizer = %+v, want retro analyzer enabled", req.Visualizer)
+	}
+	if req.Visualizer.Metadata.Title != "Signal" || req.Visualizer.Metadata.Artist != "Relay FM" || req.Visualizer.Metadata.Duration != 3*time.Minute+12*time.Second {
+		t.Fatalf("visualizer metadata = %+v", req.Visualizer.Metadata)
+	}
+}
+
+func TestCastURL_YTDLPUnknownCodecsFallBackToVideoWhenProbeUnavailable(t *testing.T) {
+	fr := &fakeResolver{
+		res: &ytdlp.Resolution{
+			URL:    "https://media.example/unknown",
+			Title:  "Maybe Video",
+			VCodec: "",
+			ACodec: "",
+		},
+	}
+	a := newAdapterWithResolver(t, fr)
+	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		t.Fatal("probe should not run without an ffprobe resolver")
+		return nil, nil
+	}
+
+	_, _, status, err := a.castURL(t.Context(), "https://youtu.be/unknown", "ytdlp")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("castURL status=%d err=%v", status, err)
+	}
+	req := a.core.(*fakeCore).snapshot()
+	if got := core.NormalizeMediaKind(req.MediaKind); got != core.MediaKindVideo {
+		t.Fatalf("MediaKind = %q normalized %q, want video fallback", req.MediaKind, got)
+	}
+	if req.Visualizer.Enabled {
+		t.Fatalf("Visualizer enabled for unknown/probe-unavailable yt-dlp media: %+v", req.Visualizer)
+	}
+}
+
+func TestCastURL_YTDLPAmbiguousCodecsProbeUsesResolvedHeaders(t *testing.T) {
+	fr := &fakeResolver{
+		res: &ytdlp.Resolution{
+			URL:     "https://media.example/ambiguous",
+			Headers: map[string]string{"User-Agent": "yt-dlp", "Referer": "https://youtu.be/watch"},
+			Title:   "Header Song",
+			Channel: "Uploader",
+			VCodec:  "",
+			ACodec:  "",
+		},
+	}
+	a := newAdapterWithResolver(t, fr)
+	enableURLProbeForTest(a)
+	var gotInput ffmpeg.ProbeInputSpec
+	a.probeMedia = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		if ffprobePath != "ffprobe" {
+			t.Fatalf("ffprobePath = %q, want ffprobe", ffprobePath)
+		}
+		gotInput = input
+		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 45}, nil
+	}
+
+	_, _, status, err := a.castURL(t.Context(), "https://youtu.be/ambiguous", "ytdlp")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("castURL status=%d err=%v", status, err)
+	}
+	if gotInput.URL != "https://media.example/ambiguous" {
+		t.Fatalf("probe URL = %q, want resolved media URL", gotInput.URL)
+	}
+	if gotInput.Headers["User-Agent"] != "yt-dlp" || gotInput.Headers["Referer"] != "https://youtu.be/watch" {
+		t.Fatalf("probe headers = %#v, want resolved headers", gotInput.Headers)
+	}
+	if gotInput.Timeout != 800*time.Millisecond {
+		t.Fatalf("probe timeout = %s, want 800ms", gotInput.Timeout)
+	}
+	req := a.core.(*fakeCore).snapshot()
+	if req.MediaKind != core.MediaKindMusic || !req.Visualizer.Enabled {
+		t.Fatalf("request did not start audio visualizer: MediaKind=%q Visualizer=%+v", req.MediaKind, req.Visualizer)
+	}
+}
+
+func TestCastURL_DirectAudioProbeStartsVisualizer(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	enableURLProbeForTest(a)
+	var gotInput ffmpeg.ProbeInputSpec
+	a.probeMedia = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		gotInput = input
+		return &ffmpeg.ProbeResult{AudioCodec: "mp3", Duration: 123.5}, nil
+	}
+
+	_, _, status, err := a.castURL(t.Context(), "https://media.example/song.mp3", "direct")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("castURL status=%d err=%v", status, err)
+	}
+	if gotInput.URL != "https://media.example/song.mp3" {
+		t.Fatalf("probe URL = %q, want direct stream URL", gotInput.URL)
+	}
+	if gotInput.Headers != nil {
+		t.Fatalf("probe headers = %#v, want nil direct headers", gotInput.Headers)
+	}
+	req := a.core.(*fakeCore).snapshot()
+	if req.MediaKind != core.MediaKindMusic {
+		t.Fatalf("MediaKind = %q, want music", req.MediaKind)
+	}
+	if !req.Visualizer.Enabled || req.Visualizer.Metadata.Title != "song.mp3" || req.Visualizer.Metadata.Artist != "" {
+		t.Fatalf("visualizer = %+v, want title and empty artist", req.Visualizer)
+	}
+	if req.Visualizer.Metadata.Duration != 123500*time.Millisecond {
+		t.Fatalf("visualizer duration = %s, want 2m3.5s", req.Visualizer.Metadata.Duration)
+	}
+}
+
+func TestCastURL_DirectAudioOnlyHLSUsesBufferedVisualizer(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	enableURLBridgeHLSBufferForTest(a)
+	enableURLProbeForTest(a)
+	a.validateHLSURL = func(context.Context, string, hlsbuffer.TrustMode) (string, error) {
+		return "https://public.example/final-audio.m3u8", nil
+	}
+	var openedSource string
+	a.hlsBufferOpen = func(_ context.Context, opts hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		openedSource = opts.SourceURL
+		return &hlsbuffer.Session{
+			PlaybackPath: "/tmp/url-buffered-audio.m3u8",
+			Policy:       core.MediaInputPolicy{ProtocolWhitelist: []string{"file"}},
+			Stats:        func() hlsbuffer.Stats { return hlsbuffer.Stats{} },
+			Close:        func() error { return nil },
+		}, nil
+	}
+	var probedURL string
+	a.probeMedia = func(_ context.Context, _ string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		probedURL = input.URL
+		return &ffmpeg.ProbeResult{AudioRate: 44100}, nil
+	}
+
+	raw := "https://public.example/live-audio.m3u8"
+	_, _, status, err := a.castURL(t.Context(), raw, "direct")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("castURL status=%d err=%v", status, err)
+	}
+	req := a.core.(*fakeCore).snapshot()
+	if openedSource != "https://public.example/final-audio.m3u8" {
+		t.Fatalf("buffer SourceURL = %q, want validated final HLS URL", openedSource)
+	}
+	if req.StreamURL != "/tmp/url-buffered-audio.m3u8" || probedURL != "/tmp/url-buffered-audio.m3u8" {
+		t.Fatalf("StreamURL/probedURL = %q/%q, want buffered local HLS playlist", req.StreamURL, probedURL)
+	}
+	if req.MediaKind != core.MediaKindMusic || !req.Visualizer.Enabled {
+		t.Fatalf("request did not start audio visualizer: MediaKind=%q Visualizer=%+v", req.MediaKind, req.Visualizer)
+	}
+	if got := strings.Join(req.MediaInputPolicy.ProtocolWhitelist, ","); got != "file" {
+		t.Fatalf("ProtocolWhitelist = %q, want buffered file-only policy", got)
+	}
+}
+
+func TestCastURL_DirectHLSValidationFailureDoesNotProbeOrStartCore(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	enableURLBridgeHLSBufferForTest(a)
+	enableURLProbeForTest(a)
+	a.validateHLSURL = func(context.Context, string, hlsbuffer.TrustMode) (string, error) {
+		return "", errors.New("hls url: address 127.0.0.1 is not allowed")
+	}
+	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		t.Fatal("unsafe direct HLS must not be probed before validator rejection")
+		return nil, nil
+	}
+	a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		t.Fatal("unsafe direct HLS must not open the HLS buffer after validator rejection")
+		return nil, nil
+	}
+
+	_, _, status, err := a.castURL(t.Context(), "http://127.0.0.1/live.m3u8", "direct")
+	if err == nil || status != http.StatusInternalServerError {
+		t.Fatalf("castURL status=%d err=%v, want validator error", status, err)
+	}
+	if req := a.core.(*fakeCore).snapshot(); req.StreamURL != "" {
+		t.Fatalf("core request = %+v, want no core start", req)
+	}
+}
+
+func TestCastURL_DirectHLSProbeFailureUsesBuffer(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	enableURLBridgeHLSBufferForTest(a)
+	enableURLProbeForTest(a)
+	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		return nil, errors.New("probe failed")
+	}
+	opened := false
+	a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		opened = true
+		return &hlsbuffer.Session{
+			PlaybackPath: "/tmp/url-buffered.m3u8",
+			Policy:       core.MediaInputPolicy{ProtocolWhitelist: []string{"file"}},
+			Stats:        func() hlsbuffer.Stats { return hlsbuffer.Stats{} },
+			Close:        func() error { return nil },
+		}, nil
+	}
+
+	_, _, status, err := a.castURL(t.Context(), "https://public.example/live.m3u8", "direct")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("castURL status=%d err=%v", status, err)
+	}
+	req := a.core.(*fakeCore).snapshot()
+	if !opened || req.StreamURL != "/tmp/url-buffered.m3u8" {
+		t.Fatalf("buffer opened=%v StreamURL=%q, want buffered fallback", opened, req.StreamURL)
+	}
+	if req.MediaKind != core.MediaKindVideo || req.Visualizer.Enabled {
+		t.Fatalf("fallback request MediaKind=%q Visualizer=%+v, want video without visualizer", req.MediaKind, req.Visualizer)
+	}
+}
+
+func TestCastURL_DirectHLSVideoProbeUsesBuffer(t *testing.T) {
+	a := newTestAdapter(t, &fakeCore{})
+	enableURLBridgeHLSBufferForTest(a)
+	enableURLProbeForTest(a)
+	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 1280, Height: 720, AudioRate: 48000}, nil
+	}
+	opened := false
+	a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		opened = true
+		return &hlsbuffer.Session{
+			PlaybackPath: "/tmp/url-buffered-video.m3u8",
+			Policy:       core.MediaInputPolicy{ProtocolWhitelist: []string{"file"}},
+			Stats:        func() hlsbuffer.Stats { return hlsbuffer.Stats{} },
+			Close:        func() error { return nil },
+		}, nil
+	}
+
+	_, _, status, err := a.castURL(t.Context(), "https://public.example/live-video.m3u8", "direct")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("castURL status=%d err=%v", status, err)
+	}
+	req := a.core.(*fakeCore).snapshot()
+	if !opened || req.StreamURL != "/tmp/url-buffered-video.m3u8" {
+		t.Fatalf("buffer opened=%v StreamURL=%q, want buffered fallback", opened, req.StreamURL)
+	}
+	if req.MediaKind != core.MediaKindVideo || req.Visualizer.Enabled {
+		t.Fatalf("video request MediaKind=%q Visualizer=%+v, want video without visualizer", req.MediaKind, req.Visualizer)
 	}
 }
 
@@ -896,6 +1165,29 @@ func enableURLHLSBufferForTest(a *Adapter) {
 	a.bridge.HLSBuffer.PlaylistTimeoutSeconds = 10
 	a.bridge.HLSBuffer.MaxVariantHeight = 720
 	a.bridge.HLSBuffer.StaleCacheReapHours = 24
+	a.validateHLSURL = func(_ context.Context, rawURL string, _ hlsbuffer.TrustMode) (string, error) {
+		return rawURL, nil
+	}
+}
+
+type staticProbeResolver struct {
+	path string
+	err  error
+}
+
+func (r staticProbeResolver) Resolve() (string, error) {
+	if r.err != nil {
+		return "", r.err
+	}
+	return r.path, nil
+}
+
+func enableURLProbeForTest(a *Adapter) {
+	a.ffprobe = staticProbeResolver{path: "ffprobe"}
+}
+
+func enableURLBridgeHLSBufferForTest(a *Adapter) {
+	enableURLHLSBufferForTest(a)
 }
 
 func TestPlay_ModeDirect_NeverRoutesThroughResolver(t *testing.T) {
@@ -1267,7 +1559,7 @@ func TestPlay_PopulatesTitle(t *testing.T) {
 func TestURLMeterOverlayExposesHLSStatsForOwningSession(t *testing.T) {
 	fc := &fakeCore{}
 	a := newTestAdapter(t, fc)
-	a.bridge.HLSBuffer.Enabled = true
+	enableURLHLSBufferForTest(a)
 	a.bridge.HLSBuffer.MaxCachedSegments = 8
 
 	var openedMaxSegments int
@@ -1327,7 +1619,7 @@ func TestURLMeterOverlayExposesHLSStatsForOwningSession(t *testing.T) {
 func TestURLMeterOverlayClearsBeforeBaseOnStopAndClose(t *testing.T) {
 	fc := &fakeCore{}
 	a := newTestAdapter(t, fc)
-	a.bridge.HLSBuffer.Enabled = true
+	enableURLHLSBufferForTest(a)
 	a.bridge.HLSBuffer.MaxCachedSegments = 6
 	var order []string
 	var baseSawOverlay bool

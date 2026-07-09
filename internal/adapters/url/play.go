@@ -23,8 +23,11 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 )
+
+const audioClassificationProbeTimeout = 800 * time.Millisecond
 
 // handlePlay accepts a paste from the UI form or a JSON POST. Routes
 // the URL to either the direct path (existing v1 behavior) or the
@@ -196,6 +199,9 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 	var mediaKind core.MediaKind
 	var hlsSession *hlsbuffer.Session
 	var hlsCfg hlsbuffer.Config
+	audioClass := adapters.Unknown
+	var audioProbe *ffmpeg.ProbeResult
+	var resolvedDuration time.Duration
 
 	if !useYtdlp {
 		if owncastURL, ok := resolveOwncastHomepageURL(ctx, parsed); ok {
@@ -228,6 +234,8 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 		resolvedTitle = res.Title
 		resolvedChannel = res.Channel
 		resolvedUploadDate = res.UploadDate
+		resolvedDuration = res.Duration
+		audioClass, audioProbe = a.classifyResolvedURLMedia(ctx, res, mediaPolicy)
 		resolvedVia = "ytdlp"
 		// Backfill the title onto the just-bumped history entry so the
 		// panel shows "Big Buck Bunny" rather than just the youtu.be
@@ -236,8 +244,19 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 		a.history.SetTitle(rawURL, resolvedTitle)
 	} else if shouldBufferDirectM3U8(parsed, hlsBufferMode, bridge) {
 		var berr error
+		validator := a.validateHLSURL
+		if validator == nil {
+			validator = defaultValidateHLSURL
+		}
+		validatedURL, verr := validator(ctx, rawURL, hlsbuffer.TrustModeGenericPublic)
+		if verr != nil {
+			safeMsg := adapters.SanitizeMediaProbeError(rawURL, verr)
+			a.setState(adapters.StateError, safeMsg)
+			slog.Warn("url hls validation failed", "url", adapters.RedactMediaURLForLog(rawURL), "err", safeMsg)
+			return "", "", http.StatusInternalServerError, fmt.Errorf("%s", safeMsg)
+		}
 		hlsCfg = hlsbuffer.NormalizeConfig(hlsConfigFromBridge(bridge.HLSBuffer))
-		hlsSession, berr = a.openURLHLSBufferWithConfig(ctx, rawURL, bridge, hlsCfg, hlsBufferOpen)
+		hlsSession, berr = a.openURLHLSBufferWithConfig(ctx, validatedURL, bridge, hlsCfg, hlsBufferOpen)
 		if berr != nil {
 			safeMsg := strings.ReplaceAll(berr.Error(), rawURL, redactURL(rawURL))
 			a.setState(adapters.StateError, safeMsg)
@@ -247,6 +266,7 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 		streamURL = hlsSession.PlaybackPath
 		mediaPolicy = hlsSession.Policy
 		mediaKind = core.MediaKindVideo
+		audioClass, audioProbe = a.classifyURLByProbe(ctx, streamURL, nil, mediaPolicy)
 	}
 
 	ref = newAdapterRef()
@@ -263,6 +283,10 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 		} else {
 			title = base
 		}
+	}
+
+	if !useYtdlp && hlsSession == nil && audioClass == adapters.Unknown && !isDirectM3U8(parsed) {
+		audioClass, audioProbe = a.classifyURLByProbe(ctx, streamURL, headers, mediaPolicy)
 	}
 
 	baseOnStop := a.makeOnStop(rawURL, resolvedTitle)
@@ -301,6 +325,17 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 	} else {
 		req.DisplayMetadata.Secondary = "URL"
 	}
+	if audioClass == adapters.AudioOnly {
+		duration := resolvedDuration
+		if duration == 0 && audioProbe != nil && audioProbe.Duration > 0 {
+			duration = time.Duration(audioProbe.Duration * float64(time.Second))
+		}
+		adapters.ApplyAudioOnlyVisualizer(&req, adapters.AudioOnlyVisualizerMetadata{
+			Title:    title,
+			Artist:   resolvedChannel,
+			Duration: duration,
+		})
+	}
 
 	if a.core == nil {
 		closeHLSSession(hlsSession)
@@ -335,6 +370,45 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 		slog.Debug("url cast resolved", "ref", ref, "title", resolvedTitle)
 	}
 	return ref, resolvedVia, http.StatusOK, nil
+}
+
+func (a *Adapter) classifyResolvedURLMedia(ctx context.Context, res *ytdlp.Resolution, policy core.MediaInputPolicy) (adapters.AudioClassification, *ffmpeg.ProbeResult) {
+	if res == nil {
+		return adapters.Unknown, nil
+	}
+	if strings.TrimSpace(res.AudioURL) != "" {
+		return adapters.Video, nil
+	}
+	if class := adapters.ClassifyCodecs(res.VCodec, res.ACodec); class != adapters.Unknown {
+		return class, nil
+	}
+	return a.classifyURLByProbe(ctx, res.URL, res.Headers, policy)
+}
+
+func (a *Adapter) classifyURLByProbe(ctx context.Context, mediaURL string, headers map[string]string, policy core.MediaInputPolicy) (adapters.AudioClassification, *ffmpeg.ProbeResult) {
+	if strings.TrimSpace(mediaURL) == "" || a.ffprobe == nil || a.probeMedia == nil {
+		return adapters.Unknown, nil
+	}
+	ffprobePath, err := a.ffprobe.Resolve()
+	if err != nil {
+		slog.Warn("url media probe unavailable",
+			"url", adapters.RedactMediaURLForLog(mediaURL),
+			"err", adapters.SanitizeMediaProbeError(mediaURL, err))
+		return adapters.Unknown, nil
+	}
+	probe, err := a.probeMedia(ctx, ffprobePath, ffmpeg.ProbeInputSpec{
+		URL:     mediaURL,
+		Headers: headers,
+		Policy:  policy,
+		Timeout: audioClassificationProbeTimeout,
+	})
+	if err != nil {
+		slog.Warn("url media probe failed",
+			"url", adapters.RedactMediaURLForLog(mediaURL),
+			"err", adapters.SanitizeMediaProbeError(mediaURL, err))
+		return adapters.Unknown, nil
+	}
+	return adapters.ClassifyProbeResult(probe), probe
 }
 
 // extractURLAndMode parses URL dispatch and HLS-buffer fields from form-encoded
@@ -409,7 +483,11 @@ func shouldBufferDirectM3U8(parsed *stdurl.URL, hlsBufferMode string, bridge con
 	if strings.TrimSpace(os.Getenv("GROOVY_HLS_BUFFER")) == "0" {
 		return false
 	}
-	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(parsed.Path)), ".m3u8")
+	return isDirectM3U8(parsed)
+}
+
+func isDirectM3U8(parsed *stdurl.URL) bool {
+	return parsed != nil && strings.HasSuffix(strings.ToLower(strings.TrimSpace(parsed.Path)), ".m3u8")
 }
 
 func (a *Adapter) openURLHLSBuffer(ctx context.Context, rawURL string, bridge config.BridgeConfig, open hlsBufferOpener) (*hlsbuffer.Session, error) {
@@ -434,6 +512,10 @@ func (a *Adapter) openURLHLSBufferWithConfig(ctx context.Context, rawURL string,
 		TrustMode:    hlsbuffer.TrustModeGenericPublic,
 		OutputHeight: hlsOutputHeightFromBridge(bridge),
 	})
+}
+
+func defaultValidateHLSURL(ctx context.Context, rawURL string, mode hlsbuffer.TrustMode) (string, error) {
+	return hlsbuffer.URLValidator{}.Validate(ctx, rawURL, mode)
 }
 
 func hlsOutputHeightFromBridge(bridge config.BridgeConfig) int {

@@ -249,6 +249,7 @@ func main() {
 		Core:          coreMgr,
 		YTDLPResolver: ytdlpResolver,
 		EventLog:      elog,
+		FFprobe:       ffprobeResolver,
 	})
 	if err != nil {
 		dieFriendly("url adapter init", err)

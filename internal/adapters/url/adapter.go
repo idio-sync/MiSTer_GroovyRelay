@@ -17,6 +17,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 )
 
@@ -43,6 +44,13 @@ type resolverIface interface {
 }
 
 type hlsBufferOpener func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error)
+
+type binaryResolver interface {
+	Resolve() (string, error)
+}
+
+type urlMediaProbeFunc func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error)
+type hlsURLValidatorFunc func(context.Context, string, hlsbuffer.TrustMode) (string, error)
 
 // ytdlpProbe is the cached result of probing yt-dlp at adapter Start.
 // Computed once; read-only afterward, so no mu protection needed.
@@ -82,6 +90,10 @@ type Adapter struct {
 	probeFn func() ytdlpProbe
 
 	hlsBufferOpen hlsBufferOpener
+
+	ffprobe        binaryResolver
+	probeMedia     urlMediaProbeFunc
+	validateHLSURL hlsURLValidatorFunc
 
 	ytdlpBinaryResolver ytdlp.BinaryResolver
 	streamResolver      streamhandoff.Resolver
@@ -129,6 +141,10 @@ type AdapterConfig struct {
 	// EventLog is the optional ring buffer for cast-requested events.
 	// Nil-safe: the adapter's emit() method checks before appending.
 	EventLog *eventlog.Log
+
+	// FFprobe resolves ffprobe for best-effort URL media classification.
+	// Nil preserves the legacy video/direct-HLS fallback behavior.
+	FFprobe binaryResolver
 }
 
 // New constructs a ready-to-Start Adapter from the bundled config.
@@ -152,6 +168,9 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		cookiesPath:         filepath.Join(cfg.Bridge.DataDir, "url_cookies.txt"),
 		probeFn:             probeFn,
 		hlsBufferOpen:       hlsbuffer.OpenSession,
+		ffprobe:             cfg.FFprobe,
+		probeMedia:          ffmpeg.ProbeInput,
+		validateHLSURL:      defaultValidateHLSURL,
 		history:             LoadHistory(historyPath),
 		ytdlpBinaryResolver: cfg.YTDLPResolver,
 		eventLog:            cfg.EventLog,
