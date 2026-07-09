@@ -41,6 +41,10 @@ func TestClassifyProbeResult(t *testing.T) {
 	}{
 		{name: "audio rate only", result: &ffmpeg.ProbeResult{AudioRate: 44100}, want: AudioOnly},
 		{name: "width and audio rate", result: &ffmpeg.ProbeResult{Width: 1920, AudioRate: 48000}, want: Video},
+		{name: "video codec with whitespace", result: &ffmpeg.ProbeResult{VideoCodec: " h264 "}, want: Video},
+		{name: "audio codec with whitespace", result: &ffmpeg.ProbeResult{AudioCodec: " opus "}, want: AudioOnly},
+		{name: "audio codec none is absent", result: &ffmpeg.ProbeResult{AudioCodec: "none"}, want: Unknown},
+		{name: "codec none values are absent", result: &ffmpeg.ProbeResult{VideoCodec: " none ", AudioCodec: " none "}, want: Unknown},
 		{name: "nil", result: nil, want: Unknown},
 	}
 
@@ -101,6 +105,37 @@ func TestSanitizeMediaProbeErrorReplacesRawURL(t *testing.T) {
 		t.Fatalf("SanitizeMediaProbeError() = %q, want redacted URL", got)
 	}
 	for _, leak := range []string{"user", "secret", "sig", "supersecret", "fragment"} {
+		if strings.Contains(got, leak) {
+			t.Fatalf("SanitizeMediaProbeError() leaked %q in %q", leak, got)
+		}
+	}
+}
+
+func TestSanitizeMediaProbeErrorRedactsTrimmedVariantURL(t *testing.T) {
+	mediaURL := "  https://user:secret@cdn.example/audio.m4a?sig=supersecret#fragment  "
+	err := errors.New("ffprobe failed for https://user:secret@cdn.example/audio.m4a?sig=supersecret#fragment")
+
+	got := SanitizeMediaProbeError(mediaURL, err)
+
+	assertSanitizedProbeError(t, got, "https://cdn.example/audio.m4a")
+}
+
+func TestSanitizeMediaProbeErrorRedactsURLLikeSubstrings(t *testing.T) {
+	mediaURL := "https://cdn.example/different.m4a"
+	err := errors.New("ffprobe failed for https://user:secret@cdn.example/audio.m4a?sig=supersecret#fragment")
+
+	got := SanitizeMediaProbeError(mediaURL, err)
+
+	assertSanitizedProbeError(t, got, "https://cdn.example/audio.m4a")
+}
+
+func assertSanitizedProbeError(t *testing.T, got, safeURL string) {
+	t.Helper()
+
+	if !strings.Contains(got, safeURL) {
+		t.Fatalf("SanitizeMediaProbeError() = %q, want redacted URL %q", got, safeURL)
+	}
+	for _, leak := range []string{"user", "secret", "sig=", "supersecret", "fragment"} {
 		if strings.Contains(got, leak) {
 			t.Fatalf("SanitizeMediaProbeError() leaked %q in %q", leak, got)
 		}

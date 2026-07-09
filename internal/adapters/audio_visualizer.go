@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -16,6 +17,8 @@ const (
 	Video
 	AudioOnly
 )
+
+var mediaProbeURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+`)
 
 type AudioOnlyVisualizerMetadata struct {
 	Title    string
@@ -40,13 +43,18 @@ func ClassifyProbeResult(result *ffmpeg.ProbeResult) AudioClassification {
 	if result == nil {
 		return Unknown
 	}
-	if result.Width > 0 || strings.TrimSpace(result.VideoCodec) != "" {
+	if result.Width > 0 || probeCodecPresent(result.VideoCodec) {
 		return Video
 	}
-	if result.AudioRate > 0 || strings.TrimSpace(result.AudioCodec) != "" {
+	if result.AudioRate > 0 || probeCodecPresent(result.AudioCodec) {
 		return AudioOnly
 	}
 	return Unknown
+}
+
+func probeCodecPresent(codec string) bool {
+	codec = strings.ToLower(strings.TrimSpace(codec))
+	return codec != "" && codec != "none"
 }
 
 func ApplyAudioOnlyVisualizer(req *core.SessionRequest, meta AudioOnlyVisualizerMetadata) {
@@ -87,8 +95,10 @@ func SanitizeMediaProbeError(mediaURL string, err error) string {
 	if err == nil {
 		return ""
 	}
+	message := err.Error()
 	if mediaURL == "" {
-		return err.Error()
+		return mediaProbeURLPattern.ReplaceAllStringFunc(message, RedactMediaURLForLog)
 	}
-	return strings.ReplaceAll(err.Error(), mediaURL, RedactMediaURLForLog(mediaURL))
+	message = strings.ReplaceAll(message, mediaURL, RedactMediaURLForLog(mediaURL))
+	return mediaProbeURLPattern.ReplaceAllStringFunc(message, RedactMediaURLForLog)
 }
