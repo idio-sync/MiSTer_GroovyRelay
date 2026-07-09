@@ -62,7 +62,7 @@ type Resolution struct {
 	UploadDate   string            // yt-dlp upload_date, raw "YYYYMMDD" — formatted by the caller
 	VCodec       string            // top-level yt-dlp vcodec in single-stream case
 	ACodec       string            // top-level yt-dlp acodec in single-stream case
-	Duration     time.Duration     // top-level yt-dlp duration in seconds
+	Duration     time.Duration     // converted from top-level yt-dlp duration seconds
 }
 
 // PlaylistEntry is one entry from a flat-playlist enumeration: the item's

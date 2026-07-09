@@ -327,6 +327,9 @@ func TestResolve_ParsesRequestedFormatsAsDualStream(t *testing.T) {
 "http_headers": {"User-Agent": "Mozilla/5.0"},
 "is_live": false,
 "title": "Test DASH Video",
+"duration": 42.25,
+"vcodec": "none",
+"acodec": "opus",
 "requested_formats": [
   {
     "url": "https://video.googlevideo.com/v.mp4?sig=v",
@@ -363,6 +366,15 @@ func TestResolve_ParsesRequestedFormatsAsDualStream(t *testing.T) {
 	}
 	if got.Title != "Test DASH Video" {
 		t.Errorf("Title = %q", got.Title)
+	}
+	if got.Duration != 42250*time.Millisecond {
+		t.Errorf("Duration = %v, want %v", got.Duration, 42250*time.Millisecond)
+	}
+	if got.VCodec != "" {
+		t.Errorf("VCodec = %q, want empty for dual-stream", got.VCodec)
+	}
+	if got.ACodec != "" {
+		t.Errorf("ACodec = %q, want empty for dual-stream", got.ACodec)
 	}
 }
 
