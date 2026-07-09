@@ -641,8 +641,10 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 	if req.StreamProbeURL != "" {
 		probeURL = req.StreamProbeURL
 	}
+	filteredProbeHeaders := req.MediaInputPolicy.FilterHeaders(req.InputHeaders)
 	probeInput := ffmpeg.ProbeInputSpec{
 		URL:     probeURL,
+		Headers: filteredProbeHeaders,
 		Policy:  req.MediaInputPolicy,
 		Capture: ffmpegCaptureSpec(req.AudioCapture),
 	}

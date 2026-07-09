@@ -18,6 +18,7 @@ type CaptureInputSpec struct {
 
 type ProbeInputSpec struct {
 	URL     string
+	Headers map[string]string
 	Policy  MediaInputPolicy
 	Capture CaptureInputSpec
 	Timeout time.Duration

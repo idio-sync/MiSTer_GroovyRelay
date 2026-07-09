@@ -55,10 +55,8 @@ type ffprobeOutput struct {
 	} `json:"format"`
 }
 
-// Probe runs `ffprobe` against url and returns a ProbeResult. The caller is
-// responsible for supplying any authentication tokens via URL query params —
-// ffprobe's `-headers` is not threaded through here because the production
-// callers (Plex transcode URLs) already embed credentials in the URL.
+// Probe runs `ffprobe` against url and returns a ProbeResult. Callers that
+// need request headers should use ProbeInput.
 //
 // policy gates how ffprobe dereferences the URL: an empty / zero-value
 // policy preserves the historical argv shape exactly. A non-zero policy
@@ -113,6 +111,7 @@ func probeCommandContext(ctx context.Context, ffprobePath string, input ProbeInp
 		args = appendProbeCaptureInputArgs(args, input.Capture)
 	} else {
 		args = input.Policy.Apply(args)
+		args = appendHeadersArg(args, input.Policy.FilterHeaders(input.Headers))
 		args = append(args, input.URL)
 	}
 	cmd := exec.CommandContext(ctx, ffprobePath, args...)

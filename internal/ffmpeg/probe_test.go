@@ -237,6 +237,30 @@ func TestProbeInputURLAppliesPolicyBeforeURL(t *testing.T) {
 	})
 }
 
+func TestProbeInputURLAppliesHeadersBeforeURL(t *testing.T) {
+	cmd := probeCommand("ffprobe", ProbeInputSpec{
+		URL: "https://media.example/audio.m4a",
+		Headers: map[string]string{
+			"Referer":    "https://sound.example/",
+			"User-Agent": "GroovyRelay",
+		},
+		Policy: MediaInputPolicy{
+			ProtocolWhitelist: []string{"http", "https", "tcp", "tls"},
+			BlockedHeaders:    []string{"Referer"},
+		},
+	})
+	assertArgsContainSubsequence(t, cmd.Args, []string{
+		"-protocol_whitelist", "http,https,tcp,tls",
+		"-headers", "User-Agent: GroovyRelay\r\n",
+		"https://media.example/audio.m4a",
+	})
+	for _, arg := range cmd.Args {
+		if strings.Contains(arg, "Referer:") {
+			t.Fatalf("blocked Referer header reached ffprobe args: %v", cmd.Args)
+		}
+	}
+}
+
 func TestProbeInputCaptureUsesStructuredArgs(t *testing.T) {
 	cmd := probeCommand("ffprobe", ProbeInputSpec{
 		Capture: CaptureInputSpec{

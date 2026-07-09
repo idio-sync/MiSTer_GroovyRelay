@@ -2131,6 +2131,45 @@ func TestProbeForStart_ThreadsPolicyToProbeAndProbeCrop(t *testing.T) {
 	}
 }
 
+func TestProbeForStart_ThreadsFilteredHeadersToProbeInput(t *testing.T) {
+	origProbe := probeInputFn
+	origCrop := probeCropFn
+	t.Cleanup(func() {
+		probeInputFn = origProbe
+		probeCropFn = origCrop
+	})
+
+	var capturedHeaders map[string]string
+	probeInputFn = func(_ context.Context, _ string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		capturedHeaders = input.Headers
+		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976}, nil
+	}
+	probeCropFn = func(_ context.Context, _, _ string, _ map[string]string, _ time.Duration, _ ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+
+	m := newTestManager(t)
+	_, _, _, err := m.probeForStart(SessionRequest{
+		StreamURL: "https://media.example/audio.m4a",
+		InputHeaders: map[string]string{
+			"Cookie":     "secret",
+			"User-Agent": "GroovyRelay",
+		},
+		MediaInputPolicy: ffmpeg.MediaInputPolicy{
+			BlockedHeaders: []string{"Cookie"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("probeForStart: %v", err)
+	}
+	if _, ok := capturedHeaders["Cookie"]; ok {
+		t.Fatalf("Cookie header reached ProbeInput: %v", capturedHeaders)
+	}
+	if got := capturedHeaders["User-Agent"]; got != "GroovyRelay" {
+		t.Fatalf("User-Agent header = %q, want GroovyRelay (headers=%v)", got, capturedHeaders)
+	}
+}
+
 func TestManager_WithEventLog_AppendsBridgeBoot(t *testing.T) {
 	// WithEventLog sets the field; no event is emitted by the option itself.
 	// This test exists so the option survives later refactors.
