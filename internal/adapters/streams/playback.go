@@ -351,11 +351,14 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 			}
 			playbackURL = finalURL
 		}
+		shouldBuffer := a.shouldBufferDirectHLS(q, item)
+		audioClass := adapters.Unknown
+		var audioProbe *ffmpeg.ProbeResult
 		baseOnStop := a.makeOnStop(capture)
 		onStop := baseOnStop
 		var hlsSession *hlsbuffer.Session
 		var hlsCfg hlsbuffer.Config
-		if a.shouldBufferDirectHLS(q, item) {
+		if shouldBuffer {
 			open := a.hlsBufferOpen
 			if open == nil {
 				open = hlsbuffer.OpenSession
@@ -374,10 +377,18 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 				a.clearResolveIfCurrent(capture)
 				return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, fmt.Sprintf("failed to buffer HLS stream: %v", err))
 			}
-			playbackURL = hlsSession.PlaybackPath
-			mediaPolicy = hlsSession.Policy
-			stoppedRef := ref
-			onStop = withHLSBufferCleanup(a.hlsMeterClearingOnStop(stoppedRef, baseOnStop), hlsSession)
+			audioClass, audioProbe = a.classifyStreamURLByProbe(resolveCtx, hlsSession.PlaybackPath, nil, hlsSession.Policy)
+			if audioClass == adapters.AudioOnly {
+				closeHLSSession(hlsSession)
+				hlsSession = nil
+			} else {
+				playbackURL = hlsSession.PlaybackPath
+				mediaPolicy = hlsSession.Policy
+				stoppedRef := ref
+				onStop = withHLSBufferCleanup(a.hlsMeterClearingOnStop(stoppedRef, baseOnStop), hlsSession)
+			}
+		} else {
+			audioClass, audioProbe = a.classifyStreamURLByProbe(resolveCtx, playbackURL, nil, mediaPolicy)
 		}
 		req := core.SessionRequest{
 			StreamURL:    playbackURL,
@@ -392,6 +403,18 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 			Source:           a.Name(),
 			Title:            title,
 			DisplayMetadata:  streamsDisplayMetadata(q.ProviderName, q.ChannelName, streamSessionTitle(item, "")),
+		}
+		if audioClass == adapters.AudioOnly {
+			var duration time.Duration
+			if audioProbe != nil && audioProbe.Duration > 0 {
+				duration = time.Duration(audioProbe.Duration * float64(time.Second))
+			}
+			adapters.ApplyAudioOnlyVisualizer(&req, adapters.AudioOnlyVisualizerMetadata{
+				Title:    streamSessionTitle(item, ""),
+				Artist:   q.ChannelName,
+				Album:    q.ProviderName,
+				Duration: duration,
+			})
 		}
 		cancel()
 		a.playbackMu.Lock()

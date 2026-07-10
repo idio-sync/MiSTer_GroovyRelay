@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -573,6 +574,158 @@ func TestStreamsDirectHLSUsesBufferByDefault(t *testing.T) {
 	req.OnStop("stopped")
 	if closeCalls != 1 {
 		t.Fatalf("buffer Close calls after OnStop = %d, want 1", closeCalls)
+	}
+}
+
+func TestStreamsDirectHLSAudioOnlyBypassesBuffer(t *testing.T) {
+	a, c := newTestAdapterWithFakeCore(t)
+	enableBridgeHLSBufferForTest(a)
+	def := bundledToonamiAftermathDefinition()
+	cat, err := buildDirectStreamsCatalog(def)
+	if err != nil {
+		t.Fatalf("buildDirectStreamsCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	enableStreamsProbeForTest(a)
+	const rawToonamiURL = "http://api.toonamiaftermath.com:3000/est/playlist.m3u8"
+	const bufferedPath = "/tmp/streams-buffered-audio.m3u8"
+	var openCalls, closeCalls int
+	a.probeMedia = func(_ context.Context, _ string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		if input.URL == rawToonamiURL {
+			t.Fatalf("buffered direct HLS must not raw-probe remote URL %q", input.URL)
+		}
+		if input.URL != bufferedPath {
+			t.Fatalf("probe URL = %q, want local buffered playlist %q", input.URL, bufferedPath)
+		}
+		if got := strings.Join(input.Policy.ProtocolWhitelist, ","); got != "file" {
+			t.Fatalf("probe policy whitelist = %q, want file-only local policy", got)
+		}
+		return &ffmpeg.ProbeResult{AudioRate: 44100, Duration: 30}, nil
+	}
+	a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		openCalls++
+		return &hlsbuffer.Session{
+			PlaybackPath: bufferedPath,
+			Policy:       core.MediaInputPolicy{ProtocolWhitelist: []string{"file"}},
+			Stats:        func() hlsbuffer.Stats { return hlsbuffer.Stats{} },
+			Close: func() error {
+				closeCalls++
+				return nil
+			},
+		}, nil
+	}
+
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "toonami-aftermath", ChannelID: "east"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	req := c.lastReq
+	if openCalls != 1 || closeCalls != 1 {
+		t.Fatalf("buffer lifecycle open=%d close=%d, want one open and cleanup before audio bypass", openCalls, closeCalls)
+	}
+	if req.StreamURL != rawToonamiURL ||
+		req.MediaKind != core.MediaKindMusic ||
+		!req.Visualizer.Enabled {
+		t.Fatalf("request = %+v, want direct audio visualizer", req)
+	}
+	if req.Capabilities.CanPause || req.Capabilities.CanSeek {
+		t.Fatalf("direct stream capabilities changed: %+v", req.Capabilities)
+	}
+	if req.Visualizer.Metadata.Title != "East" ||
+		req.Visualizer.Metadata.Artist != "East" ||
+		req.Visualizer.Metadata.Album != "Toonami Aftermath" {
+		t.Fatalf("visualizer metadata = %+v", req.Visualizer.Metadata)
+	}
+	if req.Visualizer.Metadata.Duration != 30*time.Second {
+		t.Fatalf("visualizer duration = %s, want 30s", req.Visualizer.Metadata.Duration)
+	}
+}
+
+func TestStreamsDirectHLSVideoProbeKeepsBuffer(t *testing.T) {
+	a, c := newTestAdapterWithFakeCore(t)
+	enableBridgeHLSBufferForTest(a)
+	def := bundledToonamiAftermathDefinition()
+	cat, err := buildDirectStreamsCatalog(def)
+	if err != nil {
+		t.Fatalf("buildDirectStreamsCatalog: %v", err)
+	}
+	a.replaceDefinitionsForTest([]ProviderDefinition{def})
+	a.replaceCatalogsForTest([]ProviderCatalog{cat})
+	enableStreamsProbeForTest(a)
+	const rawToonamiURL = "http://api.toonamiaftermath.com:3000/est/playlist.m3u8"
+	const bufferedPath = "/tmp/streams-buffered.m3u8"
+	a.probeMedia = func(_ context.Context, _ string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		if input.URL == rawToonamiURL {
+			t.Fatalf("buffered direct HLS must not raw-probe remote URL %q", input.URL)
+		}
+		if input.URL != bufferedPath {
+			t.Fatalf("probe URL = %q, want local buffered playlist %q", input.URL, bufferedPath)
+		}
+		return &ffmpeg.ProbeResult{Width: 640, AudioRate: 48000}, nil
+	}
+	a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+		return &hlsbuffer.Session{
+			PlaybackPath: bufferedPath,
+			Policy:       core.MediaInputPolicy{ProtocolWhitelist: []string{"file"}},
+			Stats:        func() hlsbuffer.Stats { return hlsbuffer.Stats{} },
+		}, nil
+	}
+
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "toonami-aftermath", ChannelID: "east"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if c.lastReq.StreamURL != "/tmp/streams-buffered.m3u8" || c.lastReq.Visualizer.Enabled {
+		t.Fatalf("request = %+v, want buffered video path", c.lastReq)
+	}
+}
+
+func TestStreamsDirectHLSUnknownOrFailedProbeKeepsBuffer(t *testing.T) {
+	cases := []struct {
+		name   string
+		result *ffmpeg.ProbeResult
+		err    error
+	}{
+		{name: "unknown", result: &ffmpeg.ProbeResult{}},
+		{name: "failure", err: errors.New("probe failed")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, c := newTestAdapterWithFakeCore(t)
+			enableBridgeHLSBufferForTest(a)
+			def := bundledToonamiAftermathDefinition()
+			cat, err := buildDirectStreamsCatalog(def)
+			if err != nil {
+				t.Fatalf("buildDirectStreamsCatalog: %v", err)
+			}
+			a.replaceDefinitionsForTest([]ProviderDefinition{def})
+			a.replaceCatalogsForTest([]ProviderCatalog{cat})
+			enableStreamsProbeForTest(a)
+			const rawToonamiURL = "http://api.toonamiaftermath.com:3000/est/playlist.m3u8"
+			const bufferedPath = "/tmp/streams-buffered.m3u8"
+			a.probeMedia = func(_ context.Context, _ string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+				if input.URL == rawToonamiURL {
+					t.Fatalf("buffered direct HLS must not raw-probe remote URL %q", input.URL)
+				}
+				if input.URL != bufferedPath {
+					t.Fatalf("probe URL = %q, want local buffered playlist %q", input.URL, bufferedPath)
+				}
+				return tc.result, tc.err
+			}
+			a.hlsBufferOpen = func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer.Session, error) {
+				return &hlsbuffer.Session{
+					PlaybackPath: "/tmp/streams-buffered.m3u8",
+					Policy:       core.MediaInputPolicy{ProtocolWhitelist: []string{"file"}},
+					Stats:        func() hlsbuffer.Stats { return hlsbuffer.Stats{} },
+				}, nil
+			}
+
+			if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "toonami-aftermath", ChannelID: "east"}); err != nil {
+				t.Fatalf("StartResolvedStream: %v", err)
+			}
+			if c.lastReq.StreamURL != "/tmp/streams-buffered.m3u8" || c.lastReq.Visualizer.Enabled {
+				t.Fatalf("request = %+v, want buffered video fallback", c.lastReq)
+			}
+		})
 	}
 }
 
@@ -1447,6 +1600,10 @@ func (r staticBinaryResolver) Resolve() (string, error) {
 	return string(r), nil
 }
 
+func enableStreamsProbeForTest(a *Adapter) {
+	a.ffprobe = staticBinaryResolver("ffprobe")
+}
+
 type blockedFirstResolver struct {
 	entered chan struct{}
 	release chan struct{}
@@ -1677,6 +1834,46 @@ func TestUserDirect_UsesUserPolicyAndPrevalidatedURL(t *testing.T) {
 	}
 }
 
+func TestUserDirectAudioOnlyStartsVisualizerWithUserPolicy(t *testing.T) {
+	a, c := installUserDirectAdapter(t)
+	a.userURLResolver = stubHostResolver{hosts: map[string][]string{
+		"cdn.example.com":   {"93.184.216.34"},
+		"media.example.com": {"93.184.216.35"},
+	}}
+	a.userRedirectDoer = stubDoer{resp: map[string]*http.Response{
+		"https://cdn.example.com/live.m3u8": redirectResp("https://media.example.com/live.m3u8"),
+	}}
+	enableStreamsProbeForTest(a)
+	var captured ffmpeg.ProbeInputSpec
+	a.probeMedia = func(_ context.Context, _ string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		captured = input
+		return &ffmpeg.ProbeResult{AudioRate: 44100}, nil
+	}
+
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "user:cdn", ChannelID: "live"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	req := c.lastReq
+	if req.MediaKind != core.MediaKindMusic || !req.Visualizer.Enabled {
+		t.Fatalf("user direct audio should visualize: %+v", req)
+	}
+	if req.StreamURL != "https://media.example.com/live.m3u8" {
+		t.Fatalf("StreamURL = %q, want prevalidated redirect target", req.StreamURL)
+	}
+	wantPolicy := userDirectInputPolicy()
+	if strings.Join(req.MediaInputPolicy.ProtocolWhitelist, ",") != strings.Join(wantPolicy.ProtocolWhitelist, ",") ||
+		req.MediaInputPolicy.RWTimeout != wantPolicy.RWTimeout {
+		t.Fatalf("user direct policy not preserved: %+v", req.MediaInputPolicy)
+	}
+	if captured.URL != "https://media.example.com/live.m3u8" {
+		t.Fatalf("probe URL = %q, want prevalidated redirect target", captured.URL)
+	}
+	if strings.Join(captured.Policy.ProtocolWhitelist, ",") != strings.Join(wantPolicy.ProtocolWhitelist, ",") ||
+		captured.Policy.RWTimeout != wantPolicy.RWTimeout {
+		t.Fatalf("probe policy = %+v, want user direct policy", captured.Policy)
+	}
+}
+
 func TestUserDirect_BlockedRedirectFailsCast(t *testing.T) {
 	a, c := installUserDirectAdapter(t)
 	a.userURLResolver = stubHostResolver{hosts: map[string][]string{
@@ -1692,6 +1889,43 @@ func TestUserDirect_BlockedRedirectFailsCast(t *testing.T) {
 	}
 	if c.startCalls != 0 {
 		t.Fatalf("core start calls = %d, want 0 (URL never reaches FFmpeg)", c.startCalls)
+	}
+}
+
+func TestStreamsAudioOnlyDirectStartFailureAdvancesQueue(t *testing.T) {
+	a, c := newTestAdapterWithFakeCore(t)
+	c.startErrs = []error{errors.New("first failed"), nil}
+	a.replaceDefinitionsForTest([]ProviderDefinition{{ID: "direct-audio", Type: directStreamsProviderType, DisplayName: "Direct Audio"}})
+	a.replaceCatalogsForTest([]ProviderCatalog{{
+		ProviderID: "direct-audio",
+		Name:       "Direct Audio",
+		Channels: []Channel{{
+			ID:       "mix",
+			Name:     "Mix",
+			PlayMode: PlaySequential,
+			Items: []StreamItem{
+				{ID: "first", Title: "First", URL: "https://media.example/first.mp3", SourceID: "first", Direct: true},
+				{ID: "second", Title: "Second", URL: "https://media.example/second.mp3", SourceID: "second", Direct: true},
+			},
+		}},
+	}})
+	enableStreamsProbeForTest(a)
+	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{AudioRate: 44100}, nil
+	}
+
+	started, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "direct-audio", ChannelID: "mix"})
+	if err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if c.startCalls != 2 {
+		t.Fatalf("StartSession calls = %d, want retry on next direct item", c.startCalls)
+	}
+	if started.ChannelID != "mix" ||
+		c.lastReq.StreamURL != "https://media.example/second.mp3" ||
+		c.lastReq.Visualizer.Metadata.Title != "Second" ||
+		c.lastReq.MediaKind != core.MediaKindMusic {
+		t.Fatalf("started=%+v lastReq=%+v, want second audio item visualized", started, c.lastReq)
 	}
 }
 
