@@ -112,10 +112,10 @@ func ParsePlaylist(body []byte) (Playlist, error) {
 			continue
 		}
 		if pendingDuration == nil {
-			return Playlist{}, fmt.Errorf("hls playlist: media URI %q without preceding #EXTINF", trimmed)
+			return Playlist{}, fmt.Errorf("hls playlist: media URI %q without preceding #EXTINF", safeURIForError(trimmed))
 		}
 		if isAudioOnlySegmentURI(trimmed) {
-			return Playlist{}, fmt.Errorf("hls playlist: audio-only media segments are not supported: %s", trimmed)
+			return Playlist{}, fmt.Errorf("hls playlist: audio-only media segments are not supported: %s", safeURIForError(trimmed))
 		}
 		p.Segments = append(p.Segments, Segment{
 			URI:           trimmed,
@@ -162,7 +162,7 @@ func rejectUnsupportedTag(line, upper string) error {
 		}
 	}
 	if strings.HasPrefix(upper, "#EXT-X-MEDIA:") {
-		return fmt.Errorf("hls playlist: alternate media tag is not supported: %s", line)
+		return fmt.Errorf("hls playlist: alternate media tag is not supported")
 	}
 	if strings.HasPrefix(upper, "#EXT-X-STREAM-INF:") {
 		attrs := parseAttrList(line[len("#EXT-X-STREAM-INF:"):])
@@ -172,7 +172,7 @@ func rejectUnsupportedTag(line, upper string) error {
 		return nil
 	}
 	if hasURIAttribute(upper) {
-		return fmt.Errorf("hls playlist: unsupported URI-bearing tag: %s", line)
+		return fmt.Errorf("hls playlist: unsupported URI-bearing tag")
 	}
 	return nil
 }

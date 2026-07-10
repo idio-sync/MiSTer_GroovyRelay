@@ -331,11 +331,11 @@ func checkToonamiOriginQuery(u *url.URL) error {
 func resolveURLReference(parentURL, ref string) (string, error) {
 	base, err := url.Parse(parentURL)
 	if err != nil {
-		return "", fmt.Errorf("hls url: bad parent URL: %w", err)
+		return "", fmt.Errorf("hls url: bad parent URL")
 	}
 	child, err := url.Parse(strings.TrimSpace(ref))
 	if err != nil {
-		return "", fmt.Errorf("hls url: bad child URL: %w", err)
+		return "", fmt.Errorf("hls url: bad child URL %q", safeURIForError(ref))
 	}
 	return base.ResolveReference(child).String(), nil
 }

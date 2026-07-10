@@ -92,6 +92,56 @@ func TestGenericPublicValidationDialsValidatedIPAndPreservesHost(t *testing.T) {
 	}
 }
 
+func TestGenericPublicValidationRedirectDialsNewValidatedIPAndHost(t *testing.T) {
+	var hosts []string
+	var port string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hosts = append(hosts, r.Host)
+		switch {
+		case strings.HasPrefix(r.Host, "first.example:"):
+			http.Redirect(w, r, "http://"+net.JoinHostPort("second.example", port)+r.URL.RequestURI(), http.StatusFound)
+		case strings.HasPrefix(r.Host, "second.example:"):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected Host %q", r.Host)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	_, portValue, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatalf("server addr: %v", err)
+	}
+	port = portValue
+	var dialed []string
+	v := URLValidator{
+		Resolver: staticResolver(map[string][]net.IP{
+			"first.example":  {net.ParseIP("93.184.216.34")},
+			"second.example": {net.ParseIP("93.184.216.35")},
+		}),
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			dialed = append(dialed, address)
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, network, strings.TrimPrefix(srv.URL, "http://"))
+		},
+	}
+
+	finalURL, err := v.Validate(context.Background(), "http://first.example:"+port+"/live.m3u8", TrustModeGenericPublic)
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if finalURL != "http://second.example:"+port+"/live.m3u8" {
+		t.Fatalf("finalURL = %q", finalURL)
+	}
+	wantDialed := []string{"93.184.216.34:" + port, "93.184.216.35:" + port}
+	if strings.Join(dialed, ",") != strings.Join(wantDialed, ",") {
+		t.Fatalf("dialed = %v, want %v", dialed, wantDialed)
+	}
+	wantHosts := []string{"first.example:" + port, "second.example:" + port}
+	if strings.Join(hosts, ",") != strings.Join(wantHosts, ",") {
+		t.Fatalf("hosts = %v, want %v", hosts, wantHosts)
+	}
+}
+
 func TestFetchBytesDialsValidatedIPAndPreservesHost(t *testing.T) {
 	var gotHost string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +180,28 @@ func TestFetchBytesDialsValidatedIPAndPreservesHost(t *testing.T) {
 	}
 	if gotHost != "media.example:"+port {
 		t.Fatalf("Host = %q, want original host", gotHost)
+	}
+}
+
+func TestResolveURLReferenceRedactsMalformedChildURI(t *testing.T) {
+	cases := []string{
+		"%zz?token=secret",
+		"//user:pass@example.com/%zz?token=secret",
+		"http://user:pass@example.com/%zz?token=secret",
+	}
+	for _, ref := range cases {
+		t.Run(ref, func(t *testing.T) {
+			_, err := resolveURLReference("https://media.example/live/master.m3u8", ref)
+			if err == nil {
+				t.Fatal("resolveURLReference error = nil, want malformed child rejection")
+			}
+			msg := err.Error()
+			for _, leaked := range []string{"secret", "token", "?", "user", "pass"} {
+				if strings.Contains(msg, leaked) {
+					t.Fatalf("resolveURLReference error leaked %q in secret URI data: %q", leaked, msg)
+				}
+			}
+		})
 	}
 }
 

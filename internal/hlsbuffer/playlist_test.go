@@ -90,6 +90,47 @@ seg.ts
 	}
 }
 
+func TestParsePlaylistErrorsRedactRelativeURISecrets(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "media uri without extinf",
+			body: `#EXTM3U
+seg.ts?token=secret
+`,
+		},
+		{
+			name: "audio-only segment",
+			body: `#EXTM3U
+#EXTINF:4,
+seg.aac?token=secret
+`,
+		},
+		{
+			name: "unsupported uri-bearing tag",
+			body: `#EXTM3U
+#EXT-X-CONTENT-STEERING:SERVER-URI="steer.json?token=secret"
+#EXTINF:4,
+seg.ts
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParsePlaylist([]byte(tc.body))
+			if err == nil {
+				t.Fatal("ParsePlaylist error = nil, want rejection")
+			}
+			msg := err.Error()
+			if strings.Contains(msg, "secret") || strings.Contains(msg, "token") || strings.Contains(msg, "?") {
+				t.Fatalf("ParsePlaylist error leaked secret URI data: %q", msg)
+			}
+		})
+	}
+}
+
 func TestParseMediaPlaylistRejectsAudioOnly(t *testing.T) {
 	const body = `#EXTM3U
 #EXT-X-TARGETDURATION:4
