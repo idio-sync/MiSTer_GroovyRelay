@@ -88,19 +88,19 @@ func bogusRequest() SessionRequest {
 
 type fakePlane struct{}
 
-func (f *fakePlane) Run(context.Context) error                      { return nil }
-func (f *fakePlane) Done() <-chan struct{}                           { ch := make(chan struct{}); close(ch); return ch }
-func (f *fakePlane) Position() time.Duration                        { return 0 }
-func (f *fakePlane) SetFieldOrder(string) error                     { return nil }
-func (f *fakePlane) SetOutputVolume(int) error                      { return nil }
-func (f *fakePlane) SetAudioDSP(audiodsp.Params) error              { return nil }
-func (f *fakePlane) BlitsTotal() uint64                             { return 0 }
-func (f *fakePlane) FramesTotal() uint64                            { return 0 }
-func (f *fakePlane) Underruns() uint64                              { return 0 }
-func (f *fakePlane) WireBytes() uint64                              { return 0 }
-func (f *fakePlane) LastACKAge() time.Duration                      { return 0 }
-func (f *fakePlane) LinkHealth() dataplane.LinkHealth               { return dataplane.LinkHealth{} }
-func (f *fakePlane) AudioScopes() *dataplane.AudioScopeSnapshot     { return nil }
+func (f *fakePlane) Run(context.Context) error                  { return nil }
+func (f *fakePlane) Done() <-chan struct{}                      { ch := make(chan struct{}); close(ch); return ch }
+func (f *fakePlane) Position() time.Duration                    { return 0 }
+func (f *fakePlane) SetFieldOrder(string) error                 { return nil }
+func (f *fakePlane) SetOutputVolume(int) error                  { return nil }
+func (f *fakePlane) SetAudioDSP(audiodsp.Params) error          { return nil }
+func (f *fakePlane) BlitsTotal() uint64                         { return 0 }
+func (f *fakePlane) FramesTotal() uint64                        { return 0 }
+func (f *fakePlane) Underruns() uint64                          { return 0 }
+func (f *fakePlane) WireBytes() uint64                          { return 0 }
+func (f *fakePlane) LastACKAge() time.Duration                  { return 0 }
+func (f *fakePlane) LinkHealth() dataplane.LinkHealth           { return dataplane.LinkHealth{} }
+func (f *fakePlane) AudioScopes() *dataplane.AudioScopeSnapshot { return nil }
 
 type contextDonePlane struct {
 	done chan struct{}
@@ -112,36 +112,36 @@ func (f *contextDonePlane) Run(ctx context.Context) error {
 	close(f.done)
 	return ctx.Err()
 }
-func (f *contextDonePlane) Done() <-chan struct{}      { return f.done }
-func (f *contextDonePlane) Position() time.Duration    { return 0 }
-func (f *contextDonePlane) SetFieldOrder(string) error { return nil }
-func (f *contextDonePlane) SetOutputVolume(int) error  { return nil }
+func (f *contextDonePlane) Done() <-chan struct{}             { return f.done }
+func (f *contextDonePlane) Position() time.Duration           { return 0 }
+func (f *contextDonePlane) SetFieldOrder(string) error        { return nil }
+func (f *contextDonePlane) SetOutputVolume(int) error         { return nil }
 func (f *contextDonePlane) SetAudioDSP(audiodsp.Params) error { return nil }
-func (f *contextDonePlane) BlitsTotal() uint64         { return 0 }
-func (f *contextDonePlane) FramesTotal() uint64        { return 0 }
-func (f *contextDonePlane) Underruns() uint64          { return 0 }
-func (f *contextDonePlane) WireBytes() uint64          { return 0 }
-func (f *contextDonePlane) LastACKAge() time.Duration  { return 0 }
-func (f *contextDonePlane) LinkHealth() dataplane.LinkHealth { return dataplane.LinkHealth{} }
+func (f *contextDonePlane) BlitsTotal() uint64                { return 0 }
+func (f *contextDonePlane) FramesTotal() uint64               { return 0 }
+func (f *contextDonePlane) Underruns() uint64                 { return 0 }
+func (f *contextDonePlane) WireBytes() uint64                 { return 0 }
+func (f *contextDonePlane) LastACKAge() time.Duration         { return 0 }
+func (f *contextDonePlane) LinkHealth() dataplane.LinkHealth  { return dataplane.LinkHealth{} }
 
 type blockingDonePlane struct {
 	done chan struct{}
 	pos  time.Duration
 }
 
-func (f *blockingDonePlane) Run(context.Context) error                   { <-f.done; return nil }
-func (f *blockingDonePlane) Done() <-chan struct{}                        { return f.done }
-func (f *blockingDonePlane) Position() time.Duration                     { return f.pos }
-func (f *blockingDonePlane) SetFieldOrder(string) error                  { return nil }
-func (f *blockingDonePlane) SetOutputVolume(int) error                   { return nil }
-func (f *blockingDonePlane) SetAudioDSP(audiodsp.Params) error           { return nil }
-func (f *blockingDonePlane) BlitsTotal() uint64                          { return 0 }
-func (f *blockingDonePlane) FramesTotal() uint64                         { return 0 }
-func (f *blockingDonePlane) Underruns() uint64                           { return 0 }
-func (f *blockingDonePlane) WireBytes() uint64                           { return 0 }
-func (f *blockingDonePlane) LastACKAge() time.Duration                   { return 0 }
-func (f *blockingDonePlane) LinkHealth() dataplane.LinkHealth            { return dataplane.LinkHealth{} }
-func (f *blockingDonePlane) AudioScopes() *dataplane.AudioScopeSnapshot  { return nil }
+func (f *blockingDonePlane) Run(context.Context) error                  { <-f.done; return nil }
+func (f *blockingDonePlane) Done() <-chan struct{}                      { return f.done }
+func (f *blockingDonePlane) Position() time.Duration                    { return f.pos }
+func (f *blockingDonePlane) SetFieldOrder(string) error                 { return nil }
+func (f *blockingDonePlane) SetOutputVolume(int) error                  { return nil }
+func (f *blockingDonePlane) SetAudioDSP(audiodsp.Params) error          { return nil }
+func (f *blockingDonePlane) BlitsTotal() uint64                         { return 0 }
+func (f *blockingDonePlane) FramesTotal() uint64                        { return 0 }
+func (f *blockingDonePlane) Underruns() uint64                          { return 0 }
+func (f *blockingDonePlane) WireBytes() uint64                          { return 0 }
+func (f *blockingDonePlane) LastACKAge() time.Duration                  { return 0 }
+func (f *blockingDonePlane) LinkHealth() dataplane.LinkHealth           { return dataplane.LinkHealth{} }
+func (f *blockingDonePlane) AudioScopes() *dataplane.AudioScopeSnapshot { return nil }
 
 type volumePlane struct {
 	fakePlane
@@ -162,18 +162,18 @@ func (f *errorPlane) Run(context.Context) error {
 	close(f.done)
 	return f.err
 }
-func (f *errorPlane) Done() <-chan struct{}                        { return f.done }
-func (f *errorPlane) Position() time.Duration                     { return 0 }
-func (f *errorPlane) SetFieldOrder(string) error                  { return nil }
-func (f *errorPlane) SetOutputVolume(int) error                   { return nil }
-func (f *errorPlane) SetAudioDSP(audiodsp.Params) error           { return nil }
-func (f *errorPlane) BlitsTotal() uint64                          { return 0 }
-func (f *errorPlane) FramesTotal() uint64                         { return 0 }
-func (f *errorPlane) Underruns() uint64                           { return 0 }
-func (f *errorPlane) WireBytes() uint64                           { return 0 }
-func (f *errorPlane) LastACKAge() time.Duration                   { return 0 }
-func (f *errorPlane) LinkHealth() dataplane.LinkHealth            { return dataplane.LinkHealth{} }
-func (f *errorPlane) AudioScopes() *dataplane.AudioScopeSnapshot  { return nil }
+func (f *errorPlane) Done() <-chan struct{}                      { return f.done }
+func (f *errorPlane) Position() time.Duration                    { return 0 }
+func (f *errorPlane) SetFieldOrder(string) error                 { return nil }
+func (f *errorPlane) SetOutputVolume(int) error                  { return nil }
+func (f *errorPlane) SetAudioDSP(audiodsp.Params) error          { return nil }
+func (f *errorPlane) BlitsTotal() uint64                         { return 0 }
+func (f *errorPlane) FramesTotal() uint64                        { return 0 }
+func (f *errorPlane) Underruns() uint64                          { return 0 }
+func (f *errorPlane) WireBytes() uint64                          { return 0 }
+func (f *errorPlane) LastACKAge() time.Duration                  { return 0 }
+func (f *errorPlane) LinkHealth() dataplane.LinkHealth           { return dataplane.LinkHealth{} }
+func (f *errorPlane) AudioScopes() *dataplane.AudioScopeSnapshot { return nil }
 
 type linkHealthPlane struct{ fakePlane }
 
