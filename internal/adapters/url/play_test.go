@@ -904,6 +904,38 @@ func TestCastURL_YTDLPUnknownCodecsFallBackToVideoWhenProbeUnavailable(t *testin
 	}
 }
 
+func TestCastURL_YTDLPHLSAudioCodecsPreserveVideoFallback(t *testing.T) {
+	fr := &fakeResolver{
+		res: &ytdlp.Resolution{
+			URL:    "https://media.example/live.m3u8",
+			Title:  "Remote HLS Audio",
+			VCodec: "none",
+			ACodec: "aac",
+		},
+	}
+	a := newAdapterWithResolver(t, fr)
+	enableURLProbeForTest(a)
+	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		t.Fatal("yt-dlp HLS results must not be probed or visualized as raw remote HLS")
+		return nil, nil
+	}
+
+	_, _, status, err := a.castURL(t.Context(), "https://youtu.be/live-audio", "ytdlp")
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("castURL status=%d err=%v", status, err)
+	}
+	req := a.core.(*fakeCore).snapshot()
+	if got := core.NormalizeMediaKind(req.MediaKind); got != core.MediaKindVideo {
+		t.Fatalf("MediaKind = %q normalized %q, want video fallback", req.MediaKind, got)
+	}
+	if req.Visualizer.Enabled {
+		t.Fatalf("Visualizer enabled for yt-dlp HLS fallback: %+v", req.Visualizer)
+	}
+	if req.StreamURL != "https://media.example/live.m3u8" {
+		t.Fatalf("StreamURL = %q, want resolved HLS URL", req.StreamURL)
+	}
+}
+
 func TestCastURL_YTDLPAmbiguousCodecsProbeUsesResolvedHeaders(t *testing.T) {
 	fr := &fakeResolver{
 		res: &ytdlp.Resolution{

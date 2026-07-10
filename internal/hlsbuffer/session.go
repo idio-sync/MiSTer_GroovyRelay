@@ -398,13 +398,16 @@ func fetchBytes(ctx context.Context, rawURL string, maxBytes int64, timeout time
 	if err != nil {
 		return nil, "", err
 	}
-	client := validator.noRedirectClient()
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	for hop := 0; hop <= defaultMaxRedirects; hop++ {
+		client, err := validator.noRedirectClientForURL(ctx, finalURL, trustMode)
+		if err != nil {
+			return nil, "", err
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, finalURL, nil)
 		if err != nil {
 			return nil, "", fmt.Errorf("hls fetch: build request: %w", err)

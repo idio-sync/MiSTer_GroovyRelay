@@ -58,6 +58,81 @@ func TestGenericPublicValidationRejectsRedirectToLocalTarget(t *testing.T) {
 	}
 }
 
+func TestGenericPublicValidationDialsValidatedIPAndPreservesHost(t *testing.T) {
+	var gotHost string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatalf("server addr: %v", err)
+	}
+	var dialed []string
+	v := URLValidator{
+		Resolver: staticResolver(map[string][]net.IP{
+			"media.example": {net.ParseIP("93.184.216.34")},
+		}),
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			dialed = append(dialed, address)
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, network, strings.TrimPrefix(srv.URL, "http://"))
+		},
+	}
+
+	if _, err := v.Validate(context.Background(), "http://media.example:"+port+"/live.m3u8", TrustModeGenericPublic); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if len(dialed) != 1 || dialed[0] != "93.184.216.34:"+port {
+		t.Fatalf("dialed = %v, want validated public IP", dialed)
+	}
+	if gotHost != "media.example:"+port {
+		t.Fatalf("Host = %q, want original host", gotHost)
+	}
+}
+
+func TestFetchBytesDialsValidatedIPAndPreservesHost(t *testing.T) {
+	var gotHost string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		_, _ = w.Write([]byte("#EXTM3U\n"))
+	}))
+	t.Cleanup(srv.Close)
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatalf("server addr: %v", err)
+	}
+	var dialed []string
+	v := URLValidator{
+		Resolver: staticResolver(map[string][]net.IP{
+			"media.example": {net.ParseIP("93.184.216.34")},
+		}),
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			dialed = append(dialed, address)
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, network, strings.TrimPrefix(srv.URL, "http://"))
+		},
+	}
+
+	body, finalURL, err := fetchBytes(context.Background(), "http://media.example:"+port+"/playlist.m3u8", 1024, 0, TrustModeGenericPublic, v)
+	if err != nil {
+		t.Fatalf("fetchBytes: %v", err)
+	}
+	if string(body) != "#EXTM3U\n" {
+		t.Fatalf("body = %q", body)
+	}
+	if finalURL != "http://media.example:"+port+"/playlist.m3u8" {
+		t.Fatalf("finalURL = %q", finalURL)
+	}
+	if len(dialed) != 1 || dialed[0] != "93.184.216.34:"+port {
+		t.Fatalf("dialed = %v, want validated public IP", dialed)
+	}
+	if gotHost != "media.example:"+port {
+		t.Fatalf("Host = %q, want original host", gotHost)
+	}
+}
+
 func TestBundledToonamiValidationRejectsWrongHostOrPath(t *testing.T) {
 	v := URLValidator{}
 	cases := []string{

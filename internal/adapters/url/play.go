@@ -258,7 +258,7 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 		hlsCfg = hlsbuffer.NormalizeConfig(hlsConfigFromBridge(bridge.HLSBuffer))
 		hlsSession, berr = a.openURLHLSBufferWithConfig(ctx, validatedURL, bridge, hlsCfg, hlsBufferOpen)
 		if berr != nil {
-			safeMsg := strings.ReplaceAll(berr.Error(), rawURL, redactURL(rawURL))
+			safeMsg := adapters.SanitizeMediaProbeError(rawURL, berr)
 			a.setState(adapters.StateError, safeMsg)
 			slog.Warn("url hls buffer failed", "url", redactURL(rawURL), "err", safeMsg)
 			return "", "", http.StatusInternalServerError, fmt.Errorf("%s", safeMsg)
@@ -379,6 +379,9 @@ func (a *Adapter) classifyResolvedURLMedia(ctx context.Context, res *ytdlp.Resol
 	if strings.TrimSpace(res.AudioURL) != "" {
 		return adapters.Video, nil
 	}
+	if isM3U8URLString(res.URL) {
+		return adapters.Video, nil
+	}
 	if class := adapters.ClassifyCodecs(res.VCodec, res.ACodec); class != adapters.Unknown {
 		return class, nil
 	}
@@ -488,6 +491,14 @@ func shouldBufferDirectM3U8(parsed *stdurl.URL, hlsBufferMode string, bridge con
 
 func isDirectM3U8(parsed *stdurl.URL) bool {
 	return parsed != nil && strings.HasSuffix(strings.ToLower(strings.TrimSpace(parsed.Path)), ".m3u8")
+}
+
+func isM3U8URLString(raw string) bool {
+	parsed, err := stdurl.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	return isDirectM3U8(parsed)
 }
 
 func (a *Adapter) openURLHLSBuffer(ctx context.Context, rawURL string, bridge config.BridgeConfig, open hlsBufferOpener) (*hlsbuffer.Session, error) {
