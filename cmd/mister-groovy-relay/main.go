@@ -258,6 +258,7 @@ func main() {
 		Bridge:        sec.Bridge,
 		Core:          coreMgr,
 		YTDLPResolver: ytdlpResolver,
+		FFprobe:       ffprobeResolver,
 	})
 	if err != nil {
 		dieFriendly("streams adapter init", err)

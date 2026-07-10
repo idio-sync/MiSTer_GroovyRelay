@@ -16,6 +16,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 )
 
@@ -23,6 +24,7 @@ type AdapterConfig struct {
 	Bridge        config.BridgeConfig
 	Core          SessionManager
 	YTDLPResolver ytdlp.BinaryResolver
+	FFprobe       binaryResolver
 }
 
 type SessionManager interface {
@@ -44,6 +46,12 @@ type hlsBufferOpener func(context.Context, hlsbuffer.SessionOptions) (*hlsbuffer
 
 const defaultYTDLPResolveTimeout = 30 * time.Second
 
+type binaryResolver interface {
+	Resolve() (string, error)
+}
+
+type mediaProbeFunc func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error)
+
 type Adapter struct {
 	core          SessionManager
 	bridge        config.BridgeConfig
@@ -52,6 +60,8 @@ type Adapter struct {
 	ytdlpBinary   ytdlp.BinaryResolver
 	resolver      streamResolver
 	hlsBufferOpen hlsBufferOpener
+	ffprobe       binaryResolver
+	probeMedia    mediaProbeFunc
 
 	// User-provider play-time SSRF seams (lazily defaulted in playback.go).
 	userURLResolver  hostResolver
@@ -71,21 +81,21 @@ type Adapter struct {
 	// candidate planning, off-lock rebuild, atomic JSON commit, catalog install,
 	// and preset cleanup. It is intentionally separate from a.mu so catalog
 	// enumeration never happens while the adapter state lock is held.
-	userEditMu sync.Mutex
-	mu         sync.Mutex
-	cfg                 Config
-	state               adapters.State
-	lastErr             string
-	stateSince          time.Time
-	rng                 *rand.Rand
-	expectedStops       map[queueCapture]struct{}
-	definitions         map[string]ProviderDefinition
-	definitionOrder     []string
-	catalogs            map[string]ProviderCatalog
-	presetStore         *presetStore
-	userStore           *userProviderStore
-	active              *ActiveQueue
-	badItems            map[string]badStreamItem
+	userEditMu      sync.Mutex
+	mu              sync.Mutex
+	cfg             Config
+	state           adapters.State
+	lastErr         string
+	stateSince      time.Time
+	rng             *rand.Rand
+	expectedStops   map[queueCapture]struct{}
+	definitions     map[string]ProviderDefinition
+	definitionOrder []string
+	catalogs        map[string]ProviderCatalog
+	presetStore     *presetStore
+	userStore       *userProviderStore
+	active          *ActiveQueue
+	badItems        map[string]badStreamItem
 
 	activeOverlay *hlsMeterHandle
 
@@ -105,6 +115,8 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		cacheDir:      filepath.Join(cfg.Bridge.DataDir, "streams"),
 		ytdlpBinary:   cfg.YTDLPResolver,
 		hlsBufferOpen: hlsbuffer.OpenSession,
+		ffprobe:       cfg.FFprobe,
+		probeMedia:    ffmpeg.ProbeInput,
 		cfg:           DefaultConfig(),
 		state:         adapters.StateStopped,
 		stateSince:    time.Now(),

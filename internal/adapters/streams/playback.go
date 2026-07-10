@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	stdurl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,10 +15,14 @@ import (
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 )
+
+const audioClassificationProbeTimeout = 800 * time.Millisecond
 
 func (a *Adapter) StartResolvedStream(ctx context.Context, res streamhandoff.Resolution) (streamhandoff.StartResult, error) {
 	if ctx == nil {
@@ -448,8 +453,8 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 	resolveStarted := time.Now()
 	resolved, err := resolver.Resolve(resolveCtx, pageURL, format, cookiesPath)
 	resolveDuration := time.Since(resolveStarted)
-	cancel()
 	if err != nil {
+		cancel()
 		kind, global := streamResolveFailureKind(err)
 		slog.Warn("streams playback resolve failed",
 			"provider", q.ProviderID,
@@ -470,6 +475,7 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "failed to resolve stream item")
 	}
 	if resolved == nil || strings.TrimSpace(resolved.URL) == "" {
+		cancel()
 		slog.Warn("streams playback resolve returned no media",
 			"provider", q.ProviderID,
 			"channel", q.ChannelID,
@@ -483,7 +489,8 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream resolver returned no playable media URL")
 	}
 	if isUserProviderID(q.ProviderID) {
-		if err := a.revalidateResolvedUserURLs(ctx, resolved.URL, resolved.AudioURL); err != nil {
+		if err := a.revalidateResolvedUserURLs(resolveCtx, resolved.URL, resolved.AudioURL); err != nil {
+			cancel()
 			slog.Warn("streams playback blocked unsafe resolved user url",
 				"provider", q.ProviderID,
 				"channel", q.ChannelID,
@@ -496,6 +503,10 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 			}
 			return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "resolved stream url is not allowed")
 		}
+	}
+	if !a.captureStillActive(capture) {
+		cancel()
+		return streamhandoff.StartResult{}, false, playbackError(q.ProviderID, "stream start was superseded")
 	}
 	title := streamSessionTitle(item, resolved.Title)
 
@@ -512,6 +523,20 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		Source:            a.Name(),
 		Title:             title,
 		DisplayMetadata:   streamsDisplayMetadata(q.ProviderName, q.ChannelName, streamSessionTitle(item, resolved.Title)),
+	}
+	audioClass, audioProbe := a.classifyResolvedStreamMedia(resolveCtx, resolved, req.MediaInputPolicy)
+	cancel()
+	if audioClass == adapters.AudioOnly {
+		duration := resolved.Duration
+		if duration == 0 && audioProbe != nil && audioProbe.Duration > 0 {
+			duration = time.Duration(audioProbe.Duration * float64(time.Second))
+		}
+		adapters.ApplyAudioOnlyVisualizer(&req, adapters.AudioOnlyVisualizerMetadata{
+			Title:    title,
+			Artist:   q.ChannelName,
+			Album:    q.ProviderName,
+			Duration: duration,
+		})
 	}
 	a.playbackMu.Lock()
 	if !a.captureStillActive(capture) {
@@ -566,6 +591,60 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		ChannelID:  q.ChannelID,
 		ItemID:     itemIdentity(item),
 	}, true, nil
+}
+
+func (a *Adapter) classifyResolvedStreamMedia(ctx context.Context, resolved *ytdlp.Resolution, policy core.MediaInputPolicy) (adapters.AudioClassification, *ffmpeg.ProbeResult) {
+	if resolved == nil {
+		return adapters.Unknown, nil
+	}
+	if strings.TrimSpace(resolved.AudioURL) != "" {
+		return adapters.Video, nil
+	}
+	if class := adapters.ClassifyCodecs(resolved.VCodec, resolved.ACodec); class != adapters.Unknown {
+		return class, nil
+	}
+	class, probe := a.classifyStreamURLByProbe(ctx, resolved.URL, resolved.Headers, policy)
+	if class != adapters.Unknown {
+		return class, probe
+	}
+	if isResolvedStreamM3U8URLString(resolved.URL) {
+		return adapters.Video, probe
+	}
+	return adapters.Unknown, probe
+}
+
+func (a *Adapter) classifyStreamURLByProbe(ctx context.Context, mediaURL string, headers map[string]string, policy core.MediaInputPolicy) (adapters.AudioClassification, *ffmpeg.ProbeResult) {
+	if strings.TrimSpace(mediaURL) == "" || a.ffprobe == nil || a.probeMedia == nil {
+		return adapters.Unknown, nil
+	}
+	ffprobePath, err := a.ffprobe.Resolve()
+	if err != nil {
+		slog.Warn("streams media probe unavailable",
+			"url", adapters.RedactMediaURLForLog(mediaURL),
+			"err", adapters.SanitizeMediaProbeError(mediaURL, err))
+		return adapters.Unknown, nil
+	}
+	probe, err := a.probeMedia(ctx, ffprobePath, ffmpeg.ProbeInputSpec{
+		URL:     mediaURL,
+		Headers: headers,
+		Policy:  policy,
+		Timeout: audioClassificationProbeTimeout,
+	})
+	if err != nil {
+		slog.Warn("streams media probe failed",
+			"url", adapters.RedactMediaURLForLog(mediaURL),
+			"err", adapters.SanitizeMediaProbeError(mediaURL, err))
+		return adapters.Unknown, nil
+	}
+	return adapters.ClassifyProbeResult(probe), probe
+}
+
+func isResolvedStreamM3U8URLString(raw string) bool {
+	parsed, err := stdurl.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed == nil {
+		return false
+	}
+	return strings.HasSuffix(strings.ToLower(strings.TrimSpace(parsed.Path)), ".m3u8")
 }
 
 func directHLSInputPolicy() core.MediaInputPolicy {

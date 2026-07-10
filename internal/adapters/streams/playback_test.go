@@ -18,6 +18,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 )
 
@@ -69,6 +70,205 @@ func TestStartResolvedStreamStartsCoreSession(t *testing.T) {
 	item, ok := a.active.currentItem()
 	if !ok || item.Title != "Clip" {
 		t.Fatalf("active item title = %+v, want Clip", item)
+	}
+}
+
+func TestStartResolvedStreamAudioOnlyYTDLPStartsVisualizer(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	a.resolver = &fakeResolver{res: &ytdlp.Resolution{
+		URL:      "https://media.example/audio.opus",
+		Title:    "Metal Shop",
+		Channel:  "Uploader",
+		VCodec:   "none",
+		ACodec:   "opus",
+		Duration: 45 * time.Second,
+	}}
+	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		t.Fatal("codec-classified audio-only stream should not be probed")
+		return nil, nil
+	}
+
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	req := fc.lastReq
+	if req.MediaKind != core.MediaKindMusic {
+		t.Fatalf("MediaKind = %q, want music", req.MediaKind)
+	}
+	if !req.Visualizer.Enabled || req.Visualizer.Mode != core.VisualizerModeRetroAnalyzer {
+		t.Fatalf("Visualizer = %+v, want retro analyzer enabled", req.Visualizer)
+	}
+	meta := req.Visualizer.Metadata
+	if meta.Title != "Metal Shop" || meta.Artist != "Metal" || meta.Album != "MTV Rewind" || meta.Duration != 45*time.Second {
+		t.Fatalf("visualizer metadata = %+v", meta)
+	}
+	if !req.Capabilities.CanPause || req.Capabilities.CanSeek {
+		t.Fatalf("streams capabilities = %+v, want pause only", req.Capabilities)
+	}
+}
+
+func TestStartResolvedStreamAudioOnlyYTDLPM3U8StartsVisualizer(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	a.resolver = &fakeResolver{res: &ytdlp.Resolution{
+		URL:      "https://media.example/audio.m3u8",
+		Title:    "Metal HLS",
+		Channel:  "Uploader",
+		VCodec:   "none",
+		ACodec:   "opus",
+		Duration: 45 * time.Second,
+	}}
+	a.probeMedia = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		t.Fatal("codec-classified audio-only HLS stream should not be probed")
+		return nil, nil
+	}
+
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	req := fc.lastReq
+	if req.MediaKind != core.MediaKindMusic || !req.Visualizer.Enabled {
+		t.Fatalf("request did not start audio visualizer: MediaKind=%q Visualizer=%+v", req.MediaKind, req.Visualizer)
+	}
+	meta := req.Visualizer.Metadata
+	if meta.Title != "Metal HLS" || meta.Artist != "Metal" || meta.Album != "MTV Rewind" || meta.Duration != 45*time.Second {
+		t.Fatalf("visualizer metadata = %+v", meta)
+	}
+}
+
+func TestStartResolvedStreamAmbiguousYTDLPProbeUsesResolvedHeaders(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	a.ffprobe = staticBinaryResolver("ffprobe")
+	a.resolver = &fakeResolver{res: &ytdlp.Resolution{
+		URL:     "https://media.example/ambiguous",
+		Headers: map[string]string{"User-Agent": "yt-dlp", "Referer": "https://youtu.be/watch"},
+		Title:   "Header Song",
+		Channel: "Uploader",
+		VCodec:  "",
+		ACodec:  "",
+	}}
+	var gotInput ffmpeg.ProbeInputSpec
+	a.probeMedia = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		if ffprobePath != "ffprobe" {
+			t.Fatalf("ffprobePath = %q, want ffprobe", ffprobePath)
+		}
+		gotInput = input
+		return &ffmpeg.ProbeResult{AudioRate: 48000, Duration: 45}, nil
+	}
+
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if gotInput.URL != "https://media.example/ambiguous" {
+		t.Fatalf("probe URL = %q, want resolved media URL", gotInput.URL)
+	}
+	if gotInput.Headers["User-Agent"] != "yt-dlp" || gotInput.Headers["Referer"] != "https://youtu.be/watch" {
+		t.Fatalf("probe headers = %#v, want resolved headers", gotInput.Headers)
+	}
+	if len(gotInput.Policy.ProtocolWhitelist) != 0 || gotInput.Policy.RWTimeout != 0 || len(gotInput.Policy.BlockedHeaders) != 0 {
+		t.Fatalf("probe policy = %+v, want zero resolved stream policy", gotInput.Policy)
+	}
+	if gotInput.Timeout != 800*time.Millisecond {
+		t.Fatalf("probe timeout = %s, want 800ms", gotInput.Timeout)
+	}
+	req := fc.lastReq
+	if req.MediaKind != core.MediaKindMusic || !req.Visualizer.Enabled {
+		t.Fatalf("request did not start audio visualizer: MediaKind=%q Visualizer=%+v", req.MediaKind, req.Visualizer)
+	}
+	if req.Visualizer.Metadata.Duration != 45*time.Second {
+		t.Fatalf("visualizer duration = %s, want 45s from probe", req.Visualizer.Metadata.Duration)
+	}
+}
+
+func TestStartResolvedStreamAmbiguousYTDLPM3U8ProbeUsesResolvedHeaders(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	a.ffprobe = staticBinaryResolver("ffprobe")
+	a.resolver = &fakeResolver{res: &ytdlp.Resolution{
+		URL:     "https://media.example/ambiguous.m3u8",
+		Headers: map[string]string{"User-Agent": "yt-dlp", "Referer": "https://youtu.be/watch"},
+		Title:   "Header HLS",
+		Channel: "Uploader",
+		VCodec:  "",
+		ACodec:  "",
+	}}
+	var gotInput ffmpeg.ProbeInputSpec
+	a.probeMedia = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		if ffprobePath != "ffprobe" {
+			t.Fatalf("ffprobePath = %q, want ffprobe", ffprobePath)
+		}
+		gotInput = input
+		return &ffmpeg.ProbeResult{AudioCodec: "aac", Duration: 32.5}, nil
+	}
+
+	if _, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"}); err != nil {
+		t.Fatalf("StartResolvedStream: %v", err)
+	}
+	if gotInput.URL != "https://media.example/ambiguous.m3u8" {
+		t.Fatalf("probe URL = %q, want resolved media URL", gotInput.URL)
+	}
+	if gotInput.Headers["User-Agent"] != "yt-dlp" || gotInput.Headers["Referer"] != "https://youtu.be/watch" {
+		t.Fatalf("probe headers = %#v, want resolved headers", gotInput.Headers)
+	}
+	if gotInput.Timeout != 800*time.Millisecond {
+		t.Fatalf("probe timeout = %s, want 800ms", gotInput.Timeout)
+	}
+	req := fc.lastReq
+	if req.MediaKind != core.MediaKindMusic || !req.Visualizer.Enabled {
+		t.Fatalf("request did not start audio visualizer: MediaKind=%q Visualizer=%+v", req.MediaKind, req.Visualizer)
+	}
+	if req.Visualizer.Metadata.Duration != 32500*time.Millisecond {
+		t.Fatalf("visualizer duration = %s, want 32.5s from probe", req.Visualizer.Metadata.Duration)
+	}
+}
+
+func TestStartResolvedStreamStaleClassificationProbeCancelledOnStopQueue(t *testing.T) {
+	a, fc := newTestAdapterWithFakeCore(t)
+	a.ffprobe = staticBinaryResolver("ffprobe")
+	a.resolver = &fakeResolver{res: &ytdlp.Resolution{
+		URL:    "https://media.example/ambiguous",
+		VCodec: "",
+		ACodec: "",
+	}}
+	probeEntered := make(chan struct{})
+	probeCancelled := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseProbe) }) }
+	t.Cleanup(release)
+	a.probeMedia = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		close(probeEntered)
+		select {
+		case <-ctx.Done():
+			close(probeCancelled)
+			return nil, ctx.Err()
+		case <-releaseProbe:
+			return &ffmpeg.ProbeResult{AudioRate: 48000}, nil
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.StartResolvedStream(t.Context(), streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal"})
+		done <- err
+	}()
+
+	<-probeEntered
+	if err := a.StopQueue(t.Context()); err != nil {
+		t.Fatalf("StopQueue during classification probe: %v", err)
+	}
+	select {
+	case <-probeCancelled:
+	case <-time.After(200 * time.Millisecond):
+		release()
+		if err := <-done; err == nil {
+			t.Fatal("StartResolvedStream returned nil after stale classification probe was released")
+		}
+		t.Fatal("classification probe was not canceled by StopQueue")
+	}
+	if err := <-done; err == nil {
+		t.Fatal("StartResolvedStream returned nil after classification probe cancellation")
+	}
+	if fc.startCalls != 0 {
+		t.Fatalf("core start calls = %d, want 0 after stale probe cancellation", fc.startCalls)
 	}
 }
 
@@ -1239,6 +1439,12 @@ func TestReplayDoesNotReplaceNewerSameChannelQueue(t *testing.T) {
 	if a.active.Items[0].ID != "new" {
 		t.Fatalf("newer queue item = %+v", a.active.Items)
 	}
+}
+
+type staticBinaryResolver string
+
+func (r staticBinaryResolver) Resolve() (string, error) {
+	return string(r), nil
 }
 
 type blockedFirstResolver struct {
