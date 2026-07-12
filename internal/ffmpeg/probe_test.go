@@ -80,6 +80,29 @@ func TestParseProbeOutput_ProgressiveVideoWithAudio(t *testing.T) {
 	}
 }
 
+func TestParseProbeOutput_IgnoresAttachedPictureVideo(t *testing.T) {
+	raw := []byte(`{
+		"streams": [
+			{"codec_type":"video","codec_name":"mjpeg","width":600,"height":600,"disposition":{"attached_pic":1}},
+			{"codec_type":"audio","codec_name":"mp3","sample_rate":"44100"}
+		],
+		"format":{"duration":"180.000"}
+	}`)
+	got, err := parseProbeOutput(raw)
+	if err != nil {
+		t.Fatalf("parseProbeOutput: %v", err)
+	}
+	if got.Width != 0 || got.Height != 0 || got.VideoCodec != "" {
+		t.Fatalf("attached picture was treated as video: %+v", got)
+	}
+	if got.AudioRate != 44100 || got.AudioCodec != "mp3" {
+		t.Fatalf("audio stream = rate %d codec %q, want mp3/44100", got.AudioRate, got.AudioCodec)
+	}
+	if !got.AttachedPicture {
+		t.Fatal("AttachedPicture = false, want true")
+	}
+}
+
 func TestParseProbeOutput_Interlaced(t *testing.T) {
 	for _, fo := range []string{"tt", "bb", "tb", "bt"} {
 		raw := []byte(`{"streams":[{"codec_type":"video","width":720,"height":480,"field_order":"` + fo + `","r_frame_rate":"30000/1001"}]}`)

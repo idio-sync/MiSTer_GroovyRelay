@@ -41,6 +41,7 @@ func TestClassifyProbeResult(t *testing.T) {
 	}{
 		{name: "audio rate only", result: &ffmpeg.ProbeResult{AudioRate: 44100}, want: AudioOnly},
 		{name: "width and audio rate", result: &ffmpeg.ProbeResult{Width: 1920, AudioRate: 48000}, want: Video},
+		{name: "attached picture marker with audio", result: &ffmpeg.ProbeResult{AudioRate: 44100, AttachedPicture: true}, want: AudioOnly},
 		{name: "video codec with whitespace", result: &ffmpeg.ProbeResult{VideoCodec: " h264 "}, want: Video},
 		{name: "audio codec with whitespace", result: &ffmpeg.ProbeResult{AudioCodec: " opus "}, want: AudioOnly},
 		{name: "audio codec none is absent", result: &ffmpeg.ProbeResult{AudioCodec: "none"}, want: Unknown},

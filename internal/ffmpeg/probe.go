@@ -32,6 +32,7 @@ type ProbeResult struct {
 	VideoBitrateBPS       int64
 	AudioBitrateBPS       int64
 	FormatBitrateBPS      int64
+	AttachedPicture       bool
 }
 
 // ffprobeOutput mirrors the JSON shape of `ffprobe -print_format json`.
@@ -48,6 +49,9 @@ type ffprobeOutput struct {
 		SampleAspectRatio  string `json:"sample_aspect_ratio"`
 		DisplayAspectRatio string `json:"display_aspect_ratio"`
 		BitRate            string `json:"bit_rate"`
+		Disposition        struct {
+			AttachedPic int `json:"attached_pic"`
+		} `json:"disposition"`
 	} `json:"streams"`
 	Format struct {
 		Duration string `json:"duration"`
@@ -129,6 +133,10 @@ func parseProbeOutput(raw []byte) (*ProbeResult, error) {
 	for _, s := range p.Streams {
 		switch s.CodecType {
 		case "video":
+			if s.Disposition.AttachedPic == 1 {
+				r.AttachedPicture = true
+				continue
+			}
 			if r.Width == 0 {
 				r.Width = s.Width
 				r.Height = s.Height
