@@ -537,6 +537,11 @@ type SettingsData struct {
 	CatalogChannelCount           int                    // 4C — sum across CatalogProviders
 	DirectStreamHLSBufferDisabled bool                   // 4C — true iff every Live provider has hls_buffer_disabled
 	Adapters                      []AdapterPaneData      // 4D — per-adapter render context
+	// BootStamp identifies this bridge process (StartedAt, unix nanos). The
+	// drawer keys its client-side "restart pending" list by it, so the list
+	// survives a page reload but clears once the bridge has actually
+	// restarted.
+	BootStamp int64
 }
 
 // AdapterPaneData carries the per-adapter render context for the Adapters
@@ -771,6 +776,9 @@ func settingsDataFromConfig(cfg Config) SettingsData {
 		bridge = cfg.BridgeSaver.Current()
 	}
 	data := buildSettingsData(bridge, cfg.Registry, cfg.StreamsCatalogViewer, cfg.CatalogManager)
+	if !cfg.StartedAt.IsZero() {
+		data.BootStamp = cfg.StartedAt.UnixNano()
+	}
 	// 4D — append per-adapter panes from the AdapterSettingsSaver. Nil-guarded
 	// so 4A/4B/4C configs (no saver wired) leave data.Adapters nil, preserving
 	// the prior package-builder behavior exactly.

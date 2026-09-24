@@ -105,27 +105,33 @@
     return el;
   }
 
-  // Field error painting + clearing (full impl lands in Task 27).
+  // Field error painting + clearing by bridge field name (bridge keys are
+  // unique in the drawer). The message lands inside the row, right after
+  // the control, matching the server-rendered .field-err position.
   function clearFieldError(name) {
     const input = drawer.querySelector(`[name="${name}"]`);
-    if (!input) return;
-    const row = findRow(input);
+    if (input) clearFieldErrorOn(input);
+  }
+  function paintFieldError(name, msg) {
+    const input = drawer.querySelector(`[name="${name}"]`);
+    if (input) paintFieldErrorOn(input, msg);
+  }
+  function clearFieldErrorOn(el) {
+    const row = findRow(el);
     if (!row) return;
     row.classList.remove('has-err');
     const err = row.querySelector('.field-err');
     if (err) err.remove();
   }
-  function paintFieldError(name, msg) {
-    const input = drawer.querySelector(`[name="${name}"]`);
-    if (!input) return;
-    const row = findRow(input);
-    if (!row) return;
+  function paintFieldErrorOn(el, msg) {
+    const row = findRow(el);
+    if (!row) { showNotice(msg, 'err'); return; }
     row.classList.add('has-err');
     let err = row.querySelector('.field-err');
     if (!err) {
       err = document.createElement('div');
       err.className = 'field-err';
-      input.parentElement.insertAdjacentElement('afterend', err);
+      el.insertAdjacentElement('afterend', err);
     }
     err.textContent = msg;
   }
@@ -140,16 +146,121 @@
   const notice = document.getElementById('settings-notice');
   let noticeTimer = null;
 
+  // Server chips are terse wire codes; the operator gets the problem and
+  // the recovery. Unknown chips pass through unchanged.
+  const CHIP_TEXT = {
+    'NETWORK ERROR': "Couldn't reach the bridge, so nothing was saved. Check the connection and try again.",
+    'WRITE FAILED': "The bridge couldn't write config.toml. Check that the data directory is writable and has free space.",
+    'BAD INPUT': "That value wasn't accepted. Check the highlighted field and try again.",
+    'BUSY': 'The bridge is busy with another change. Try again in a moment.',
+    'NOT READY': "The bridge isn't ready to handle this yet. Wait for it to finish starting, then try again.",
+    'LINK FAILED': 'Linking failed. Try again, or check the server address.',
+    'UNKNOWN ADAPTER': 'This source is not available in the running bridge.',
+  };
+  function noticeText(text) {
+    return CHIP_TEXT[text] || text;
+  }
+
   function showNotice(text, variant) {
     if (!notice) return;
     notice.className = 'settings-notice ' + (variant || '');
-    notice.textContent = text;
+    notice.textContent = noticeText(text);
     notice.hidden = false;
     if (noticeTimer) clearTimeout(noticeTimer);
+    // Errors linger long enough to read the recovery step.
     noticeTimer = setTimeout(() => {
       notice.hidden = true;
-    }, 5000);
+    }, variant === 'err' ? 10000 : 5000);
   }
+
+  // Screen-reader echo for saves that otherwise only show a visual tick.
+  const announcer = document.getElementById('settings-announce');
+  function announce(text) {
+    if (!announcer) return;
+    announcer.textContent = '';
+    // Re-set after a tick so repeated identical messages re-announce. (Not
+    // requestAnimationFrame: it is throttled in background tabs.)
+    setTimeout(() => { announcer.textContent = text; }, 30);
+  }
+
+  // Human label for a control: the field-row label's own text (not its
+  // help span), else the control's aria-label, else its name. Adapter
+  // fields are prefixed with their source card ("DLNA · Device Name") so
+  // same-named fields across adapters stay distinguishable.
+  function labelFor(el) {
+    const labelEl = el.closest('.field-row')?.querySelector('label');
+    let text = labelEl?.childNodes[0]?.textContent?.trim() || labelEl?.textContent?.trim() ||
+      el.getAttribute('aria-label') || el.getAttribute('name') || 'Setting';
+    const card = el.closest('.source-card')?.querySelector('.source-name')?.textContent?.trim();
+    if (card && !text.includes(card)) text = `${card} · ${text}`;
+    return text;
+  }
+
+  // Per-row "Saved" confirmation (see .save-tick in chassis.css).
+  function flashSaved(el) {
+    const host = el.closest('.field-row, .source-head, .provider-row');
+    if (host) {
+      let tick = host.querySelector(':scope > .save-tick');
+      if (!tick) {
+        tick = document.createElement('span');
+        tick.className = 'save-tick';
+        tick.setAttribute('aria-hidden', 'true');
+        tick.textContent = 'Saved';
+        host.appendChild(tick);
+      }
+      host.classList.remove('just-saved');
+      void host.offsetWidth; // restart the animation on back-to-back saves
+      host.classList.add('just-saved');
+      clearTimeout(host._savedTimer);
+      host._savedTimer = setTimeout(() => host.classList.remove('just-saved'), 1800);
+    }
+    announce(`${labelFor(el)} saved`);
+  }
+
+  // Restart-pending list. REBOOT-scope saves land in config.toml but only
+  // load on the next bridge start, so the drawer keeps a standing list
+  // instead of a 5-second toast. Keyed by the bridge's boot stamp: it
+  // survives a reload, and a restarted bridge (new stamp) starts clean.
+  const restartBar = document.getElementById('settings-restart');
+  const restartList = document.getElementById('settings-restart-list');
+  const restartDismiss = document.getElementById('settings-restart-dismiss');
+  const RESTART_KEY = 'chassis.settings.restartPending';
+  const bootStamp = drawer.getAttribute('data-boot') || '';
+  function loadPendingRestart() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(RESTART_KEY) || 'null');
+      if (saved && saved.boot === bootStamp && Array.isArray(saved.fields)) return saved.fields;
+    } catch (_) { /* storage unavailable or corrupt: start empty */ }
+    return [];
+  }
+  let pendingRestart = loadPendingRestart();
+  function storePendingRestart() {
+    try {
+      if (pendingRestart.length) {
+        localStorage.setItem(RESTART_KEY, JSON.stringify({ boot: bootStamp, fields: pendingRestart }));
+      } else {
+        localStorage.removeItem(RESTART_KEY);
+      }
+    } catch (_) { /* best effort */ }
+  }
+  function renderPendingRestart() {
+    if (!restartBar) return;
+    restartBar.hidden = pendingRestart.length === 0;
+    if (restartList) restartList.textContent = pendingRestart.join(', ') + '.';
+  }
+  function notePendingRestart(label) {
+    if (!pendingRestart.includes(label)) pendingRestart.push(label);
+    storePendingRestart();
+    renderPendingRestart();
+  }
+  if (restartDismiss) {
+    restartDismiss.addEventListener('click', () => {
+      pendingRestart = [];
+      storePendingRestart();
+      renderPendingRestart();
+    });
+  }
+  renderPendingRestart();
   function clearNotice() {
     if (!notice) return;
     notice.hidden = true;
@@ -192,8 +303,8 @@
       const result = await saveField(name, wireValue);
       if (!result) return;
       if (result.netErr) {
-        // Task 27 renders into #settings-notice; for now log.
-        console.warn('settings save: network error');
+        paintFieldError(name, 'Not saved: the bridge could not be reached.');
+        showNotice('NETWORK ERROR', 'err');
         return;
       }
       const { status, body } = result;
@@ -201,14 +312,8 @@
         markHasValue(name, el.value);
         clearNotice();
         notifySettingsSaved();
-        if (body.scope === 'reboot') {
-          // Extract only the label's first text node, excluding the help <span>.
-          // fieldHelper renders <label>Host <span class="help">...</span></label>;
-          // textContent would concatenate the help text into the toast.
-          const labelEl = el.closest('.field-row')?.querySelector('label');
-          const labelText = labelEl?.childNodes[0]?.textContent?.trim() || labelEl?.textContent?.trim() || name;
-          showNotice(`Restart container to apply new ${labelText}`, 'ok');
-        }
+        flashSaved(el);
+        if (body.scope === 'reboot') notePendingRestart(labelFor(el));
         return;
       }
       if (body && body.errors) {
@@ -241,10 +346,15 @@
         // Revert.
         btn.classList.toggle('on', !next);
         btn.setAttribute('aria-pressed', !next ? 'true' : 'false');
+        showNotice('NETWORK ERROR', 'err');
         return;
       }
       const { status, body } = result;
-      if (status >= 200 && status < 300 && body.ok) return;
+      if (status >= 200 && status < 300 && body.ok) {
+        flashSaved(btn);
+        if (body.scope === 'reboot') notePendingRestart(labelFor(btn));
+        return;
+      }
       // Revert + paint error.
       btn.classList.toggle('on', !next);
       btn.setAttribute('aria-pressed', !next ? 'true' : 'false');
@@ -280,9 +390,9 @@
           method: 'POST', body: form, credentials: 'same-origin'
         });
         body = await res.json().catch(() => ({}));
-        if (res.ok && body.ok) return;
+        if (res.ok && body.ok) { flashSaved(el); return; }
       } catch (_) {
-        body = { chip: 'WRITE FAILED' };
+        body = { chip: 'NETWORK ERROR' };
       }
       // Revert optimistic toggle.
       el.classList.toggle('on', !next);
@@ -317,9 +427,9 @@
         method: 'POST', body: form, credentials: 'same-origin'
       });
       body = await res.json().catch(() => ({}));
-      if (res.ok && body.ok) return;
+      if (res.ok && body.ok) { flashSaved(directHlsBtn); return; }
     } catch (_) {
-      body = { chip: 'WRITE FAILED' };
+      body = { chip: 'NETWORK ERROR' };
     }
     directHlsBtn.classList.toggle('on', !next);
     directHlsBtn.setAttribute('aria-pressed', !next ? 'true' : 'false');
@@ -502,12 +612,12 @@
         if (res.ok && body.ok && body.scope === 'reboot') {
           toIdle();
           result.className = 'action-result shown ok';
-          result.textContent = '▸ Defaults restored · restart to apply';
-          showNotice('Defaults restored — restart container to apply', 'ok');
+          result.textContent = '▸ Defaults restored · restart the bridge to apply';
+          notePendingRestart('All settings (reset to defaults)');
           return;
         }
       } catch (_) {
-        body = { chip: 'WRITE FAILED' };
+        body = { chip: 'NETWORK ERROR' };
       }
       toIdle();
       if (body.chip) {
@@ -600,19 +710,18 @@
 
   function handleAdapterSaveResponse(target, payload) {
     const key = target.getAttribute('name');
+    // Adapter keys repeat across adapters (enabled, device_name), so errors
+    // paint on the control that saved, not the first [name] in the drawer.
     if (payload.ok) {
       notifySettingsSaved();
-      if (payload.scope === 'reboot') {
-        const labelEl = target.closest('.field-row')?.querySelector('label');
-        const labelText = labelEl?.childNodes[0]?.textContent?.trim() || labelEl?.textContent?.trim() || key;
-        showNotice(`Restart container to apply new ${labelText}`, 'ok');
-      }
-      clearFieldError(key);
+      flashSaved(target);
+      if (payload.scope === 'reboot') notePendingRestart(labelFor(target));
+      clearFieldErrorOn(target);
       return;
     }
     if (payload.errors) {
       const msg = payload.errors[key];
-      if (msg) paintFieldError(key, msg);
+      if (msg) paintFieldErrorOn(target, msg);
       return;
     }
     if (payload.chip) {
@@ -903,6 +1012,9 @@
   window.Chassis.settings.clearFieldError = clearFieldError;
   window.Chassis.settings.markHasValue = markHasValue;
   window.Chassis.settings.showNotice = showNotice;
+  window.Chassis.settings.flashSaved = flashSaved;
+  window.Chassis.settings.notePendingRestart = notePendingRestart;
+  window.Chassis.settings.labelFor = labelFor;
   window.Chassis.settings.clearNotice = clearNotice;
   window.Chassis.settings.renderLinkView = renderLinkView;
   // Task 17 — poll controller (used by Task 16 handlers + tests).
@@ -947,6 +1059,7 @@ async function putHosts(hosts) {
       return false;
     }
     renderHostTags(payload.hosts || []);
+    if (ed) window.Chassis.settings.flashSaved?.(ed.querySelector('.tag-list') || ed);
     return true;
   } catch (e) {
     window.Chassis.settings.showNotice('NETWORK ERROR', 'err');
@@ -1104,6 +1217,8 @@ async function saveLocalFilesLibraries() {
       const libraries = payload.libraries || [];
       renderLocalFilesLibraries(libraries);
       window.Chassis?.localFiles?.setLibraries?.(libraries);
+      const libRow = document.querySelector('[data-localfiles-libraries]');
+      if (libRow) window.Chassis.settings.flashSaved?.(libRow);
       return true;
     } catch (_) {
       window.Chassis.settings.showNotice('NETWORK ERROR', 'err');
@@ -1305,6 +1420,7 @@ async function postCookies(path, body, contentType) {
       return;
     }
     paintCookiePill(payload.cookie);
+    if (w) window.Chassis.settings.flashSaved?.(w);
   } catch (e) {
     window.Chassis.settings.showNotice('NETWORK ERROR', 'err');
   }

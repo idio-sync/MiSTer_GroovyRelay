@@ -316,6 +316,8 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 				Visualizer: config.VisualizerConfig{Mode: config.VisualizerModeStereoScope},
 			},
 			Errors: map[string]string{},
+			// Restart-pending list key: identifies this bridge process.
+			BootStamp: cfg.StartedAt.UnixNano(),
 		},
 	}
 	if !reflect.DeepEqual(got, want) {

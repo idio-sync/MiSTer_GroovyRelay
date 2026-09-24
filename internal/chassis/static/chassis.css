@@ -6195,20 +6195,135 @@ body.receiver .field-row .field-err::before {
   content: '⚠ ';
 }
 
+/* Status stack — sticky at the top of the scrolling drawer body so a
+   restart reminder or save error stays in view while the operator keeps
+   editing further down. top matches .settings-body's top padding. */
+body.receiver .settings-status-stack {
+  position: sticky;
+  top: -18px;
+  z-index: 3;
+}
+
 /* Drawer-local notice slot (Task 4A) */
 body.receiver .settings-notice {
-  margin: 8px 12px 0 12px;
-  padding: 6px 10px;
-  font: 500 11px 'Inter', sans-serif;
-  letter-spacing: 0.04em;
-  border: 1px solid oklch(0.22 0.012 80);
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  font: 500 12px/1.45 'Inter', sans-serif;
+  letter-spacing: 0.01em;
+  border: 1px solid oklch(0.26 0.012 80);
   border-radius: 2px;
-  background: linear-gradient(180deg, #0a0a0b 0%, #050506 100%);
-  color: var(--vfd-dim);
+  background: linear-gradient(180deg, #0c0c0d 0%, #070708 100%);
+  color: #c4c4ca;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.45);
 }
 body.receiver .settings-notice[hidden] { display: none; }
-body.receiver .settings-notice.ok  { color: oklch(0.78 0.12 150); border-color: oklch(0.32 0.10 150); }
-body.receiver .settings-notice.err { color: oklch(0.82 0.16 25); border-color: oklch(0.40 0.16 25); }
+body.receiver .settings-notice.ok  { color: oklch(0.80 0.12 150); border-color: oklch(0.36 0.10 150); }
+body.receiver .settings-notice.err { color: oklch(0.84 0.14 25); border-color: oklch(0.44 0.15 25); }
+
+/* Restart-pending bar — persists (per bridge boot) until the bridge
+   restarts, listing every saved REBOOT-scope change. Lit like a faceplate
+   tally lamp so it reads as machine state, not a transient toast. */
+body.receiver .settings-restart {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border: 1px solid oklch(0.42 0.14 25);
+  border-radius: 2px;
+  background: linear-gradient(180deg, oklch(0.20 0.04 25) 0%, oklch(0.15 0.03 25) 100%);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.45);
+}
+body.receiver .settings-restart[hidden] { display: none; }
+body.receiver .settings-restart .restart-lamp {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--lamp-red);
+  box-shadow: 0 0 6px var(--lamp-red-glow);
+}
+body.receiver .settings-restart .restart-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font: 400 12px/1.45 'Inter', sans-serif;
+  color: #e6d9d7;
+}
+body.receiver .settings-restart .restart-text strong {
+  font-weight: 700;
+  color: #f6ecea;
+}
+body.receiver .settings-restart #settings-restart-list {
+  font-weight: 600;
+  color: var(--value-text);
+}
+body.receiver .settings-restart .restart-how {
+  display: block;
+  font-size: 11px;
+  color: #c2b2b0;
+}
+body.receiver .settings-restart .restart-dismiss {
+  flex: 0 0 auto;
+}
+
+/* Screen-reader-only live region for per-save announcements. */
+body.receiver .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Per-row save confirmation: the control's rim lights green and a small
+   "Saved" tag fades through in the row's lower-right corner. Autosave-on-
+   blur used to give HOT and RECAST fields no feedback at all. */
+body.receiver .settings-panel .field-row,
+body.receiver .settings-panel .source-head,
+body.receiver .settings-panel .provider-row {
+  position: relative;
+}
+body.receiver .settings-panel .save-tick {
+  position: absolute;
+  right: 0;
+  bottom: 1px;
+  font: 600 11px/1 'Inter', sans-serif;
+  color: var(--lamp-green);
+  opacity: 0;
+  pointer-events: none;
+}
+body.receiver .settings-panel .source-head > .save-tick {
+  right: 16px;
+}
+body.receiver .settings-panel .save-tick::before {
+  content: '\2713\00a0';
+}
+body.receiver .settings-panel .just-saved > .save-tick {
+  animation: settings-saved 1800ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+body.receiver .settings-panel .just-saved .field-input,
+body.receiver .settings-panel .just-saved .switch {
+  border-color: oklch(0.58 0.14 150);
+  transition: border-color 120ms ease-out;
+}
+@keyframes settings-saved {
+  0%   { opacity: 0; transform: translateY(3px); }
+  12%  { opacity: 1; transform: translateY(0); }
+  72%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.receiver .settings-panel .just-saved > .save-tick {
+    animation: none;
+    opacity: 1;
+  }
+}
 
 /* ===== Settings drawer chrome — tab badge, spacer, close, section card ===== */
 
@@ -6481,6 +6596,12 @@ body.receiver .field-row.action-field {
 body.receiver .field-row.action-row > .action-btn {
   justify-self: start;
 }
+/* A scope chip stays level with its control even when an inline error
+   (.field-err) wraps onto a second grid row beneath the control. */
+body.receiver .field-row > .scope {
+  grid-row: 1;
+  grid-column: 3;
+}
 body.receiver .settings-panel .action-btn.danger {
   color: oklch(0.80 0.15 25);
   border-color: oklch(0.44 0.15 25);
@@ -6539,6 +6660,10 @@ body.receiver .hls-grid .field-row > .scope {
   body.receiver .field-row > label,
   body.receiver .field-row .field-err {
     grid-column: 1 / -1;
+  }
+  body.receiver .field-row > .scope {
+    grid-row: 2;
+    grid-column: 2;
   }
   body.receiver .settings-panel .field-row > .field-input,
   body.receiver .settings-panel .field-row > .field-input.path {

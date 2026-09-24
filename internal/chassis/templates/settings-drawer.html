@@ -1,6 +1,6 @@
 {{- define "settings-drawer" -}}
 {{htmlComment "chassis:settings-drawer"}}
-<div class="settings-panel">
+<div class="settings-panel" data-boot="{{ .BootStamp }}">
   <div class="settings-tabs">
     <button class="settings-tab active" data-tab="mister">MiSTer</button>
     <button class="settings-tab" data-tab="av">Video &amp; Audio</button>
@@ -18,9 +18,19 @@
     <span class="legend-item"><span class="scope reboot">REBOOT</span> restart bridge</span>
   </div>
 
-  <div class="settings-notice" id="settings-notice" role="status" aria-live="polite" hidden></div>
-
   <div class="settings-body">
+    {{/* Status stack rides sticky at the top of the scrolling body (not as
+         extra panel grid rows, which would push .settings-body out of its
+         minmax(0, 1fr) track and break scrolling while a message shows). */}}
+    <div class="settings-status-stack">
+      <div class="settings-restart" id="settings-restart" hidden>
+        <span class="restart-lamp" aria-hidden="true"></span>
+        <p class="restart-text"><strong>Restart the bridge to apply:</strong> <span id="settings-restart-list"></span><span class="restart-how">Changes are saved to config.toml; restart the container or service to load them.</span></p>
+        <button type="button" class="action-btn ghost restart-dismiss" id="settings-restart-dismiss">Dismiss</button>
+      </div>
+      <div class="settings-notice" id="settings-notice" role="status" aria-live="polite" hidden></div>
+    </div>
+    <div class="sr-only" id="settings-announce" role="status" aria-live="polite"></div>
     {{ template "settings-mister" . }}
     {{ template "settings-av" . }}
     {{ template "settings-sources" . }}
