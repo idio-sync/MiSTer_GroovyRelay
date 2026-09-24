@@ -113,6 +113,14 @@ type dataplaneStatsSnapshot struct {
 
 	deltaEnabled       bool
 	deltaSelectedTotal uint64
+
+	// Field-parity telemetry (interlaced modelines only; see
+	// fieldParityTracker).
+	parityTracked      bool
+	parityLocked       bool
+	parityRelation     uint8
+	paritySlipsTotal   uint64
+	parityFlutterTotal uint64
 }
 
 func (w *dataplaneStatsWindow) observeField(stats fieldSendStats, budgetThreshold time.Duration) {
@@ -279,6 +287,13 @@ func dataplaneStatsAttrs(window dataplaneStatsWindow, snap dataplaneStatsSnapsho
 		attrs = append(attrs,
 			"delta_selected", deltaSelected,
 			"delta_selected_total", snap.deltaSelectedTotal)
+	}
+	if snap.parityTracked {
+		attrs = append(attrs,
+			"field_parity_locked", snap.parityLocked,
+			"field_parity_relation", snap.parityRelation,
+			"field_parity_slips_total", snap.paritySlipsTotal,
+			"field_parity_flutter_total", snap.parityFlutterTotal)
 	}
 	return attrs
 }
@@ -943,6 +958,10 @@ func (p *Plane) Run(ctx context.Context) error {
 	linePeriod := rasterLinePeriod(p.cfg.Modeline)
 	latestACK := ack
 	lastCorrectedEcho := ack.FrameEcho
+	var parity *fieldParityTracker
+	if p.cfg.Modeline.Interlaced() {
+		parity = newFieldParityTracker()
+	}
 
 	// 5. Position bookkeeping — one tick = one NTSC field (1001/60 ms, exact).
 	p.resetPosition()
@@ -1027,6 +1046,9 @@ func (p *Plane) Run(ctx context.Context) error {
 				lastEcho = a.FrameEcho
 				ticksSinceEchoMoved = 0
 				p.updateFramesAhead(frameNum, lastEcho)
+				if parity != nil {
+					p.observeFieldParity(parity, a, frameNum)
+				}
 			}
 			// Receiver-distress edges (sync loss, frameskip). Throttled to
 			// one warn per second — under sustained distress the edges
@@ -1080,6 +1102,12 @@ func (p *Plane) Run(ctx context.Context) error {
 				deltaEnabled:       p.deltaLZ4Enabled,
 				deltaSelectedTotal: p.deltaSelectedTotal,
 			}
+			if parity != nil {
+				snap.parityTracked = true
+				snap.parityRelation, snap.parityLocked = parity.relation()
+				snap.paritySlipsTotal = parity.slips
+				snap.parityFlutterTotal = parity.flutter
+			}
 			// Eventful windows (duplicates, budget overruns, torn sends,
 			// ENOBUFS) surface at Info so degradation is visible at the
 			// default log level; healthy windows stay behind Debug.
@@ -1123,6 +1151,9 @@ func (p *Plane) Run(ctx context.Context) error {
 			// (ExtractFieldFromFrameInto below) swap together — inverting only
 			// the header would send top-field pixels tagged as bottom-field.
 			emitField := p.emitField(nextField)
+			if parity != nil {
+				parity.recordSent(frameNum, emitField)
+			}
 			fb, fbOK, fbClosed := pullVideoFrame(&videoPrebuffer, videoCh)
 			statWindow.observeQueues(len(videoCh), len(videoPrebuffer), len(audioCh), len(audioPrebuffer), audioRing.Len())
 			statWindow.observeVideoBacklogAfterPull(len(videoPrebuffer) + len(videoCh))
@@ -1213,6 +1244,33 @@ func (p *Plane) Run(ctx context.Context) error {
 			resetTimer(timer, clock.delay(time.Now()))
 		}
 	}
+}
+
+// observeFieldParity feeds one echo-advancing ACK to the parity tracker and
+// logs the first lock and any slip. A slip while the operator's tff/bff flip
+// is unchanged means the sender's field cadence lost phase with the CRT's
+// raster; a slip right after a UI flip is that flip taking effect.
+func (p *Plane) observeFieldParity(parity *fieldParityTracker, a groovy.ACK, frameSent uint32) {
+	locked, slipped := parity.observe(a.FrameEcho, a.VGAField())
+	if !locked && !slipped {
+		return
+	}
+	rel, _ := parity.relation()
+	attrs := []any{
+		"relation", rel,
+		"field_order_flip", p.fieldOrderFlip.Load(),
+		"frame_sent", frameSent,
+		"frame_echo", a.FrameEcho,
+		"fpga_frame", a.FPGAFrame,
+		"fpga_vcount", a.FPGAVCount,
+		"slips_total", parity.slips,
+		"flutter_total", parity.flutter,
+	}
+	if locked {
+		slog.Info("field parity locked to CRT raster", attrs...)
+		return
+	}
+	slog.Warn("field parity slipped; fields now land on the opposite raster field", attrs...)
 }
 
 func rasterLinePeriod(ml groovy.Modeline) time.Duration {

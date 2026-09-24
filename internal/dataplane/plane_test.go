@@ -1087,6 +1087,34 @@ func TestDataplaneStatsAttrsIncludeDebugTelemetry(t *testing.T) {
 	}
 }
 
+func TestDataplaneStatsAttrsIncludeFieldParityWhenInterlaced(t *testing.T) {
+	snap := dataplaneStatsSnapshot{
+		window:             5 * time.Second,
+		parityTracked:      true,
+		parityLocked:       true,
+		parityRelation:     1,
+		paritySlipsTotal:   2,
+		parityFlutterTotal: 7,
+	}
+	got := attrMap(dataplaneStatsAttrs(dataplaneStatsWindow{}, snap))
+	checks := map[string]any{
+		"field_parity_locked":        true,
+		"field_parity_relation":      uint8(1),
+		"field_parity_slips_total":   uint64(2),
+		"field_parity_flutter_total": uint64(7),
+	}
+	for key, want := range checks {
+		if got[key] != want {
+			t.Fatalf("%s = %#v, want %#v", key, got[key], want)
+		}
+	}
+
+	progressive := attrMap(dataplaneStatsAttrs(dataplaneStatsWindow{}, dataplaneStatsSnapshot{window: 5 * time.Second}))
+	if _, ok := progressive["field_parity_locked"]; ok {
+		t.Fatal("progressive sessions must not report field parity")
+	}
+}
+
 func attrMap(attrs []any) map[string]any {
 	out := make(map[string]any, len(attrs)/2)
 	for i := 0; i+1 < len(attrs); i += 2 {
