@@ -939,7 +939,7 @@ func (p *Plane) Run(ctx context.Context) error {
 	}
 	timer := time.NewTimer(fieldPeriod)
 	defer timer.Stop()
-	lastTick := time.Now()
+	clock := newFieldClock(time.Now(), fieldPeriod)
 	linePeriod := rasterLinePeriod(p.cfg.Modeline)
 	latestACK := ack
 	lastCorrectedEcho := ack.FrameEcho
@@ -1043,7 +1043,8 @@ func (p *Plane) Run(ctx context.Context) error {
 			}
 			lastACKStatus = a.Status
 			if correction, ok := rasterCorrection(a, p.cfg.Modeline, linePeriod, fieldPeriod, lastCorrectedEcho); ok {
-				resetTimer(timer, nextTickDelay(lastTick, fieldPeriod, correction))
+				clock.correct(correction)
+				resetTimer(timer, clock.delay(time.Now()))
 				lastCorrectedEcho = a.FrameEcho
 			}
 		case <-statsTicker.C:
@@ -1090,7 +1091,7 @@ func (p *Plane) Run(ctx context.Context) error {
 			statWindow.reset(wireBytesTotal, p.deltaSelectedTotal, snap.tornTotal, snap.enobufTotal)
 			statMaxFramesAhead = 0
 		case <-timer.C:
-			lastTick = time.Now()
+			clock.fired(time.Now())
 			frameNum++
 			ticksSinceEchoMoved++
 			statWindow.ticks++
@@ -1206,11 +1207,10 @@ func (p *Plane) Run(ctx context.Context) error {
 			// Advance reported position by one field period.
 			p.advancePosition()
 			if correction, ok := rasterCorrection(latestACK, p.cfg.Modeline, linePeriod, fieldPeriod, lastCorrectedEcho); ok {
-				resetTimer(timer, nextTickDelay(lastTick, fieldPeriod, correction))
+				clock.correct(correction)
 				lastCorrectedEcho = latestACK.FrameEcho
-			} else {
-				resetTimer(timer, fieldPeriod)
 			}
+			resetTimer(timer, clock.delay(time.Now()))
 		}
 	}
 }
@@ -1245,12 +1245,46 @@ func rasterCorrection(ack groovy.ACK, ml groovy.Modeline, linePeriod, fieldPerio
 	return correction, true
 }
 
-func nextTickDelay(lastTick time.Time, fieldPeriod, correction time.Duration) time.Duration {
-	delay := fieldPeriod - time.Since(lastTick) + correction
-	if delay < 0 {
-		return 0
+// fieldClock schedules field ticks on an absolute timeline anchored at each
+// slot's scheduled time, never at the goroutine's actual wake time. Anchoring
+// at wake time lets timer latency accumulate as rate error and, when a tick
+// ends without a fresh raster correction, stretches that tick by the whole
+// send duration (~38 Hz with raw fields and no BLIT ACKs). Owned by the tick
+// goroutine.
+type fieldClock struct {
+	period time.Duration
+	slot   time.Time // scheduled time of the tick in progress
+	next   time.Time // scheduled time of the next tick
+}
+
+func newFieldClock(start time.Time, period time.Duration) *fieldClock {
+	return &fieldClock{period: period, slot: start, next: start.Add(period)}
+}
+
+// fired advances to the slot that just fired. A wake more than one period
+// late rebases on now: the FPGA already repeated the missed fields, and
+// catching up would burst several BLITs back-to-back.
+func (c *fieldClock) fired(now time.Time) {
+	c.slot = c.next
+	if now.Sub(c.slot) > c.period {
+		c.slot = now
 	}
-	return delay
+	c.next = c.slot.Add(c.period)
+}
+
+// correct applies a raster phase correction to the next tick. The latest
+// correction within a slot wins; because the next slot is anchored at the
+// corrected time, the phase shift persists.
+func (c *fieldClock) correct(correction time.Duration) {
+	c.next = c.slot.Add(c.period + correction)
+}
+
+// delay returns the wait from now until the next tick, clamped at zero.
+func (c *fieldClock) delay(now time.Time) time.Duration {
+	if d := c.next.Sub(now); d > 0 {
+		return d
+	}
+	return 0
 }
 
 func resetTimer(timer *time.Timer, delay time.Duration) {
