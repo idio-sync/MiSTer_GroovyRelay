@@ -42,7 +42,7 @@
 {{- end -}}
 
 {{- define "settings-hls-buffer" -}}
-<div class="settings-section wide hls-grid">
+<div class="settings-section wide">
   <h4>Live HLS buffer <span class="hint">shared segment cache</span></h4>
   <p class="section-intro">Live <code>.m3u8</code> channels and URL casts play through a local segment cache so origin hiccups don't stall the CRT. Defaults suit most networks.</p>
   {{ field (dict
@@ -58,6 +58,9 @@
             aria-pressed="{{ .DirectStreamHLSBufferDisabled }}"></button>
     <span class="scope recast">RECAST</span>
   </div>
+  <details class="settings-more">
+    <summary>Buffer tuning</summary>
+    <div class="hls-grid">
   {{ field (dict
     "Name" "hls_live_edge_segments" "Type" "number" "Label" "Live edge segments"
     "Help" "Segments to stay behind the live edge."
@@ -121,5 +124,7 @@
     "Value" (itoa .Bridge.HLSBuffer.StaleCacheReapHours)
     "Scope" "recast" "InputWidth" "90px"
     "Error" (errOf .Errors "hls_stale_cache_reap_hours")) }}
+    </div>
+  </details>
 </div>
 {{- end -}}

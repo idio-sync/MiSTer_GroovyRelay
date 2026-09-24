@@ -1,12 +1,13 @@
 {{- define "settings-adapter-url" -}}
-<section class="settings-section wide">
-  <h4>URL <span class="hint">{{ .Hint }}</span></h4>
-  {{ with fieldByKey .Fields "enabled" }}{{ template "adapter-field-row" (dict "Adapter" "url" "Field" . "Values" $.Values) }}{{ end }}
+<section class="settings-section source-card" data-adapter-section="url">
+  {{ template "source-card-head" (dict "Title" "URL" "Pane" .) }}
+  <div class="source-body" id="source-url-body" hidden>
   {{ with fieldByKey .Fields "ytdlp_enabled" }}{{ template "adapter-field-row" (dict "Adapter" "url" "Field" . "Values" $.Values) }}{{ end }}
   {{ if .HasHostEditor }}{{ template "url-host-editor" . }}{{ end }}
   {{ with fieldByKey .Fields "ytdlp_format" }}{{ template "adapter-field-row" (dict "Adapter" "url" "Field" . "Values" $.Values) }}{{ end }}
   {{ with fieldByKey .Fields "ytdlp_resolve_timeout_seconds" }}{{ template "adapter-field-row" (dict "Adapter" "url" "Field" . "Values" $.Values) }}{{ end }}
   {{ if .HasCookieStore }}{{ template "url-cookies" . }}{{ end }}
+  </div>
 </section>
 {{- end -}}
 

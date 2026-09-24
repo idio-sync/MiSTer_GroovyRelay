@@ -4766,10 +4766,13 @@ func TestSettingsAdaptersTemplate_RendersSixSections(t *testing.T) {
 		},
 	}
 	s := renderDrawer(t, data)
-	// Section headers carry a trailing space before the <span class="hint">,
-	// so the faithful header assertion is ">Plex " not ">Plex<".
+	// Sources render as collapsed cards titled by .source-name; the
+	// Streams catalog keeps a section header (trailing space before its
+	// hint span) on the Streams tab.
 	for _, want := range []string{
-		">Plex ", ">DLNA ", ">URL ", ">Torrent ", ">Jellyfin ", ">Streams catalog ",
+		`class="source-name">Plex<`, `class="source-name">DLNA<`,
+		`class="source-name">URL<`, `class="source-name">Torrent<`,
+		`class="source-name">Jellyfin<`, ">Streams catalog ",
 		"PUSH ·", "PASTE-IN · BT", "PULL ·",
 	} {
 		if !strings.Contains(s, want) {
@@ -4837,8 +4840,8 @@ func TestSettingsAdapterTorrentTemplate_RendersFields(t *testing.T) {
 	}
 	s := renderDrawer(t, data)
 	for _, want := range []string{
-		`<section class="settings-section wide"`,
-		">Torrent <",
+		`data-adapter-section="torrent"`,
+		`<span class="source-name">Torrent</span>`,
 		"PASTE-IN · BT",
 		`name="traffic_acknowledged"`,
 		`name="download_dir"`,
@@ -4925,7 +4928,7 @@ func TestSettingsAdapterStreams_RendersProviderRows(t *testing.T) {
 	}}
 	html := renderDrawer(t, srv.buildSettingsData())
 	for _, want := range []string{
-		`<h5 class="settings-subhead">Provider overrides</h5>`,
+		`<h5 class="settings-subhead">Per-provider refresh</h5>`,
 		`name="providers.youtube.catalog_refresh_hours"`,
 		`name="providers.radio.catalog_refresh_hours"`,
 		`value="12"`,

@@ -6283,6 +6283,141 @@ body.receiver .settings-legend .legend-item {
 body.receiver .settings-legend .scope {
   margin-top: 0;
 }
+body.receiver .settings-legend .legend-untagged {
+  padding: 1px 6px;
+  border: 1px dashed oklch(0.40 0.012 80);
+  border-radius: 2px;
+  font: 700 9px 'Inter', sans-serif;
+  letter-spacing: 0.06em;
+  color: #a2a2aa;
+}
+/* HOT is the untagged default. A chip on every live-applying row put 56
+   identical tags in the old Adapters pane; only rows with a consequence
+   (RECAST, REBOOT) keep one, and the legend names the blank. The HOT span
+   stays in the markup for the save path's scope contract. */
+body.receiver .settings-panel .field-row .scope.hot,
+body.receiver .settings-panel .source-enable .scope.hot {
+  display: none;
+}
+
+/* Sources — one collapsed card per adapter. The header is the whole
+   summary: name, live status, enable switch; the body opens on demand. */
+body.receiver .settings-pane[data-pane="sources"].active {
+  gap: 8px;
+}
+body.receiver .settings-section.source-card {
+  padding: 0;
+}
+body.receiver .source-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 16px;
+}
+body.receiver .source-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 14px 16px;
+  background: transparent;
+  border: 0;
+  color: #dcdce2;
+  text-align: left;
+  cursor: pointer;
+}
+body.receiver .source-toggle:hover .source-name {
+  color: #fff;
+}
+body.receiver .source-chev {
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-left: 6px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  opacity: 0.7;
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+body.receiver .source-toggle[aria-expanded="true"] .source-chev {
+  transform: rotate(90deg);
+}
+body.receiver .source-name {
+  font: 700 13px/1.2 'Inter', sans-serif;
+  letter-spacing: 0.02em;
+}
+body.receiver .source-status {
+  font: 600 10px/1.2 'Inter', sans-serif;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #a2a2aa;
+}
+body.receiver .source-card.open .source-name {
+  color: var(--vfd);
+  text-shadow: 0 0 4px var(--vfd-glow-soft);
+}
+body.receiver .source-enable {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+body.receiver .source-enable .scope {
+  order: -1;
+  margin-top: 0;
+}
+body.receiver .source-body {
+  padding: 4px 16px 12px;
+  border-top: 1px solid #0a0a0b;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+body.receiver .source-body[hidden] {
+  display: none;
+}
+
+/* Rarely-touched tuning (limits, timeouts, buffer sizes) folds behind a
+   native disclosure: keyboard-operable for free, closed by default. */
+body.receiver .settings-more {
+  margin-top: 6px;
+  border-top: 1px solid oklch(0.20 0.012 80);
+}
+body.receiver .settings-more > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0 10px;
+  list-style: none;
+  cursor: pointer;
+  font: 600 12px/1.2 'Inter', sans-serif;
+  color: #b8b8c0;
+}
+body.receiver .settings-more > summary::-webkit-details-marker {
+  display: none;
+}
+body.receiver .settings-more > summary::before {
+  content: '';
+  width: 0;
+  height: 0;
+  border-left: 6px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  opacity: 0.7;
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+body.receiver .settings-more[open] > summary::before {
+  transform: rotate(90deg);
+}
+body.receiver .settings-more > summary:hover {
+  color: #e4e4ea;
+}
+@media (prefers-reduced-motion: reduce) {
+  body.receiver .source-chev,
+  body.receiver .settings-more > summary::before {
+    transition: none;
+  }
+}
 /* Legend flattens the body's top edge the way the tab bar used to, so the
    tabs -> legend -> body stack stays seam-free. */
 body.receiver .settings-legend + .settings-notice + .settings-body,
@@ -6361,33 +6496,33 @@ body.receiver .settings-panel .action-btn.danger:hover {
    columns are pinned to fixed widths: every value input lands on the same
    vertical line and every (uniform RECAST) chip lines up beside it, the way
    a real spec panel is laid out. */
-body.receiver .settings-section.hls-grid {
+body.receiver .hls-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   column-gap: 30px;
   align-items: start;
 }
-body.receiver .settings-section.hls-grid > h4 {
+body.receiver .hls-grid > h4 {
   grid-column: 1 / -1;
 }
-body.receiver .settings-section.hls-grid .field-row {
+body.receiver .hls-grid .field-row {
   grid-template-columns: minmax(0, 1fr) 96px 84px;
   column-gap: 8px;
   padding: 7px 0;
   border-bottom: 0;
 }
-body.receiver .settings-section.hls-grid .field-row > label {
+body.receiver .hls-grid .field-row > label {
   justify-self: start;
 }
-body.receiver .settings-section.hls-grid .field-row > .field-input,
-body.receiver .settings-section.hls-grid .field-row > .switch,
-body.receiver .settings-section.hls-grid .field-row > .row-end,
-body.receiver .settings-section.hls-grid .field-row > .scope {
+body.receiver .hls-grid .field-row > .field-input,
+body.receiver .hls-grid .field-row > .switch,
+body.receiver .hls-grid .field-row > .row-end,
+body.receiver .hls-grid .field-row > .scope {
   justify-self: end;
 }
 /* One column on a narrow chassis — the two-up grid would crush the labels. */
 @container chassis (max-width: 760px) {
-  body.receiver .settings-section.hls-grid {
+  body.receiver .hls-grid {
     grid-template-columns: 1fr;
     column-gap: 0;
   }
@@ -6397,7 +6532,7 @@ body.receiver .settings-section.hls-grid .field-row > .scope {
 @container chassis (max-width: 640px) {
   body.receiver .field-row,
   body.receiver .field-row.action-field,
-  body.receiver .settings-section.hls-grid .field-row {
+  body.receiver .hls-grid .field-row {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 6px 10px;
   }
@@ -6409,10 +6544,10 @@ body.receiver .settings-section.hls-grid .field-row > .scope {
   body.receiver .settings-panel .field-row > .field-input.path {
     max-width: none;
   }
-  body.receiver .settings-section.hls-grid .field-row > .field-input,
-  body.receiver .settings-section.hls-grid .field-row > .switch,
-  body.receiver .settings-section.hls-grid .field-row > .row-end,
-  body.receiver .settings-section.hls-grid .field-row > .scope {
+  body.receiver .hls-grid .field-row > .field-input,
+  body.receiver .hls-grid .field-row > .switch,
+  body.receiver .hls-grid .field-row > .row-end,
+  body.receiver .hls-grid .field-row > .scope {
     justify-self: start;
   }
 }

@@ -1,13 +1,15 @@
 {{- define "settings-adapter-dlna" -}}
-<section class="settings-section">
-  <h4>DLNA <span class="hint">{{ .Hint }}</span></h4>
-  {{ range .Fields }}
-  {{ template "adapter-field-row" (dict
-    "Adapter" "dlna"
-    "Field" .
-    "Values" $.Values
-  ) }}
-  {{ end }}
+<section class="settings-section source-card" data-adapter-section="dlna">
+  {{ template "source-card-head" (dict "Title" "DLNA" "Pane" .) }}
+  <div class="source-body" id="source-dlna-body" hidden>
+    {{ range .Fields }}{{ if ne .Key "enabled" }}
+    {{ template "adapter-field-row" (dict
+      "Adapter" "dlna"
+      "Field" .
+      "Values" $.Values
+    ) }}
+    {{ end }}{{ end }}
+  </div>
 </section>
 {{- end -}}
 

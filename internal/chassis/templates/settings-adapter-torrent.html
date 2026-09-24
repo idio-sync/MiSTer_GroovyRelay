@@ -1,13 +1,22 @@
 {{- define "settings-adapter-torrent" -}}
-<section class="settings-section wide">
-  <h4>Torrent <span class="hint">{{ .Hint }}</span></h4>
-  {{ range .Fields }}
-    {{ if eq .Key "max_cache_bytes" }}
-      {{ template "adapter-field-row-bytes" (dict "Adapter" "torrent" "Field" . "Values" $.Values) }}
-    {{ else }}
-      {{ template "adapter-field-row" (dict "Adapter" "torrent" "Field" . "Values" $.Values) }}
-    {{ end }}
-  {{ end }}
+<section class="settings-section source-card" data-adapter-section="torrent">
+  {{ template "source-card-head" (dict "Title" "Torrent" "Pane" .) }}
+  <div class="source-body" id="source-torrent-body" hidden>
+  {{/* Everyday fields first; transfer limits and timeouts fold away. */}}
+  {{ range .Fields }}{{ if or (eq .Key "traffic_acknowledged") (eq .Key "download_dir") (eq .Key "keep_completed") }}
+    {{ template "adapter-field-row" (dict "Adapter" "torrent" "Field" . "Values" $.Values) }}
+  {{ end }}{{ end }}
+  <details class="settings-more">
+    <summary>Limits &amp; timeouts</summary>
+    {{ range .Fields }}{{ if not (or (eq .Key "enabled") (eq .Key "traffic_acknowledged") (eq .Key "download_dir") (eq .Key "keep_completed")) }}
+      {{ if eq .Key "max_cache_bytes" }}
+        {{ template "adapter-field-row-bytes" (dict "Adapter" "torrent" "Field" . "Values" $.Values) }}
+      {{ else }}
+        {{ template "adapter-field-row" (dict "Adapter" "torrent" "Field" . "Values" $.Values) }}
+      {{ end }}
+    {{ end }}{{ end }}
+  </details>
+  </div>
 </section>
 {{- end -}}
 

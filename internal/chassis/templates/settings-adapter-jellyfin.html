@@ -1,9 +1,11 @@
 {{- define "settings-adapter-jellyfin" -}}
-<section class="settings-section" data-adapter-section="jellyfin">
-  <h4>Jellyfin <span class="hint">{{ .Hint }}</span></h4>
-  {{ if .Linkable }}{{ template "settings-link" .LinkView }}{{ end }}
-  {{ range .Fields }}
-  {{ template "adapter-field-row" (dict "Adapter" "jellyfin" "Field" . "Values" $.Values) }}
-  {{ end }}
+<section class="settings-section source-card" data-adapter-section="jellyfin">
+  {{ template "source-card-head" (dict "Title" "Jellyfin" "Pane" .) }}
+  <div class="source-body" id="source-jellyfin-body" hidden>
+    {{ if .Linkable }}{{ template "settings-link" .LinkView }}{{ end }}
+    {{ range .Fields }}{{ if ne .Key "enabled" }}
+    {{ template "adapter-field-row" (dict "Adapter" "jellyfin" "Field" . "Values" $.Values) }}
+    {{ end }}{{ end }}
+  </div>
 </section>
 {{- end -}}

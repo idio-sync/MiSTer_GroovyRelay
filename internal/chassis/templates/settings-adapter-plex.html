@@ -1,9 +1,11 @@
 {{- define "settings-adapter-plex" -}}
-<section class="settings-section" data-adapter-section="plex">
-  <h4>Plex <span class="hint">{{ .Hint }}</span></h4>
-  {{ if .Linkable }}{{ template "settings-link" .LinkView }}{{ end }}
-  {{ range .Fields }}
-  {{ template "adapter-field-row" (dict "Adapter" "plex" "Field" . "Values" $.Values) }}
-  {{ end }}
+<section class="settings-section source-card" data-adapter-section="plex">
+  {{ template "source-card-head" (dict "Title" "Plex" "Pane" .) }}
+  <div class="source-body" id="source-plex-body" hidden>
+    {{ if .Linkable }}{{ template "settings-link" .LinkView }}{{ end }}
+    {{ range .Fields }}{{ if ne .Key "enabled" }}
+    {{ template "adapter-field-row" (dict "Adapter" "plex" "Field" . "Values" $.Values) }}
+    {{ end }}{{ end }}
+  </div>
 </section>
 {{- end -}}

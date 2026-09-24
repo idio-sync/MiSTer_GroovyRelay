@@ -2,7 +2,11 @@
 {{/* Sources tab — the ways media reaches the bridge. Cast targets first
      (Plex, Jellyfin, DLNA push to us), then paste-in (URL, Torrent),
      then local disk. The Streams catalog adapter lives on its own tab
-     beside the channel providers it feeds. */}}
+     beside the channel providers it feeds.
+
+     Each source is a collapsed card: the header carries its name, its
+     status, and its enable switch, so the pane reads as "what's on" at a
+     glance. Only one card expands at a time (settings-drawer.js). */}}
 <div class="settings-pane single-col" data-pane="sources">
 
   {{ template "settings-adapter-plex" (adapterPane .Adapters "plex") }}
@@ -17,5 +21,37 @@
 
   {{ template "settings-adapter-localfiles" (adapterPane .Adapters "localfiles") }}
 
+</div>
+{{- end -}}
+
+{{/* source-card-head renders a Sources card header. Args: Title (display
+     name) and Pane (AdapterPaneData). The enable switch is the adapter's
+     own "enabled" field — same name/data-adapter contract the delegated
+     switch handler in settings-drawer.js saves — lifted out of the body so
+     turning a source on or off never needs an expand. Its scope chip
+     follows the field-row rule: hidden when HOT (the untagged default). */}}
+{{- define "source-card-head" -}}
+{{- $p := .Pane -}}
+{{- $en := fieldByKey $p.Fields "enabled" -}}
+<div class="source-head">
+  <button type="button" class="source-toggle" data-source-toggle
+          aria-expanded="false" aria-controls="source-{{ $p.Name }}-body">
+    <span class="source-chev" aria-hidden="true"></span>
+    <span class="source-name">{{ .Title }}</span>
+    {{- with $p.Hint }}
+    <span class="source-status" data-source-status>{{ . }}</span>
+    {{- end }}
+  </button>
+  {{- if $en }}
+  {{- $on := index $p.Values "enabled" }}
+  {{- $scope := adapterScopeWire $en.ApplyScope }}
+  <span class="source-enable">
+    <button class="switch{{ if $on }} on{{ end }}" type="button"
+            name="enabled" data-adapter="{{ $p.Name }}"
+            aria-pressed="{{ if $on }}true{{ else }}false{{ end }}"
+            aria-label="Enable {{ .Title }}"></button>
+    <span class="scope {{ $scope }}">{{ upper $scope }}</span>
+  </span>
+  {{- end }}
 </div>
 {{- end -}}

@@ -49,6 +49,25 @@
     });
   });
 
+  // Sources cards — one expanded at a time. Each header toggle names its
+  // body via aria-controls; opening one closes the rest so the pane stays
+  // a scannable list instead of a 3,000px scroll.
+  const sourceToggles = drawer.querySelectorAll('[data-source-toggle]');
+  function setSourceOpen(btn, open) {
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    const bodyEl = document.getElementById(btn.getAttribute('aria-controls'));
+    if (bodyEl) bodyEl.hidden = !open;
+    const card = btn.closest('.source-card');
+    if (card) card.classList.toggle('open', open);
+  }
+  sourceToggles.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const open = btn.getAttribute('aria-expanded') !== 'true';
+      sourceToggles.forEach(other => { if (other !== btn) setSourceOpen(other, false); });
+      setSourceOpen(btn, open);
+    });
+  });
+
   window.Chassis = window.Chassis || {};
   window.Chassis.settings = {}; // shared namespace for sub-modules
 
@@ -540,11 +559,23 @@
       if (!payload.ok) {
         btn.classList.toggle('on', wasOn); // revert optimistic toggle to pre-click state
       }
+      syncSourceStatus(btn);
       handleAdapterSaveResponse(btn, payload);
     } catch (e) {
       btn.classList.toggle('on');
       showNotice('NETWORK ERROR', 'err');
     }
+  }
+
+  // A Sources card header shows the server-rendered status (e.g.
+  // "CAST · LISTENING") beside its enable switch; keep the two in step
+  // after a toggle instead of leaving the header stale until reload.
+  function syncSourceStatus(btn) {
+    const head = btn.closest('.source-head');
+    const status = head && head.querySelector('[data-source-status]');
+    if (!status) return;
+    const on = btn.classList.contains('on');
+    status.textContent = status.textContent.replace(/LISTENING|DISABLED/, on ? 'LISTENING' : 'DISABLED');
   }
 
   async function saveAdapterField(inp) {
