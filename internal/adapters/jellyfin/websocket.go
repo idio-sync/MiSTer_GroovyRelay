@@ -100,6 +100,11 @@ func dialWebSocket(ctx context.Context, in wsDialInput) (*websocket.Conn, error)
 // second call is a no-op while the first is still running. The
 // goroutine signals exit via a.runDone so Stop() can wait for it.
 func (a *Adapter) startWS(ctx context.Context, token string) error {
+	return a.startWSWith(ctx, token, false)
+}
+
+// startWSWith is startWS with probeFirst forwarded to runSessionWith.
+func (a *Adapter) startWSWith(ctx context.Context, token string, probeFirst bool) error {
 	a.mu.Lock()
 	if a.startCancel != nil {
 		a.mu.Unlock()
@@ -113,7 +118,7 @@ func (a *Adapter) startWS(ctx context.Context, token string) error {
 
 	go func() {
 		defer close(done)
-		_ = a.runSession(wsCtx, token)
+		_ = a.runSessionWith(wsCtx, token, probeFirst)
 	}()
 	return nil
 }
@@ -292,6 +297,16 @@ func lookupSessionID(ctx context.Context, in SessionLookupInput) (id string, pre
 // only AFTER a previously-successful WS run (hadSuccessfulRun gate),
 // preventing POST duplication during rapid dial-failure loops.
 func (a *Adapter) runSession(ctx context.Context, token string) error {
+	return a.runSessionWith(ctx, token, false)
+}
+
+// runSessionWith is runSession with an optional reachability gate. When
+// probeFirst is set (Start's /System/Info probe failed for a non-auth
+// reason, e.g. the relay booted before the Jellyfin container), each
+// iteration re-probes on the normal backoff until the server answers,
+// before posting Capabilities. A 401 there is terminal, as it is in Start:
+// the token is wiped and the loop exits.
+func (a *Adapter) runSessionWith(ctx context.Context, token string, probeFirst bool) error {
 	a.mu.Lock()
 	cfg := a.cfg
 	deviceID := a.deviceID
@@ -315,6 +330,26 @@ func (a *Adapter) runSession(ctx context.Context, token string) error {
 			if err == nil && !present {
 				shouldPost = true
 			}
+		}
+		if probeFirst {
+			probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := probeSystemInfo(probeCtx, cfg.ServerURL, token)
+			cancel()
+			if isAuthError(err) {
+				_ = WipeToken(a.tokenPath())
+				a.link.SetIdle()
+				err = fmt.Errorf("token rejected; please re-link: %w", err)
+				a.setState(adapters.StateError, err.Error())
+				return err
+			}
+			if err != nil {
+				if ctx.Err() == nil {
+					a.setState(adapters.StateError, "jellyfin server unreachable; retrying: "+err.Error())
+				}
+				goto wait
+			}
+			probeFirst = false
+			slog.Info("jellyfin server reachable; registering cast target")
 		}
 		if shouldPost {
 			preset, err := a.currentPreset()

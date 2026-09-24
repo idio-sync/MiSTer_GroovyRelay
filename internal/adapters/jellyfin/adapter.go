@@ -409,13 +409,12 @@ func (a *Adapter) Start(ctx context.Context) error {
 
 	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if err := probeSystemInfo(probeCtx, cfg.ServerURL, tok.AccessToken); err != nil {
-		// 401 → wipe; everything else → keep token, surface error.
-		if isAuthError(err) {
-			_ = WipeToken(a.tokenPath())
-			a.link.SetIdle()
-			err = fmt.Errorf("token rejected; please re-link: %w", err)
-		}
+	probeErr := probeSystemInfo(probeCtx, cfg.ServerURL, tok.AccessToken)
+	if isAuthError(probeErr) {
+		// 401 is terminal: the token is dead, retrying can't help.
+		_ = WipeToken(a.tokenPath())
+		a.link.SetIdle()
+		err := fmt.Errorf("token rejected; please re-link: %w", probeErr)
 		a.setState(adapters.StateError, err.Error())
 		return err
 	}
@@ -426,6 +425,16 @@ func (a *Adapter) Start(ctx context.Context) error {
 	// UI handler that calls SetLinked). Reading from tok is race-free —
 	// it's local data; SetLinked itself takes LinkState.mu internally.
 	a.link.SetLinked(tok.UserName, tok.ServerID)
+
+	if probeErr != nil {
+		// Unreachable, not rejected (server still booting, DNS not up yet
+		// at container start). Keep the token and let runSession re-probe
+		// on its backoff instead of parking in StateError until a manual
+		// re-enable or process restart.
+		slog.Warn("jellyfin server unreachable at start; retrying in background", "err", probeErr)
+		a.setState(adapters.StateError, "jellyfin server unreachable; retrying: "+probeErr.Error())
+		return a.startWSWith(ctx, tok.AccessToken, true)
+	}
 	return a.startWS(ctx, tok.AccessToken)
 }
 
