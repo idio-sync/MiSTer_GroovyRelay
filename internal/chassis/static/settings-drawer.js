@@ -1429,7 +1429,7 @@ function renderLocalFilesEntries(entries) {
 }
 
 async function castLocalFile(path) {
-  if (window.Chassis && Chassis.setupBlocked()) return;
+  if (window.Chassis?.setupBlocked?.()) return;
   const sec = localFilesSection();
   if (!sec) return;
   const lib = sec.querySelector('[data-localfiles-browse-lib]')?.value || '';

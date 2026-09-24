@@ -118,7 +118,7 @@
   function installSourceActions() {
     document.querySelectorAll('[data-source-action="aux-start"]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        if (Chassis.setupBlocked()) return;
+        if (window.Chassis.setupBlocked()) return;
         if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') {
           return;
         }
@@ -280,7 +280,7 @@
     if (!row) {
       return;
     }
-    if (Chassis.setupBlocked()) return;
+    if (window.Chassis.setupBlocked()) return;
     const id = row.getAttribute('data-history-replay-id') || '';
     if (!id || row.getAttribute('aria-busy') === 'true') {
       return;
@@ -341,7 +341,7 @@
 
   // setupBlocked returns true while first-run setup mode is active. Cast
   // scripts call this before POSTing; the server-side 409 is authoritative.
-  Chassis.setupBlocked = function () {
+  window.Chassis.setupBlocked = function () {
     return document.body.classList.contains('setup');
   };
 

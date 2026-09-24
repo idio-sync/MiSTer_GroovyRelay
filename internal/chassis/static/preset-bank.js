@@ -134,7 +134,7 @@
     if (e.target.closest('.preset-drag-clone')) return;
     const slot = btn.dataset.slot;
     if (!slot) return;
-    if (window.Chassis && Chassis.setupBlocked()) return;
+    if (window.Chassis?.setupBlocked?.()) return;
     try {
       const resp = await fetch('/ui/preset/' + encodeURIComponent(slot) + '/cast', {
         method: 'POST',
