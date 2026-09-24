@@ -1087,6 +1087,14 @@ func TestDataplaneStatsAttrsIncludeDebugTelemetry(t *testing.T) {
 	}
 }
 
+func TestDataplaneStatsAttrsIncludeDeltaResyncs(t *testing.T) {
+	snap := dataplaneStatsSnapshot{window: 5 * time.Second, deltaEnabled: true, deltaResyncsTotal: 3}
+	got := attrMap(dataplaneStatsAttrs(dataplaneStatsWindow{}, snap))
+	if got["delta_resyncs_total"] != uint64(3) {
+		t.Fatalf("delta_resyncs_total = %#v, want 3", got["delta_resyncs_total"])
+	}
+}
+
 func TestDataplaneStatsAttrsIncludeFieldParityWhenInterlaced(t *testing.T) {
 	snap := dataplaneStatsSnapshot{
 		window:             5 * time.Second,

@@ -116,6 +116,7 @@ type dataplaneStatsSnapshot struct {
 
 	deltaEnabled       bool
 	deltaSelectedTotal uint64
+	deltaResyncsTotal  uint64
 
 	// Field-parity telemetry (interlaced modelines only; see
 	// fieldParityTracker).
@@ -291,7 +292,8 @@ func dataplaneStatsAttrs(window dataplaneStatsWindow, snap dataplaneStatsSnapsho
 		}
 		attrs = append(attrs,
 			"delta_selected", deltaSelected,
-			"delta_selected_total", snap.deltaSelectedTotal)
+			"delta_selected_total", snap.deltaSelectedTotal,
+			"delta_resyncs_total", snap.deltaResyncsTotal)
 	}
 	if snap.parityTracked {
 		attrs = append(attrs,
@@ -469,6 +471,14 @@ type Plane struct {
 	fieldDeltaLZ4Scratch []byte
 	fieldDeltaLZ4        lz4.Compressor
 	deltaFieldsSinceFull [2]int
+
+	// deltaResyncs counts forced full-field resyncs after a duplicate run
+	// or an ACK echo gap (see resyncDeltaHistory). lastEchoResyncFrame
+	// rate-limits the echo-gap trigger once echoResyncArmed. Tick-goroutine
+	// owned.
+	deltaResyncs        uint64
+	lastEchoResyncFrame uint32
+	echoResyncArmed     bool
 
 	// Period of one field in milliseconds, as the rational
 	// periodMsNumer/periodMsDenom precomputed at NewPlane from
@@ -1052,6 +1062,7 @@ func (p *Plane) Run(ctx context.Context) error {
 			p.lastACKUnix.Store(time.Now().UnixNano())
 			latestACK = a
 			if a.FrameEcho != lastEcho {
+				p.noteEchoAdvance(lastEcho, a.FrameEcho, frameNum)
 				lastEcho = a.FrameEcho
 				ticksSinceEchoMoved = 0
 				p.updateFramesAhead(frameNum, lastEcho)
@@ -1112,6 +1123,7 @@ func (p *Plane) Run(ctx context.Context) error {
 				audioReady:         p.audioReady.Load(),
 				deltaEnabled:       p.deltaLZ4Enabled,
 				deltaSelectedTotal: p.deltaSelectedTotal,
+				deltaResyncsTotal:  p.deltaResyncs,
 			}
 			if parity != nil {
 				snap.parityTracked = true
@@ -1674,6 +1686,41 @@ func (p *Plane) handleTornPayload() {
 	p.invalidateFieldHistory(1)
 }
 
+// deltaResyncMinTicks rate-limits echo-gap resyncs to one per ~0.5 s. If the
+// receiver ever coalesced ACKs, every echo would look like a gap; the limit
+// caps the cost at two full fields per window instead of disabling delta.
+const deltaResyncMinTicks = 30
+
+// resyncDeltaHistory forces the next field of each polarity out as a full
+// payload because the receiver's framebuffer may no longer match the
+// sender's delta history. Counts once per event: a run of calls with no
+// field sent in between is one resync. Tick-goroutine only.
+func (p *Plane) resyncDeltaHistory() {
+	if !p.deltaLZ4Enabled || (!p.fieldPrevValid[0] && !p.fieldPrevValid[1]) {
+		return
+	}
+	p.invalidateFieldHistory(0)
+	p.invalidateFieldHistory(1)
+	p.deltaResyncs++
+}
+
+// noteEchoAdvance feeds an echo-advancing ACK to the delta-resync policy.
+// The MiSTer ACKs every BLIT, so an echo that skips a frame or moves
+// backwards means a BLIT or its ACK was lost; a lost BLIT leaves the
+// receiver out of step with the delta history until the next full field.
+// prev == 0 is the session's first echo. frame is the current tick's frame
+// counter, used for rate limiting.
+func (p *Plane) noteEchoAdvance(prev, cur, frame uint32) {
+	if !p.deltaLZ4Enabled || prev == 0 || cur == prev+1 {
+		return
+	}
+	if p.echoResyncArmed && frame-p.lastEchoResyncFrame < deltaResyncMinTicks {
+		return
+	}
+	p.echoResyncArmed, p.lastEchoResyncFrame = true, frame
+	p.resyncDeltaHistory()
+}
+
 func (p *Plane) rememberFieldHistory(field uint8, raw []byte) {
 	slot := int(field & 1)
 	prev := p.fieldPrev[slot]
@@ -1752,7 +1799,13 @@ func (p *Plane) logLZ4RawFallback(size int, now time.Time) {
 // under-run to hold the raster: the FPGA re-scans the last field, and our
 // frame counter still advances so timing doesn't drift. MarkBlitSent(0)
 // resets the congestion window so the next real field isn't delayed.
+//
+// With delta-LZ4 on, a dup run also forces a full-field resync: if the FPGA
+// keys its delta base on its own frame counter rather than the header field
+// bit (unverified), a dup would misalign every following delta. Cheap
+// insurance — underruns are rare and cost two full fields.
 func (p *Plane) sendDuplicate(frame uint32, field uint8) {
+	p.resyncDeltaHistory()
 	opts := groovy.BlitOpts{Frame: frame, Field: field, Duplicate: true}
 	header := groovy.BuildBlitHeaderInto(p.headerScratch, opts)
 	if err := p.fieldSender.Send(header); err != nil {
