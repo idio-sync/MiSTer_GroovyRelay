@@ -2921,7 +2921,7 @@ func TestChassis_CatalogPane_RendersProviderRows(t *testing.T) {
 	defer res.Body.Close()
 
 	for _, want := range []string{
-		`data-pane="catalog"`,
+		`data-pane="streams"`,
 		`data-catalog-provider="mtv-rewind"`,
 		`data-catalog-direct-hls`,
 		`id="restore-defaults-btn"`,

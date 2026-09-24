@@ -1,0 +1,73 @@
+{{- define "settings-system" -}}
+{{/* System tab — the bridge process itself: its listener and state
+     directory, the external tools it shells out to, logging, and the
+     destructive reset (kept last, away from routine settings). */}}
+<div class="settings-pane" data-pane="system">
+
+  <div class="settings-section">
+    <h4>Bridge</h4>
+    {{ field (dict
+      "Name" "ui_http_port" "Type" "number" "Label" "HTTP port"
+      "Help" "Serves this UI and Plex Companion on one listener."
+      "Value" (itoa .Bridge.UI.HTTPPort)
+      "Scope" "reboot"
+      "Error" (errOf .Errors "ui_http_port")) }}
+    {{ field (dict
+      "Name" "host_ip" "Type" "text" "Label" "Host IP"
+      "Help" "LAN IP advertised to Plex. Leave blank to auto-detect."
+      "Value" .Bridge.HostIP "Placeholder" "auto-detect"
+      "Scope" "reboot"
+      "Error" (errOf .Errors "host_ip")) }}
+    {{ field (dict
+      "Name" "data_dir" "Type" "path" "Label" "Data directory"
+      "Help" "Where plex.json and other persistent state live. Leave empty for the OS default."
+      "Value" .Bridge.DataDir "Placeholder" "OS default"
+      "Scope" "reboot"
+      "Error" (errOf .Errors "data_dir")) }}
+  </div>
+
+  <div class="settings-section">
+    <h4>Logging</h4>
+    {{ field (dict
+      "Name" "logging_debug" "Type" "switch" "Label" "Debug logging"
+      "Help" "Emit verbose slog records (request traces, timeline pushes, subscriber prunes). Persisted across restarts."
+      "Value" (boolStr .Bridge.Logging.Debug)
+      "Scope" "hot") }}
+  </div>
+
+  <div class="settings-section wide">
+    <h4>External tools</h4>
+    {{ field (dict
+      "Name" "ffmpeg_path" "Type" "path" "Label" "FFmpeg path"
+      "Help" "Leave empty to use the bundled sidecar, then PATH."
+      "Value" .Bridge.FFmpegPath "Placeholder" "auto"
+      "Scope" "hot"
+      "Error" (errOf .Errors "ffmpeg_path")) }}
+    {{ field (dict
+      "Name" "ffprobe_path" "Type" "path" "Label" "FFprobe path"
+      "Value" .Bridge.FFprobePath "Placeholder" "auto"
+      "Scope" "hot"
+      "Error" (errOf .Errors "ffprobe_path")) }}
+    {{ field (dict
+      "Name" "ytdlp_path" "Type" "path" "Label" "yt-dlp path"
+      "Value" .Bridge.YTDLPPath "Placeholder" "auto"
+      "Scope" "hot"
+      "Error" (errOf .Errors "ytdlp_path")) }}
+  </div>
+
+  <div class="settings-section wide danger-zone">
+    <h4>Maintenance</h4>
+    <div class="field-row" id="restore-defaults-row">
+      <label>Reset to defaults <span class="help">Rewrites <code>config.toml</code> with application defaults. Persisted state in <code>data_dir</code> (device UUID, Plex token, streams cache) is preserved. Requires a bridge restart to apply.</span></label>
+      <div>
+        <button class="action-btn danger"
+                id="restore-defaults-btn"
+                type="button">⚠ Reset…</button>
+        <div class="action-result" id="restore-defaults-result"></div>
+      </div>
+      <span class="scope reboot">REBOOT</span>
+    </div>
+  </div>
+
+</div>
+{{- end -}}

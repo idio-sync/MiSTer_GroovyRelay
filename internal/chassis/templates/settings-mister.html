@@ -1,0 +1,70 @@
+{{- define "settings-mister" -}}
+{{/* MiSTer tab — everything about reaching and driving the MiSTer itself:
+     the Groovy UDP link (with its connectivity probe) and the SSH control
+     path (with Launch core), so "where do I set the MiSTer's IP?" and
+     "why won't the core start?" resolve in one place. */}}
+<div class="settings-pane active" data-pane="mister">
+
+  <div class="settings-section">
+    <h4>Connection</h4>
+    {{ field (dict
+      "Name" "mister_host" "Type" "text" "Label" "Host"
+      "Help" "IP or hostname of your MiSTer on the LAN."
+      "Value" .Bridge.MiSTer.Host
+      "Scope" "reboot"
+      "Error" (errOf .Errors "mister_host")) }}
+    {{ field (dict
+      "Name" "mister_port" "Type" "number" "Label" "Port"
+      "Help" "UDP port the MiSTer's Groovy core listens on."
+      "Value" (itoa .Bridge.MiSTer.Port)
+      "Scope" "reboot"
+      "Error" (errOf .Errors "mister_port")) }}
+    {{ field (dict
+      "Name" "mister_source_port" "Type" "number" "Label" "Source port"
+      "Help" "The bridge's own UDP port. Keep it fixed: the MiSTer treats a new port as a new sender."
+      "Value" (itoa .Bridge.MiSTer.SourcePort)
+      "Scope" "reboot"
+      "Error" (errOf .Errors "mister_source_port")) }}
+    {{ template "settings-action-probe-mister" . }}
+  </div>
+
+  <div class="settings-section">
+    <h4>Core control</h4>
+    {{ field (dict
+      "Name" "mister_ssh_user" "Type" "text" "Label" "SSH user"
+      "Help" "MiSTer's stock user is root."
+      "Value" .Bridge.MiSTer.SSHUser
+      "Scope" "hot"
+      "Error" (errOf .Errors "mister_ssh_user")) }}
+    {{ field (dict
+      "Name" "mister_ssh_password" "Type" "password" "Label" "SSH password"
+      "Help" "Leave empty to keep the current one. Stored in plain text in config.toml (LAN-only trust model)."
+      "Value" ""
+      "Placeholder" (passwordPlaceholder .Bridge.MiSTer.SSHPassword)
+      "SkipEmpty" true
+      "Scope" "hot") }}
+    {{ template "settings-action-launch-core" . }}
+  </div>
+
+</div>
+{{- end -}}
+
+{{- define "settings-action-probe-mister" -}}
+<div class="field-row action-field">
+  <label>Connectivity <span class="help">Sends one packet and waits up to 1&nbsp;s for the MiSTer's reply, using the address and ports above.</span></label>
+  <div>
+    <button class="action-btn primary" id="probe-mister-btn" type="button">&#9656; Test MiSTer connectivity</button>
+    <div class="action-result" id="probe-mister-result"></div>
+  </div>
+</div>
+{{- end -}}
+
+{{- define "settings-action-launch-core" -}}
+<div class="field-row action-field">
+  <label>Launch GroovyMiSTer <span class="help">Sends <code>load_core /media/fat/_Utility/Groovy_20240928.rbf</code> to <code>/dev/MiSTer_cmd</code> using the credentials above.</span></label>
+  <div>
+    <button class="action-btn primary" id="launch-core-btn" type="button">&#9656; Launch core</button>
+    <div class="action-result" id="launch-core-result"></div>
+  </div>
+</div>
+{{- end -}}

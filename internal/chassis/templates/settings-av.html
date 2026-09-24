@@ -1,0 +1,71 @@
+{{- define "settings-av" -}}
+<div class="settings-pane" data-pane="av">
+
+  <div class="settings-section">
+    <h4>Video</h4>
+    {{ field (dict
+      "Name" "video_modeline" "Type" "select" "Label" "Output mode"
+      "Help" "CRT video mode. PAL modes work over the wire but aren't tested on real PAL CRTs."
+      "Value" .Bridge.Video.Modeline
+      "Scope" "recast"
+      "Options" (options
+        (dict "Value" "NTSC_480i" "Label" "NTSC 480i (interlaced)")
+        (dict "Value" "NTSC_240p" "Label" "NTSC 240p (progressive)")
+        (dict "Value" "PAL_576i" "Label" "PAL 576i (experimental)")
+        (dict "Value" "PAL_288p" "Label" "PAL 288p (experimental)"))
+      "Error" (errOf .Errors "video_modeline")) }}
+    {{ field (dict
+      "Name" "video_interlace_field_order" "Type" "select" "Label" "Field order"
+      "Help" "Flip this if the picture shimmers or combs on the CRT. Takes effect immediately, even mid-cast."
+      "Value" .Bridge.Video.InterlaceFieldOrder
+      "Scope" "hot"
+      "Options" (options
+        (dict "Value" "bff" "Label" "Bottom field first (BFF)")
+        (dict "Value" "tff" "Label" "Top field first (TFF)"))
+      "Error" (errOf .Errors "video_interlace_field_order")) }}
+    {{ field (dict
+      "Name" "video_aspect_mode" "Type" "select" "Label" "Aspect"
+      "Help" "How widescreen sources fit the 4:3 frame."
+      "Value" .Bridge.Video.AspectMode
+      "Scope" "recast"
+      "Options" (options
+        (dict "Value" "auto" "Label" "Auto (crop detected black bars)")
+        (dict "Value" "letterbox" "Label" "Letterbox")
+        (dict "Value" "zoom" "Label" "Zoom (fill 4:3)"))
+      "Error" (errOf .Errors "video_aspect_mode")) }}
+    {{ field (dict
+      "Name" "video_lz4_enabled" "Type" "switch" "Label" "LZ4 compression"
+      "Help" "Compresses each frame sent to the MiSTer. Strongly recommended."
+      "Value" (boolStr .Bridge.Video.LZ4Enabled)
+      "Scope" "recast") }}
+    {{ field (dict
+      "Name" "video_delta_lz4_enabled" "Type" "switch" "Label" "Delta-LZ4"
+      "Help" "Sends only what changed between frames when that is smaller than a full LZ4 frame."
+      "Value" (boolStr .Bridge.Video.DeltaLZ4Enabled)
+      "Scope" "recast") }}
+  </div>
+
+  <div class="settings-section">
+    <h4>Audio</h4>
+    {{ field (dict
+      "Name" "audio_sample_rate" "Type" "select" "Label" "Sample rate"
+      "Help" "PCM rate sent to the MiSTer."
+      "Value" (itoa .Bridge.Audio.SampleRate)
+      "Scope" "recast"
+      "Options" (options
+        (dict "Value" "48000" "Label" "48 kHz")
+        (dict "Value" "44100" "Label" "44.1 kHz")
+        (dict "Value" "22050" "Label" "22.05 kHz"))
+      "Error" (errOf .Errors "audio_sample_rate")) }}
+    {{ field (dict
+      "Name" "audio_channels" "Type" "select" "Label" "Channels"
+      "Value" (itoa .Bridge.Audio.Channels)
+      "Scope" "recast"
+      "Options" (options
+        (dict "Value" "2" "Label" "Stereo")
+        (dict "Value" "1" "Label" "Mono"))
+      "Error" (errOf .Errors "audio_channels")) }}
+  </div>
+
+</div>
+{{- end -}}

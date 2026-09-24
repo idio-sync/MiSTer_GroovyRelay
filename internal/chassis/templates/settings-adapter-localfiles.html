@@ -1,6 +1,6 @@
 {{- define "settings-adapter-localfiles" -}}
 <section class="settings-section wide" data-adapter-section="localfiles">
-  <h4>LOCAL FILES <span class="hint">{{ .Hint }}</span></h4>
+  <h4>Local Files <span class="hint">{{ .Hint }}</span></h4>
   {{ with fieldByKey .Fields "enabled" }}{{ template "adapter-field-row" (dict "Adapter" "localfiles" "Field" . "Values" $.Values) }}{{ end }}
   {{ if .HasLibraryEditor }}{{ template "localfiles-library-editor" . }}{{ end }}
   {{ if .HasBrowseDrawer }}{{ template "localfiles-browse-drawer" . }}{{ end }}

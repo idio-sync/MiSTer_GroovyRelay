@@ -530,6 +530,7 @@ type SettingsData struct {
 	Bridge                        config.BridgeConfig
 	Errors                        map[string]string
 	AdapterCount                  int
+	SourceAdapterCount            int                    // Sources tab badge: AdapterCount minus the Streams catalog (own tab)
 	CatalogProviderCount          int                    // existing tab badge count from StreamsCatalogViewer
 	CatalogPaneProviderCount      int                    // 4C — len(CatalogProviders)
 	CatalogProviders              []CatalogProviderState // 4C
@@ -583,12 +584,17 @@ func buildSettingsData(
 	catalogManager CatalogSettingsManager,
 ) SettingsData {
 	adapterCount := 0
+	sourceCount := 0
 	if registry != nil {
 		for _, a := range registry.List() {
 			if a.Name() == "aux" {
 				continue
 			}
 			adapterCount++
+			// Streams renders on its own tab beside the channel providers.
+			if a.Name() != "streams" {
+				sourceCount++
+			}
 		}
 	}
 	catalogProviderCount := 0
@@ -599,6 +605,7 @@ func buildSettingsData(
 		Bridge:               bridge,
 		Errors:               map[string]string{},
 		AdapterCount:         adapterCount,
+		SourceAdapterCount:   sourceCount,
 		CatalogProviderCount: catalogProviderCount,
 	}
 	if catalogManager != nil {
@@ -848,7 +855,6 @@ func buildAdapterHint(cfg Config, name string, values map[string]any) string {
 			for _, p := range cfg.CatalogManager.Providers() {
 				n += p.ChannelCount
 			}
-			return fmt.Sprintf("PULL · %d CHANNELS · see Catalog tab", n)
 		}
 		return fmt.Sprintf("PULL · %d CHANNELS", n)
 	case "localfiles":

@@ -3951,7 +3951,8 @@ func TestSettingsDrawerTemplate_RendersFiveTabsAndNoticeSlot(t *testing.T) {
 	data := SettingsData{
 		Bridge:               config.BridgeConfig{},
 		Errors:               map[string]string{},
-		AdapterCount:         6,
+		AdapterCount:         7,
+		SourceAdapterCount:   6,
 		CatalogProviderCount: 3,
 	}
 	var buf bytes.Buffer
@@ -3960,13 +3961,15 @@ func TestSettingsDrawerTemplate_RendersFiveTabsAndNoticeSlot(t *testing.T) {
 	}
 	s := buf.String()
 	for _, want := range []string{
-		`data-tab="network"`,
-		`data-tab="pipeline"`,
-		`data-tab="adapters"`,
+		// Task-grouped tabs (settings IA regroup): MiSTer link, picture and
+		// sound, media sources, the streams catalog, and the bridge itself.
+		`data-tab="mister"`,
+		`data-tab="av"`,
+		`data-tab="sources"`,
 		`<span class="badge">6</span>`,
-		`data-tab="catalog"`,
+		`data-tab="streams"`,
 		`<span class="badge">3</span>`,
-		`data-tab="advanced"`,
+		`data-tab="system"`,
 		`id="settings-close"`,
 		`class="settings-notice"`,
 		`aria-live="polite"`,
@@ -4076,7 +4079,7 @@ func TestSettingsDrawerTemplate_StubPanesRenderSpecLabels(t *testing.T) {
 	}
 
 	// Real panes must be present.
-	for _, pane := range []string{"adapters", "pipeline", "advanced", "catalog"} {
+	for _, pane := range []string{"mister", "av", "sources", "streams", "system"} {
 		if !strings.Contains(s, fmt.Sprintf(`data-pane="%s"`, pane)) {
 			t.Errorf("missing pane %q in drawer", pane)
 		}
@@ -4414,7 +4417,7 @@ func TestFieldHelper_BridgeInputsCarryDataField(t *testing.T) {
 	}
 }
 
-func TestSettingsPipelineTemplate_RendersAllFields(t *testing.T) {
+func TestSettingsAVAndMisterTemplates_RenderAllFields(t *testing.T) {
 	t.Parallel()
 	tmpl, err := parseTemplates()
 	if err != nil {
@@ -4428,13 +4431,18 @@ func TestSettingsPipelineTemplate_RendersAllFields(t *testing.T) {
 		},
 		Errors: map[string]string{},
 	}
+	// Video/audio render on the Video & Audio tab; the SSH control path
+	// moved beside the connection fields on the MiSTer tab.
 	var buf bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&buf, "settings-pipeline", data); err != nil {
-		t.Fatalf("ExecuteTemplate: %v", err)
+	for _, name := range []string{"settings-av", "settings-mister"} {
+		if err := tmpl.ExecuteTemplate(&buf, name, data); err != nil {
+			t.Fatalf("ExecuteTemplate(%s): %v", name, err)
+		}
 	}
 	html := buf.String()
 	required := []string{
-		`data-pane="pipeline"`,
+		`data-pane="av"`,
+		`data-pane="mister"`,
 		`name="video_modeline"`,
 		`name="video_interlace_field_order"`,
 		`name="video_aspect_mode"`,
@@ -4447,7 +4455,8 @@ func TestSettingsPipelineTemplate_RendersAllFields(t *testing.T) {
 		`id="launch-core-btn"`,
 		`id="launch-core-result"`,
 		`<span class="scope hot">HOT</span>`,       // interlace + ssh_user + ssh_password
-		`<span class="scope recast">RECAST</span>`, // most other Pipeline fields
+		`<span class="scope recast">RECAST</span>`, // most other video/audio fields
+		`>Bottom field first (BFF)<`,               // plain-language field order
 		`data-skip-empty="true"`,
 		`••••••••`, // placeholder for stored password
 	}
@@ -4462,7 +4471,7 @@ func TestSettingsPipelineTemplate_RendersAllFields(t *testing.T) {
 	}
 }
 
-func TestSettingsAdvancedTemplate_RendersAllFields(t *testing.T) {
+func TestSettingsHLSBufferAndSystemTemplates_RenderAllFields(t *testing.T) {
 	t.Parallel()
 	tmpl, err := parseTemplates()
 	if err != nil {
@@ -4487,13 +4496,18 @@ func TestSettingsAdvancedTemplate_RendersAllFields(t *testing.T) {
 		},
 		Errors: map[string]string{},
 	}
+	// The HLS buffer renders on the Streams tab beside the providers that
+	// use it; logging stays with the bridge on the System tab.
 	var buf bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&buf, "settings-advanced", data); err != nil {
-		t.Fatalf("ExecuteTemplate: %v", err)
+	for _, name := range []string{"settings-hls-buffer", "settings-system"} {
+		if err := tmpl.ExecuteTemplate(&buf, name, data); err != nil {
+			t.Fatalf("ExecuteTemplate(%s): %v", name, err)
+		}
 	}
 	html := buf.String()
 	required := []string{
-		`data-pane="advanced"`,
+		`data-pane="system"`,
+		`data-catalog-direct-hls`,
 		`data-field="hls_enabled"`, // switch
 		`name="hls_live_edge_segments"`,
 		`name="hls_start_segments"`,
@@ -4546,12 +4560,14 @@ func TestSettingsDrawer_PipelineAndAdvancedReplaceStubs(t *testing.T) {
 	}
 	html := buf.String()
 
-	// Drawer should now contain the real Pipeline + Advanced markers.
+	// Drawer should contain the real video, MiSTer, streams and system markers.
 	for _, sub := range []string{
-		`data-pane="pipeline"`,
+		`data-pane="av"`,
 		`name="video_modeline"`,
+		`data-pane="mister"`,
 		`id="launch-core-btn"`,
-		`data-pane="advanced"`,
+		`data-pane="streams"`,
+		`data-pane="system"`,
 		`name="hls_live_edge_segments"`,
 		`data-field="logging_debug"`,
 	} {
@@ -4591,7 +4607,7 @@ func TestRenderCatalogPane_ProvidersRendered(t *testing.T) {
 	html := renderCatalogPane(t, data)
 
 	wantContains := []string{
-		`data-pane="catalog"`,
+		`data-pane="streams"`,
 		`3 PROVIDERS · 90 CHANNELS`,
 		`data-catalog-provider="mtv-rewind"`,
 		`data-catalog-field="enabled"`,
@@ -4654,29 +4670,30 @@ func TestRenderCatalogPane_EmptyProvidersStillRendersHLSSection(t *testing.T) {
 	if !strings.Contains(html, `0 PROVIDERS · 0 CHANNELS`) {
 		t.Errorf("expected `0 PROVIDERS · 0 CHANNELS` heading; got: %s", html)
 	}
-	if !strings.Contains(html, `Per-provider HLS buffer override`) {
-		t.Errorf("HLS override section should still render when no providers; got: %s", html)
+	if !strings.Contains(html, `Skip for direct-stream providers`) {
+		t.Errorf("direct-stream HLS override should still render when no providers; got: %s", html)
 	}
 }
 
 // renderCatalogPane executes the chassis template suite against the given
-// SettingsData and returns the rendered settings-catalog block.
+// SettingsData and returns the rendered Streams pane (channel providers,
+// the Streams catalog adapter, and the live HLS buffer).
 func renderCatalogPane(t *testing.T, data SettingsData) string {
 	t.Helper()
 	tmpl := parseTemplatesForTest(t)
 	var buf bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&buf, "settings-catalog", data); err != nil {
-		t.Fatalf("execute settings-catalog: %v", err)
+	if err := tmpl.ExecuteTemplate(&buf, "settings-streams", data); err != nil {
+		t.Fatalf("execute settings-streams: %v", err)
 	}
 	return buf.String()
 }
 
-func TestRenderAdvancedPane_DiagnosticsRestoreDefaults(t *testing.T) {
+func TestRenderSystemPane_MaintenanceRestoreDefaults(t *testing.T) {
 	data := SettingsData{Bridge: config.BridgeConfig{}}
-	html := renderAdvancedPane(t, data)
+	html := renderSystemPane(t, data)
 
 	wantContains := []string{
-		`<h4>Diagnostics <span class="hint">read-only</span></h4>`,
+		`<h4>Maintenance</h4>`,
 		`id="restore-defaults-row"`,
 		`id="restore-defaults-btn"`,
 		`⚠ Reset…`,
@@ -4691,12 +4708,12 @@ func TestRenderAdvancedPane_DiagnosticsRestoreDefaults(t *testing.T) {
 	}
 }
 
-func renderAdvancedPane(t *testing.T, data SettingsData) string {
+func renderSystemPane(t *testing.T, data SettingsData) string {
 	t.Helper()
 	tmpl := parseTemplatesForTest(t)
 	var buf bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&buf, "settings-advanced", data); err != nil {
-		t.Fatalf("execute settings-advanced: %v", err)
+	if err := tmpl.ExecuteTemplate(&buf, "settings-system", data); err != nil {
+		t.Fatalf("execute settings-system: %v", err)
 	}
 	return buf.String()
 }
@@ -5490,7 +5507,7 @@ func renderSettingsAdapters(t *testing.T, data SettingsData) string {
 	t.Helper()
 	tmpl := parseTemplatesForTest(t)
 	var buf bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&buf, "settings-adapters", data); err != nil {
+	if err := tmpl.ExecuteTemplate(&buf, "settings-sources", data); err != nil {
 		t.Fatalf("ExecuteTemplate: %v", err)
 	}
 	return buf.String()
