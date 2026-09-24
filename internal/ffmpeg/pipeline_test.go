@@ -70,7 +70,7 @@ func TestBuildFilterChain_FieldOrderHandledOutsideFFmpeg(t *testing.T) {
 	}
 }
 
-func TestBuildFilterChain_SubtitleAfterRateNormalize(t *testing.T) {
+func TestBuildFilterChain_SubtitlesRenderedBeforeRateNormalize(t *testing.T) {
 	spec := PipelineSpec{
 		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 24, Interlaced: false},
 		OutputWidth: 720, OutputHeight: 480,
@@ -80,8 +80,80 @@ func TestBuildFilterChain_SubtitleAfterRateNormalize(t *testing.T) {
 	chain := buildFilterChain(spec)
 	subIdx := strings.Index(chain, "subtitles=")
 	fpsIdx := strings.Index(chain, "fps=60000/1001")
-	if subIdx < 0 || fpsIdx < 0 || subIdx <= fpsIdx {
-		t.Errorf("subtitles must follow the fps normalizer: %s", chain)
+	if subIdx < 0 || fpsIdx < 0 || subIdx >= fpsIdx {
+		t.Errorf("subtitles must be rendered at source rate, before the fps normalizer: %s", chain)
+	}
+}
+
+// TestBuildFilterChain_RateNormalizeIsLastStep: fps duplicates frames up to
+// the field cadence (2.5x for film), so every filter placed after it —
+// scale, pad, subtitles, the RGB conversion — would redo identical work per
+// duplicate. The chain converts to bgr24 at source rate and normalizes last.
+func TestBuildFilterChain_RateNormalizeIsLastStep(t *testing.T) {
+	cases := []struct {
+		name string
+		spec PipelineSpec
+		want string
+	}{
+		{"letterbox", PipelineSpec{AspectMode: "letterbox"}, ",format=bgr24,fps=60000/1001"},
+		{"zoom", PipelineSpec{AspectMode: "zoom"}, ",format=bgr24,fps=60000/1001"},
+		{"auto crop", PipelineSpec{AspectMode: "auto", CropRect: &CropRect{W: 1920, H: 800, X: 0, Y: 140}}, ",format=bgr24,fps=60000/1001"},
+		{"subtitles", PipelineSpec{AspectMode: "letterbox", SubtitlePath: "/tmp/x.srt"}, ",format=bgr24,fps=60000/1001"},
+		{"interlaced source", PipelineSpec{AspectMode: "letterbox", SourceProbe: &ProbeResult{Width: 1920, Height: 1080, Interlaced: true}}, ",format=bgr24,fps=60000/1001"},
+		{"PAL", PipelineSpec{AspectMode: "letterbox", OutputFpsExpr: "50/1", OutputHeight: 576}, ",format=bgr24,fps=50/1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := tc.spec
+			spec.OutputWidth = 720
+			if spec.OutputHeight == 0 {
+				spec.OutputHeight = 480
+			}
+			if spec.SourceProbe == nil {
+				spec.SourceProbe = &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976}
+			}
+			chain := buildFilterChain(spec)
+			if !strings.HasSuffix(chain, tc.want) {
+				t.Errorf("chain must end with %q: %s", tc.want, chain)
+			}
+			if n := strings.Count(chain, "fps="); n != 1 {
+				t.Errorf("chain has %d fps filters, want 1: %s", n, chain)
+			}
+		})
+	}
+}
+
+// TestBuildFilterChain_NormalizesToFieldRateWithFFmpeg guards the cadence
+// contract end to end: 2 s of 23.976p film must come out as ~120 frames at
+// 59.94, one per field tick.
+func TestBuildFilterChain_NormalizesToFieldRateWithFFmpeg(t *testing.T) {
+	ffmpegPath := findFFBinary("ffmpeg")
+	if ffmpegPath == "" {
+		t.Skip("ffmpeg not found; skipping cadence behavior test")
+	}
+	spec := PipelineSpec{
+		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
+		OutputWidth: 720, OutputHeight: 480,
+		FieldOrder: "tff", AspectMode: "letterbox",
+	}
+	runCtx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, ffmpegPath,
+		"-hide_banner", "-v", "error",
+		"-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=24000/1001:d=2",
+		"-vf", buildFilterChain(spec),
+		"-pix_fmt", "bgr24", "-f", "rawvideo", "-",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("ffmpeg failed: %v\nchain=%s", err, buildFilterChain(spec))
+	}
+	frameBytes := 720 * 480 * 3
+	if len(out)%frameBytes != 0 {
+		t.Fatalf("output %d bytes is not a whole number of %d-byte frames", len(out), frameBytes)
+	}
+	if frames := len(out) / frameBytes; frames < 119 || frames > 121 {
+		t.Fatalf("frames = %d, want ~120 (2 s at 59.94)", frames)
 	}
 }
 

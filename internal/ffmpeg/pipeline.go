@@ -185,10 +185,13 @@ func logicalCanvas(outputHeight int) (int, int) {
 //
 // Order is load-bearing:
 //  1. yadif (only if interlaced source) → one progressive frame per input frame.
-//  2. fps=<OutputFpsExpr> → normalize every source to the modeline's field cadence.
-//  3. crop/scale/pad for aspect mode in a square-pixel logical canvas.
-//  4. anamorphic stretch from logical canvas to OutputWidth×OutputHeight.
-//  5. subtitle burn-in on the stretched buffer.
+//  2. crop/scale/pad for aspect mode in a square-pixel logical canvas.
+//  3. anamorphic stretch from logical canvas to OutputWidth×OutputHeight.
+//  4. subtitle burn-in on the stretched buffer.
+//  5. format=bgr24, then fps=<OutputFpsExpr> → normalize every source to the
+//     modeline's field cadence. fps runs last because it duplicates frames
+//     (2.5x for film); any filter after it would redo identical work per
+//     duplicate (~39% more total ffmpeg CPU on 1080p24 film).
 //
 // The aspect chain operates in the logical (square-pixel) canvas so a 4:3
 // source fills the visible 4:3 CRT area exactly and a 16:9 source produces
@@ -204,18 +207,7 @@ func buildFilterChain(s PipelineSpec) string {
 		filters = append(filters, "yadif=mode=send_frame")
 	}
 
-	// 2. Normalize every source to the modeline's field cadence. The
-	//    data plane treats each output frame as the source for one field
-	//    tick. NTSC presets emit "fps=60000/1001"; PAL presets emit
-	//    "fps=50/1". Empty OutputFpsExpr defaults to NTSC for back-compat
-	//    with hand-built specs in tests.
-	fpsExpr := s.OutputFpsExpr
-	if fpsExpr == "" {
-		fpsExpr = "60000/1001"
-	}
-	filters = append(filters, "fps="+fpsExpr)
-
-	// 3. Aspect / crop in the square-pixel logical canvas. The fit is
+	// 2. Aspect / crop in the square-pixel logical canvas. The fit is
 	//    computed from the source's display aspect (ffmpeg's `dar` =
 	//    iw/ih*sar) rather than its storage dimensions: anamorphic sources
 	//    (DVD 720x480 at SAR 32:27 or 8:9, HDV 1440x1080 at 4:3) otherwise
@@ -245,7 +237,7 @@ func buildFilterChain(s PipelineSpec) string {
 		)
 	}
 
-	// 4. Anamorphic stretch from logical canvas to the output buffer.
+	// 3. Anamorphic stretch from logical canvas to the output buffer.
 	//    For NTSC 480i this is 640×480 → 720×480 (PAR 8:9); the CRT undoes
 	//    the stretch on display so the picture lands at correct 4:3 aspect.
 	if logicalW != s.OutputWidth || logicalH != s.OutputHeight {
@@ -253,7 +245,7 @@ func buildFilterChain(s PipelineSpec) string {
 			fmt.Sprintf("scale=w=%d:h=%d", s.OutputWidth, s.OutputHeight))
 	}
 
-	// 5. Subtitle burn-in on the stretched buffer. Only filesystem paths
+	// 4. Subtitle burn-in on the stretched buffer. Only filesystem paths
 	//    work for libass; URL-sourced captions must be downloaded by the
 	//    adapter first. Burning after the anamorphic stretch keeps subtitle
 	//    glyphs proportioned in screen space rather than logical space.
@@ -261,6 +253,17 @@ func buildFilterChain(s PipelineSpec) string {
 		filters = append(filters,
 			fmt.Sprintf("subtitles=filename='%s':si=%d", escapeSubtitlePath(s.SubtitlePath), s.SubtitleIndex))
 	}
+
+	// 5. Convert to the wire pixel format at source rate, then normalize to
+	//    the modeline's field cadence. The data plane treats each output
+	//    frame as the source for one field tick. NTSC presets emit
+	//    "fps=60000/1001"; PAL presets emit "fps=50/1". Empty OutputFpsExpr
+	//    defaults to NTSC for back-compat with hand-built specs in tests.
+	fpsExpr := s.OutputFpsExpr
+	if fpsExpr == "" {
+		fpsExpr = "60000/1001"
+	}
+	filters = append(filters, "format=bgr24", "fps="+fpsExpr)
 
 	return strings.Join(filters, ",")
 }
