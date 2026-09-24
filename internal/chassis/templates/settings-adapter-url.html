@@ -14,12 +14,17 @@
 {{- define "url-host-editor" -}}
 <div class="field-row" style="grid-template-columns: 1fr 1fr auto;" data-host-editor="url">
   <label>yt-dlp hosts <span class="help">Hosts that auto-route through yt-dlp. Curated default — add others at your own risk (they break frequently).</span></label>
-  <div class="tag-list">
+  <div class="tag-list" role="group" aria-label="yt-dlp hosts">
     {{ range .Hosts }}
-    <span class="tag" data-host="{{ . }}">{{ . }}<span class="x" data-remove-host="{{ . }}">✕</span></span>
+    <span class="tag" data-host="{{ . }}">{{ . }}<button type="button" class="x" data-remove-host="{{ . }}" aria-label="Remove {{ . }}">✕</button></span>
     {{ end }}
-    <span class="tag add" data-add-host tabindex="0">+ add host</span>
-    <div class="widget-err" data-host-err hidden></div>
+    <button type="button" class="tag add" data-add-host>+ add host</button>
+    <span class="tag-add-form" data-host-add-form hidden>
+      <input class="field-input" data-host-add-input placeholder="example.com" aria-label="New yt-dlp host" autocomplete="off" spellcheck="false">
+      <button type="button" class="action-btn" data-host-add-confirm>Add</button>
+      <button type="button" class="action-btn ghost" data-host-add-cancel>Cancel</button>
+    </span>
+    <div class="widget-err" data-host-err role="alert" hidden></div>
   </div>
   <span class="scope hot">HOT</span>
 </div>
@@ -29,7 +34,7 @@
 <div class="field-row" style="grid-template-columns: 1fr 1fr auto;" data-cookies="url">
   <label>Cookies <span class="help">Paste Netscape cookies.txt for authenticated streams. Stored on disk; persists across restarts.</span></label>
   <div class="cookies-form">
-    <textarea class="cookies-paste" data-cookies-text rows="5" spellcheck="false" autocomplete="off" placeholder="# Netscape HTTP Cookie File&#10;# (paste exported cookies.txt content here)"></textarea>
+    <textarea class="cookies-paste" data-cookies-text rows="5" spellcheck="false" autocomplete="off" aria-label="Netscape cookies.txt contents" placeholder="# Netscape HTTP Cookie File&#10;# (paste exported cookies.txt content here)"></textarea>
     <div class="cookies-actions">
       <button type="button" class="action-btn" data-cookies-save>Save cookies</button>
       <button type="button" class="action-btn ghost" data-cookies-clear>Clear</button>

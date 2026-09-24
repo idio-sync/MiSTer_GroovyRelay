@@ -18,34 +18,91 @@
   const drawer = document.querySelector('.settings-panel');
   if (!drawer) return;
 
-  // Gear button toggle (drawer open <-> closed; clicking gear while
-  // open closes it).
+  // Open/close. The drawer expands inline below the transport, which on a
+  // phone (or a short desktop viewport) lands below the fold — so opening
+  // scrolls it into view and moves focus to the active tab; closing hands
+  // focus back to the gear. aria-expanded mirrors body.settings-open.
   const gear = document.querySelector('[data-settings-toggle], #gear-btn');
+  const reduceMotion = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function isOpen() { return body.classList.contains('settings-open'); }
+  function syncGear() {
+    if (gear) gear.setAttribute('aria-expanded', isOpen() ? 'true' : 'false');
+  }
+  function setOpen(open, opts) {
+    const focus = !opts || opts.focus !== false;
+    body.classList.toggle('settings-open', open);
+    syncGear();
+    if (open) {
+      if (focus) {
+        const active = drawer.querySelector('.settings-tab.active');
+        if (active) active.focus({ preventScroll: true });
+      }
+      // Wait for the expand transition to give the panel real geometry.
+      setTimeout(() => {
+        if (!isOpen() || !drawer.scrollIntoView) return;
+        const r = drawer.getBoundingClientRect();
+        if (r.top < 0 || r.top > window.innerHeight * 0.5) {
+          drawer.scrollIntoView({ block: 'start', behavior: reduceMotion() ? 'auto' : 'smooth' });
+        }
+      }, 80);
+    } else {
+      stopAllPolls(); // stop any active PIN polls when drawer hides
+      if (focus && gear) gear.focus();
+    }
+  }
+  syncGear(); // setup mode can server-render the drawer open
   if (gear) {
-    gear.addEventListener('click', () => body.classList.toggle('settings-open'));
+    gear.addEventListener('click', () => setOpen(!isOpen()));
   }
 
   // Close button always closes.
   const close = document.getElementById('settings-close');
   if (close) {
-    close.addEventListener('click', () => {
-      body.classList.remove('settings-open');
-      stopAllPolls(); // stop any active PIN polls when drawer hides
-    });
+    close.addEventListener('click', () => setOpen(false));
   }
 
-  // Tab switching — each tab carries a data-tab attribute whose value
-  // names the corresponding .settings-pane[data-pane] target.
-  const tabs = drawer.querySelectorAll('.settings-tab');
+  // Escape closes the drawer from anywhere inside it (or with nothing
+  // focused), unless a nested overlay such as the Local Files browser is
+  // open — that overlay gets the key first.
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape' || ev.defaultPrevented || !isOpen()) return;
+    const ae = document.activeElement;
+    if (ae && ae !== document.body && !drawer.contains(ae) && ae !== gear) return;
+    if (drawer.querySelector('[data-localfiles-browse-modal]:not([hidden])')) return;
+    ev.preventDefault();
+    setOpen(false);
+  });
+
+  // Tabs — WAI-ARIA tabs pattern. Each tab's data-tab names its
+  // .settings-pane[data-pane]; aria-selected and a roving tabindex track
+  // the active one, and Left/Right/Home/End move between tabs.
+  const tabs = Array.from(drawer.querySelectorAll('.settings-tab'));
   const panes = drawer.querySelectorAll('.settings-pane');
+  function activateTab(t, focus) {
+    tabs.forEach(x => {
+      const on = x === t;
+      x.classList.toggle('active', on);
+      x.setAttribute('aria-selected', on ? 'true' : 'false');
+      x.tabIndex = on ? 0 : -1;
+    });
+    panes.forEach(x => x.classList.remove('active'));
+    const target = drawer.querySelector(`.settings-pane[data-pane="${t.dataset.tab}"]`);
+    if (target) target.classList.add('active');
+    if (focus) t.focus();
+    stopAllPolls(); // leaving the Sources pane (or any pane) stops stale polls
+  }
   tabs.forEach(t => {
-    t.addEventListener('click', () => {
-      tabs.forEach(x => x.classList.remove('active'));
-      panes.forEach(x => x.classList.remove('active'));
-      t.classList.add('active');
-      const target = drawer.querySelector(`.settings-pane[data-pane="${t.dataset.tab}"]`);
-      if (target) target.classList.add('active');
-      stopAllPolls(); // leaving the Adapters pane (or any pane) stops stale polls
+    t.addEventListener('click', () => activateTab(t, false));
+    t.addEventListener('keydown', (ev) => {
+      const i = tabs.indexOf(t);
+      let next = null;
+      if (ev.key === 'ArrowRight') next = tabs[(i + 1) % tabs.length];
+      else if (ev.key === 'ArrowLeft') next = tabs[(i - 1 + tabs.length) % tabs.length];
+      else if (ev.key === 'Home') next = tabs[0];
+      else if (ev.key === 'End') next = tabs[tabs.length - 1];
+      if (!next) return;
+      ev.preventDefault();
+      activateTab(next, true);
     });
   });
 
@@ -657,6 +714,7 @@
     const key = btn.getAttribute('name');
     const wasOn = btn.classList.contains('on');
     btn.classList.toggle('on');
+    btn.setAttribute('aria-pressed', wasOn ? 'false' : 'true');
     const body = new URLSearchParams();
     body.set(key, wasOn ? 'false' : 'true');
     try {
@@ -668,11 +726,14 @@
       const payload = await res.json();
       if (!payload.ok) {
         btn.classList.toggle('on', wasOn); // revert optimistic toggle to pre-click state
+        btn.setAttribute('aria-pressed', wasOn ? 'true' : 'false');
       }
       syncSourceStatus(btn);
       handleAdapterSaveResponse(btn, payload);
     } catch (e) {
-      btn.classList.toggle('on');
+      btn.classList.toggle('on', wasOn);
+      btn.setAttribute('aria-pressed', wasOn ? 'true' : 'false');
+      syncSourceStatus(btn);
       showNotice('NETWORK ERROR', 'err');
     }
   }
@@ -1078,9 +1139,11 @@ function renderHostTags(hosts) {
     span.className = 'tag';
     span.setAttribute('data-host', h);
     span.textContent = h;
-    const x = document.createElement('span');
+    const x = document.createElement('button');
+    x.type = 'button';
     x.className = 'x';
     x.setAttribute('data-remove-host', h);
+    x.setAttribute('aria-label', `Remove ${h}`);
     x.textContent = '✕';
     span.appendChild(x);
     list.insertBefore(span, addBtn);
@@ -1098,13 +1161,66 @@ document.addEventListener('click', (ev) => {
   const add = ev.target.closest('[data-add-host]');
   if (add && urlHostEditor() && urlHostEditor().contains(add)) {
     ev.preventDefault();
-    const host = (prompt('Add yt-dlp host (e.g. example.com):') || '').trim();
-    if (!host) return;
-    const set = currentHostSet();
-    if (set.includes(host)) return;
-    putHosts(set.concat([host]));
+    showHostAddForm(true);
+    return;
+  }
+  const ok = ev.target.closest('[data-host-add-confirm]');
+  if (ok && urlHostEditor() && urlHostEditor().contains(ok)) {
+    ev.preventDefault();
+    submitHostAddForm();
+    return;
+  }
+  const cancel = ev.target.closest('[data-host-add-cancel]');
+  if (cancel && urlHostEditor() && urlHostEditor().contains(cancel)) {
+    ev.preventDefault();
+    showHostAddForm(false);
   }
 });
+
+// Inline "add host" field — replaces the native prompt(), which broke the
+// chassis visually and stranded keyboard users outside the drawer.
+function showHostAddForm(open) {
+  const ed = urlHostEditor();
+  if (!ed) return;
+  const form = ed.querySelector('[data-host-add-form]');
+  const addBtn = ed.querySelector('[data-add-host]');
+  const input = ed.querySelector('[data-host-add-input]');
+  if (!form || !addBtn || !input) return;
+  form.hidden = !open;
+  addBtn.hidden = open;
+  if (open) {
+    input.value = '';
+    input.focus();
+  } else {
+    addBtn.focus();
+  }
+}
+
+async function submitHostAddForm() {
+  const ed = urlHostEditor();
+  const input = ed && ed.querySelector('[data-host-add-input]');
+  if (!input) return;
+  const host = input.value.trim();
+  if (!host) { showHostAddForm(false); return; }
+  const set = currentHostSet();
+  if (set.includes(host)) { showHostAddForm(false); return; }
+  if (await putHosts(set.concat([host]))) showHostAddForm(false);
+}
+
+document.addEventListener('keydown', (ev) => {
+  const input = ev.target.closest && ev.target.closest('[data-host-add-input]');
+  if (!input) return;
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    submitHostAddForm();
+  } else if (ev.key === 'Escape') {
+    // Cancel the field without also closing the whole drawer: capture
+    // phase + preventDefault runs before the drawer's Escape handler,
+    // which skips defaultPrevented events.
+    ev.preventDefault();
+    showHostAddForm(false);
+  }
+}, true);
 
 // Local Files — library editor + browse drawer.
 function localFilesSection() {
@@ -1163,11 +1279,13 @@ function renderLocalFilesLibraries(libs) {
     name.setAttribute('data-localfiles-library-name', '');
     name.setAttribute('placeholder', 'Name');
     name.setAttribute('autocomplete', 'off');
+    name.setAttribute('aria-label', 'Library name');
     name.value = lib.name || '';
     const root = lfEl('input', 'field-input path');
     root.setAttribute('data-localfiles-library-root', '');
     root.setAttribute('placeholder', '/media/movies');
     root.setAttribute('autocomplete', 'off');
+    root.setAttribute('aria-label', 'Library folder');
     root.value = lib.root || '';
     const rm = lfEl('button', 'action-btn ghost', 'Remove');
     rm.type = 'button';

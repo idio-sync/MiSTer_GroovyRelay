@@ -7,7 +7,7 @@
      Each source is a collapsed card: the header carries its name, its
      status, and its enable switch, so the pane reads as "what's on" at a
      glance. Only one card expands at a time (settings-drawer.js). */}}
-<div class="settings-pane single-col" data-pane="sources">
+<div class="settings-pane single-col" data-pane="sources" role="tabpanel" id="settings-pane-sources" aria-labelledby="settings-tab-sources">
 
   {{ template "settings-adapter-plex" (adapterPane .Adapters "plex") }}
 

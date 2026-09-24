@@ -33,7 +33,7 @@
     <div class="field-row provider-override">
       <label>{{ .DisplayName }} <span class="help">Catalog refresh override in hours; empty or 0 inherits the global cadence.</span></label>
       <input class="field-input num" name="providers.{{ .ID }}.catalog_refresh_hours"
-        data-adapter="streams" placeholder="inherit" value="{{ if gt .CatalogRefreshHours 0 }}{{ .CatalogRefreshHours }}{{ end }}">
+        data-adapter="streams" placeholder="inherit" aria-label="{{ .DisplayName }} catalog refresh (hours)" value="{{ if gt .CatalogRefreshHours 0 }}{{ .CatalogRefreshHours }}{{ end }}">
       <span class="scope hot">HOT</span>
     </div>
     {{ end }}

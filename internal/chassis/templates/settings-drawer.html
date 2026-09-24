@@ -1,17 +1,21 @@
 {{- define "settings-drawer" -}}
 {{htmlComment "chassis:settings-drawer"}}
-<div class="settings-panel" data-boot="{{ .BootStamp }}">
+<div class="settings-panel" id="settings-panel" data-boot="{{ .BootStamp }}">
   <div class="settings-tabs">
-    <button class="settings-tab active" data-tab="mister">MiSTer</button>
-    <button class="settings-tab" data-tab="av">Video &amp; Audio</button>
-    <button class="settings-tab" data-tab="sources">Sources<span class="badge">{{ .SourceAdapterCount }}</span></button>
-    <button class="settings-tab" data-tab="streams">Streams<span class="badge">{{ if .CatalogProviders }}{{ .CatalogPaneProviderCount }}{{ else }}{{ .CatalogProviderCount }}{{ end }}</span></button>
-    <button class="settings-tab" data-tab="system">System</button>
+    {{/* WAI-ARIA tabs: roving tabindex, arrow keys move between tabs
+         (settings-drawer.js). Close sits outside the tablist. */}}
+    <div class="settings-tablist" role="tablist" aria-label="Settings sections">
+      <button class="settings-tab active" data-tab="mister" type="button" role="tab" id="settings-tab-mister" aria-controls="settings-pane-mister" aria-selected="true">MiSTer</button>
+      <button class="settings-tab" data-tab="av" type="button" role="tab" id="settings-tab-av" aria-controls="settings-pane-av" aria-selected="false" tabindex="-1">Video &amp; Audio</button>
+      <button class="settings-tab" data-tab="sources" type="button" role="tab" id="settings-tab-sources" aria-controls="settings-pane-sources" aria-selected="false" tabindex="-1">Sources <span class="badge">{{ .SourceAdapterCount }}</span></button>
+      <button class="settings-tab" data-tab="streams" type="button" role="tab" id="settings-tab-streams" aria-controls="settings-pane-streams" aria-selected="false" tabindex="-1">Streams <span class="badge">{{ if .CatalogProviders }}{{ .CatalogPaneProviderCount }}{{ else }}{{ .CatalogProviderCount }}{{ end }}</span></button>
+      <button class="settings-tab" data-tab="system" type="button" role="tab" id="settings-tab-system" aria-controls="settings-pane-system" aria-selected="false" tabindex="-1">System</button>
+    </div>
     <span class="settings-spacer"></span>
-    <button class="settings-close" id="settings-close">⏏ Close</button>
+    <button class="settings-close" id="settings-close" type="button"><span aria-hidden="true">⏏</span> Close</button>
   </div>
 
-  <div class="settings-legend" aria-hidden="true">
+  <div class="settings-legend">
     <span class="legend-label">When changes apply</span>
     <span class="legend-item"><span class="legend-untagged">No tag</span> live now</span>
     <span class="legend-item"><span class="scope recast">RECAST</span> next cast</span>

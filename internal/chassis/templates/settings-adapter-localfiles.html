@@ -14,8 +14,8 @@
   <div class="localfiles-library-list" data-localfiles-library-list>
     {{ range .Libraries }}
     <div class="localfiles-library-row" data-localfiles-library-row>
-      <input class="field-input" data-localfiles-library-name value="{{ .Name }}" placeholder="Name" autocomplete="off">
-      <input class="field-input path" data-localfiles-library-root value="{{ .Root }}" placeholder="/media/movies" autocomplete="off">
+      <input class="field-input" data-localfiles-library-name value="{{ .Name }}" placeholder="Name" autocomplete="off" aria-label="Library name">
+      <input class="field-input path" data-localfiles-library-root value="{{ .Root }}" placeholder="/media/movies" autocomplete="off" aria-label="Library folder">
       <button type="button" class="action-btn ghost" data-localfiles-remove-library>Remove</button>
     </div>
     {{ end }}
@@ -30,7 +30,7 @@
 <div class="field-row" style="grid-template-columns: 1fr 1fr auto;" data-localfiles-browser>
   <label>Browse</label>
   <div class="localfiles-browser">
-    <select class="field-input" data-localfiles-browse-lib>
+    <select class="field-input" data-localfiles-browse-lib aria-label="Library to browse">
       {{ range .Libraries }}<option value="{{ .Name }}">{{ .Name }}</option>{{ end }}
     </select>
     <button type="button" class="action-btn" data-localfiles-open-browser>Open</button>

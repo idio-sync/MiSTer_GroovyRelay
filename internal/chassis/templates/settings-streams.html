@@ -3,7 +3,7 @@
 {{/* Streams tab — the channel catalog end to end: which bundled providers
      are on, how the Streams adapter fetches and refreshes them, and the
      live-HLS buffer those channels (and live URL casts) play through. */}}
-<div class="settings-pane single-col" data-pane="streams">
+<div class="settings-pane single-col" data-pane="streams" role="tabpanel" id="settings-pane-streams" aria-labelledby="settings-tab-streams">
 
   <div class="settings-section wide">
     <h4>Channel providers <span class="hint">{{ .CatalogPaneProviderCount }} PROVIDERS · {{ .CatalogChannelCount }} CHANNELS</span></h4>
@@ -37,6 +37,7 @@
           type="button"
           data-catalog-provider="{{ .ID }}"
           data-catalog-field="enabled"
+          aria-label="Enable {{ .DisplayName }}"
           aria-pressed="{{ .Enabled }}"></button>
 </div>
 {{- end -}}
@@ -55,6 +56,7 @@
     <button class="switch{{ if .DirectStreamHLSBufferDisabled }} on{{ end }}"
             type="button"
             data-catalog-direct-hls
+            aria-label="Skip the HLS buffer for direct-stream providers"
             aria-pressed="{{ .DirectStreamHLSBufferDisabled }}"></button>
     <span class="scope recast">RECAST</span>
   </div>

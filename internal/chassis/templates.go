@@ -554,11 +554,11 @@ func fieldHelper(args map[string]any) template.HTML {
 	scopeHTML := fmt.Sprintf(`<span class="scope %s">%s</span>`, html.EscapeString(scope), strings.ToUpper(scope))
 	switch {
 	case rowEnd != "":
-		middleHTML = fmt.Sprintf(`%s<span class="row-end"><span style="font-size:10px;color:var(--vfd-faded);">%s</span>%s</span>`,
+		middleHTML = fmt.Sprintf(`%s<span class="row-end"><span class="field-unit">%s</span>%s</span>`,
 			middleHTML, html.EscapeString(rowEnd), scopeHTML)
 		scopeHTML = "" // already inside row-end
 	case typ == "number" && unit != "":
-		middleHTML = fmt.Sprintf(`%s<span class="row-end"><span style="font-size:10px;color:var(--vfd-faded);">%s</span>%s</span>`,
+		middleHTML = fmt.Sprintf(`%s<span class="row-end"><span class="field-unit">%s</span>%s</span>`,
 			middleHTML, html.EscapeString(unit), scopeHTML)
 		scopeHTML = "" // already inside row-end
 	}
