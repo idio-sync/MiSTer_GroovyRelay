@@ -196,3 +196,36 @@ func TestProbeCrop_NoLetterboxReturnsFullFrame(t *testing.T) {
 		}
 	}
 }
+
+// TestPlausibleCropRect: auto-crop may only remove black bars. A rect that
+// is small or off-center is something else — typically a studio logo on
+// black during the probe window — and cropping to it would zoom the whole
+// session into that box.
+func TestPlausibleCropRect(t *testing.T) {
+	cases := []struct {
+		name string
+		rect CropRect
+		w, h int
+		want bool
+	}{
+		{"full frame", CropRect{W: 1920, H: 1080, X: 0, Y: 0}, 1920, 1080, true},
+		{"2.39 letterbox bars", CropRect{W: 1920, H: 800, X: 0, Y: 140}, 1920, 1080, true},
+		{"4:3 pillarbox bars", CropRect{W: 1440, H: 1080, X: 240, Y: 0}, 1920, 1080, true},
+		{"windowbox", CropRect{W: 1440, H: 800, X: 240, Y: 140}, 1920, 1080, true},
+		{"cropdetect rounding asymmetry", CropRect{W: 1920, H: 804, X: 0, Y: 136}, 1920, 1080, true},
+		{"centered studio logo", CropRect{W: 400, H: 200, X: 760, Y: 440}, 1920, 1080, false},
+		{"less than half the height", CropRect{W: 1920, H: 520, X: 0, Y: 280}, 1920, 1080, false},
+		{"off-center content", CropRect{W: 1440, H: 1080, X: 0, Y: 0}, 1920, 1080, false},
+		{"subtitle in bottom bar", CropRect{W: 1920, H: 900, X: 0, Y: 140}, 1920, 1080, false},
+		{"exceeds source", CropRect{W: 1920, H: 1080, X: 8, Y: 0}, 1920, 1080, false},
+		{"empty rect", CropRect{}, 1920, 1080, false},
+		{"unknown source size", CropRect{W: 1920, H: 800, X: 0, Y: 140}, 0, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PlausibleCropRect(tc.rect, tc.w, tc.h); got != tc.want {
+				t.Fatalf("PlausibleCropRect(%+v, %d, %d) = %v, want %v", tc.rect, tc.w, tc.h, got, tc.want)
+			}
+		})
+	}
+}

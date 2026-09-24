@@ -3673,3 +3673,57 @@ func TestStatusHomeView_CarriesAudioDSP(t *testing.T) {
 		t.Error("committed DSP should report persisted")
 	}
 }
+
+// Auto-crop must not lock onto a studio logo shown on black during the
+// probe window; an implausible rect falls back to letterbox (no crop).
+func TestProbeForStart_DropsImplausibleCropRect(t *testing.T) {
+	origProbe := probeInputFn
+	origCrop := probeCropFn
+	t.Cleanup(func() {
+		probeInputFn = origProbe
+		probeCropFn = origCrop
+	})
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976}, nil
+	}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		return &ffmpeg.CropRect{W: 400, H: 200, X: 760, Y: 440}, nil
+	}
+	m := newTestManager(t)
+	m.bridge.Video.AspectMode = "auto"
+
+	_, cropRect, _, err := m.probeForStart(SessionRequest{StreamURL: "https://example/film.mkv"})
+	if err != nil {
+		t.Fatalf("probeForStart: %v", err)
+	}
+	if cropRect != nil {
+		t.Fatalf("crop rect = %+v, want nil (logo-sized rect must be rejected)", cropRect)
+	}
+}
+
+func TestProbeForStart_KeepsPillarboxCropRect(t *testing.T) {
+	origProbe := probeInputFn
+	origCrop := probeCropFn
+	t.Cleanup(func() {
+		probeInputFn = origProbe
+		probeCropFn = origCrop
+	})
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 29.97}, nil
+	}
+	want := ffmpeg.CropRect{W: 1440, H: 1080, X: 240, Y: 0}
+	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+		r := want
+		return &r, nil
+	}
+	m := newTestManager(t)
+	m.bridge.Video.AspectMode = "auto"
+
+	_, cropRect, _, err := m.probeForStart(SessionRequest{StreamURL: "https://example/show.mkv"})
+	if err != nil {
+		t.Fatalf("probeForStart: %v", err)
+	}
+	if cropRect == nil || *cropRect != want {
+		t.Fatalf("crop rect = %+v, want %+v", cropRect, want)
+	}
+}

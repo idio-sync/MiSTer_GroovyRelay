@@ -102,6 +102,36 @@ func probeCropWithBinary(ctx context.Context, ffmpegBin, inputURL string, header
 	return last, nil
 }
 
+// PlausibleCropRect reports whether a cropdetect rect looks like black-bar
+// removal on a srcW×srcH (storage-pixel) source: inside the frame, at least
+// half the source on each axis, and bars of equal width on opposite edges.
+// Anything else is not bars — typically a studio logo on black during the
+// short probe window, which would otherwise zoom the whole session into the
+// logo's box. Callers fall back to letterbox (no crop) on false. Letterbox
+// bars that fail the size floor lose nothing: fitting the full frame shows
+// the same picture as cropping them.
+func PlausibleCropRect(r CropRect, srcW, srcH int) bool {
+	if srcW <= 0 || srcH <= 0 || r.W <= 0 || r.H <= 0 || r.X < 0 || r.Y < 0 ||
+		r.X+r.W > srcW || r.Y+r.H > srcH {
+		return false
+	}
+	if 2*r.W < srcW || 2*r.H < srcH {
+		return false
+	}
+	return barsSymmetric(r.X, srcW-r.X-r.W, srcW) && barsSymmetric(r.Y, srcH-r.Y-r.H, srcH)
+}
+
+// barsSymmetric allows cropdetect's rounding (round=2) and soft bar edges:
+// opposite bars may differ by 2% of the extent, at least 16 pixels.
+func barsSymmetric(a, b, extent int) bool {
+	tolerance := max(16, extent/50)
+	diff := a - b
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= tolerance
+}
+
 // parseCropLine pulls the first crop=W:H:X:Y match out of one line of
 // ffmpeg stderr and returns it as a *CropRect. Returns nil if the line has
 // no match.

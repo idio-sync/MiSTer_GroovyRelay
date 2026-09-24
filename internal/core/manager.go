@@ -689,6 +689,16 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 		// boundary so adapters stay naive).
 		filteredHeaders := req.MediaInputPolicy.FilterHeaders(req.InputHeaders)
 		cropRect, _ = probeCropFn(ctx, ffmpegPath, req.StreamURL, filteredHeaders, 2*time.Second, req.MediaInputPolicy)
+		var srcW, srcH int
+		if probe != nil {
+			srcW, srcH = probe.Width, probe.Height
+		}
+		if cropRect != nil && !ffmpeg.PlausibleCropRect(*cropRect, srcW, srcH) {
+			slog.Info("core: auto-crop rect is not black-bar removal; letterboxing instead",
+				"crop", fmt.Sprintf("%dx%d+%d+%d", cropRect.W, cropRect.H, cropRect.X, cropRect.Y),
+				"source", fmt.Sprintf("%dx%d", srcW, srcH))
+			cropRect = nil
+		}
 	}
 	return probe, cropRect, ffmpegPath, nil
 }
