@@ -111,6 +111,9 @@ type dataplaneStatsSnapshot struct {
 	position       time.Duration
 	audioReady     bool
 
+	audioResyncDrops uint64 // stale chunks dropped to re-pair audio with video
+	audioDebt        int    // video frames currently shown without their audio
+
 	deltaEnabled       bool
 	deltaSelectedTotal uint64
 
@@ -276,6 +279,8 @@ func dataplaneStatsAttrs(window dataplaneStatsWindow, snap dataplaneStatsSnapsho
 		"enobuf_total", snap.enobufTotal,
 		"torn_payload_sends_total", snap.tornTotal,
 		"audio_ring_drops_total", snap.audioRingDrops,
+		"audio_resync_drops_total", snap.audioResyncDrops,
+		"audio_debt", snap.audioDebt,
 		"position_s", snap.position.Seconds(),
 		"audio_ready", snap.audioReady,
 	}
@@ -962,6 +967,10 @@ func (p *Plane) Run(ctx context.Context) error {
 	if p.cfg.Modeline.Interlaced() {
 		parity = newFieldParityTracker()
 	}
+	var (
+		avPair             avPairer
+		lastAudioResyncLog time.Time
+	)
 
 	// 5. Position bookkeeping — one tick = one NTSC field (1001/60 ms, exact).
 	p.resetPosition()
@@ -1096,6 +1105,8 @@ func (p *Plane) Run(ctx context.Context) error {
 				enobufTotal:        p.cfg.Sender.ENOBUFCount(),
 				tornTotal:          p.TornPayloadSends(),
 				audioRingDrops:     p.audioRingDrops.Load(),
+				audioResyncDrops:   avPair.resyncDrops,
+				audioDebt:          avPair.debt,
 				wireBytesTotal:     wireBytesTotal,
 				position:           p.Position(),
 				audioReady:         p.audioReady.Load(),
@@ -1209,15 +1220,26 @@ func (p *Plane) Run(ctx context.Context) error {
 				nextField = 0
 			}
 
-			// Audio: gated on ACK bit 6 (fpga.audio). Each tick we (a) drain
-			// the audio reader's pending chunk into the ring's tail and (b)
-			// pop the ring's head if it holds more than audioDelayN entries.
+			// Audio: gated on ACK bit 6 (fpga.audio). Each tick we (a) take
+			// the chunk paired with this tick's video frame (none on a
+			// duplicate-field tick; stale chunks dropped after an audio
+			// stall — see avPairer) into the ring's tail and (b) pop the
+			// ring's head if it holds more than audioDelayN entries.
 			// audioDelayN=0 collapses to "send the chunk we just read this
-			// tick" (today's behavior); audioDelayN>0 holds N ticks of audio
-			// before starting to send, shifting playback later relative to
-			// video on the CRT. Never blocks the pump.
+			// tick"; audioDelayN>0 holds N ticks of audio before starting
+			// to send, shifting playback later relative to video on the
+			// CRT. Never blocks the pump.
 			if audioEnabled {
-				if pcm := pullAudioChunk(&audioPrebuffer, audioCh); len(pcm) > 0 {
+				dropsBefore := avPair.resyncDrops
+				pcm := avPair.next(fbOK, &audioPrebuffer, audioCh)
+				if dropped := avPair.resyncDrops - dropsBefore; dropped > 0 &&
+					time.Since(lastAudioResyncLog) >= time.Second {
+					lastAudioResyncLog = time.Now()
+					slog.Info("audio resynced to video after audio stall",
+						"dropped_chunks", dropped,
+						"resync_drops_total", avPair.resyncDrops)
+				}
+				if len(pcm) > 0 {
 					if audioRing.Push(pcm) {
 						p.audioRingDrops.Add(1)
 						slog.Debug("audio delay ring full; dropped oldest chunk",
