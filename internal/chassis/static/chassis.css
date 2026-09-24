@@ -89,6 +89,14 @@
   --lamp-red: oklch(0.62 0.21 28);
   --lamp-red-glow: oklch(0.62 0.21 28 / 0.85);
   --lock-amber-glow: oklch(0.82 0.18 75 / 0.9);
+  /* Editable values are *typed*, not *displayed*: DSEG can't render
+     lowercase, dots-in-context, or "[ _ ]", so paths/URLs/format strings
+     became unverifiable. Inter's disambiguation set (ss02: I/l/1, 0/O)
+     plus tabular, slashed-zero figures gives mono-like alignment for
+     IPs and ports without adding a third typeface. DSEG stays reserved
+     for read-only segment readouts (VFD, PIN, channel counts). */
+  --value-text: oklch(0.90 0.012 80);
+  --value-placeholder: oklch(0.62 0.01 80);
 }
 
 /* Reset and base */
@@ -5983,41 +5991,64 @@ body.receiver .field-row {
 }
 body.receiver .field-row:last-child { border-bottom: 0; }
 body.receiver .field-row label {
-  font: 500 11px 'Inter', sans-serif;
-  color: #b0b0b8;
-  letter-spacing: 0.02em;
-}
-body.receiver .field-row .help {
-  font: 400 10px 'Inter', sans-serif;
-  color: #6a6a6e;
-  margin-top: 2px;
-  display: block;
+  font: 500 12px/1.35 'Inter', sans-serif;
+  color: #c4c4ca;
   letter-spacing: 0.01em;
 }
+body.receiver .field-row .help {
+  font: 400 11px/1.4 'Inter', sans-serif;
+  color: #8e8e96;
+  margin-top: 3px;
+  display: block;
+  letter-spacing: 0;
+}
 
-body.receiver .field-row .field-input {
+/* Settings value field — the one place the operator reads back exactly
+   what they typed. Plain Inter (see --value-text note in :root); the
+   faceplate character lives in the recessed well and the cyan caret. */
+body.receiver .settings-panel .field-input {
   width: 100%;
+  min-height: 30px;
   background: linear-gradient(180deg, #0a0a0b 0%, #050506 100%);
-  border: 1px solid oklch(0.22 0.012 80);
-  color: oklch(0.78 0.012 80);
-  padding: 5px 8px;
-  font: 500 11px 'DSEG14-Classic', 'DSEG7-Classic', monospace;
-  letter-spacing: 0.04em;
+  border: 1px solid oklch(0.26 0.012 80);
+  color: var(--value-text);
+  caret-color: var(--vfd);
+  padding: 6px 9px;
+  font: 500 13px/1.3 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums slashed-zero;
+  font-feature-settings: 'ss02' 1, 'tnum' 1, 'zero' 1;
+  letter-spacing: 0;
+  text-transform: none;
   border-radius: 2px;
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6);
 }
-body.receiver .field-row .field-input.has-value {
-  color: var(--vfd);
-  text-shadow: 0 0 3px var(--vfd-glow-soft);
+body.receiver .settings-panel .field-input::placeholder {
+  color: var(--value-placeholder);
+  font-style: italic;
+  font-weight: 400;
+  opacity: 1;
 }
-body.receiver .field-row .field-input.num {
+body.receiver .settings-panel .field-input.has-value {
+  color: var(--value-text);
+}
+body.receiver .settings-panel .field-input.num {
   text-align: right;
-  font-family: 'DSEG7-Classic', monospace;
-  font-weight: 700;
-  font-size: 13px;
 }
-body.receiver .field-row .field-input.path { font-size: 10px; }
-body.receiver .field-row .field-input:focus {
+body.receiver .settings-panel .field-input.path {
+  font-size: 12px;
+}
+body.receiver .settings-panel .field-input::selection {
+  background: oklch(0.45 0.10 175 / 0.55);
+  color: #fff;
+}
+body.receiver .settings-panel select.field-input {
+  cursor: pointer;
+}
+body.receiver .settings-panel select.field-input option {
+  background: #0d0d0f;
+  color: var(--value-text);
+}
+body.receiver .settings-panel .field-input:focus {
   outline: none;
   border-color: oklch(0.32 0.06 175);
 }
@@ -6094,11 +6125,13 @@ body.receiver .action-result {
   display: none;
   margin-top: 6px;
   padding: 4px 8px;
-  font: 500 10px 'DSEG14-Classic', monospace;
-  color: var(--vfd-dim);
-  border: 1px solid oklch(0.18 0.012 80);
+  /* Results carry free text (errors, hostnames): Inter, not a segment face. */
+  font: 500 12px/1.4 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
+  color: oklch(0.78 0.10 175);
+  border: 1px solid oklch(0.22 0.012 80);
   border-radius: 2px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
 }
 body.receiver .action-result.shown { display: block; }
 body.receiver .action-result.ok { color: oklch(0.78 0.12 150); border-color: oklch(0.32 0.10 150); }
@@ -6351,10 +6384,13 @@ body.receiver .settings-panel .provider-row .meta .name {
   color: #d4d4d8;
 }
 body.receiver .settings-panel .provider-row .meta .stat {
-  font: 400 10px 'DSEG14-Classic', monospace;
-  color: var(--vfd-dim);
+  /* origin · kind · URL is lowercase text: Inter, not a segment face. */
+  font: 400 11px/1.4 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
+  color: #8e8e96;
   margin-top: 2px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
+  overflow-wrap: anywhere;
 }
 body.receiver .settings-panel .provider-row .meta .stat code {
   font-family: inherit;

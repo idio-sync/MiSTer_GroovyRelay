@@ -597,6 +597,37 @@ func TestChassisCSS_VFDUptimeLabelUsesPanelLabelTypography(t *testing.T) {
 	}
 }
 
+// Settings values are edited, not displayed: the 14/7-segment faces can't
+// render lowercase, "." in context, or "[ _ ]", so an IP/path/URL typed in
+// the drawer read back garbled. Every rule that styles a settings value or
+// free-text result must stay on a legible text face.
+func TestChassisCSS_SettingsEditableTextAvoidsSegmentFonts(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := strings.ReplaceAll(string(src), "\r\n", "\n")
+	for _, sel := range []string{
+		"body.receiver .settings-panel .field-input",
+		"body.receiver .settings-panel .field-input.num",
+		"body.receiver .settings-panel .field-input.path",
+		"body.receiver .action-result",
+		"body.receiver .settings-panel .provider-row .meta .stat",
+	} {
+		rule := cssRuleBlock(t, text, sel)
+		if strings.Contains(rule, "DSEG") {
+			t.Errorf("%s must not use a segment display font:\n%s", sel, rule)
+		}
+	}
+	base := cssRuleBlock(t, text, "body.receiver .settings-panel .field-input")
+	for _, want := range []string{"'Inter'", "slashed-zero", "'ss02'"} {
+		if !strings.Contains(base, want) {
+			t.Errorf("settings value field missing %q (legible, disambiguated value face):\n%s", want, base)
+		}
+	}
+}
+
 func TestReceiverLocalFilesButtonUsesUploadButtonStyle(t *testing.T) {
 	t.Parallel()
 	cssBytes, err := chassisStaticFS.ReadFile("static/chassis.css")
