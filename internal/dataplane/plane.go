@@ -341,12 +341,25 @@ type PlaneConfig struct {
 	OnInit func(err error)
 }
 
+// videoChCap is the video jitter buffer. ffmpeg runs faster than realtime,
+// so after startup the queue sits full and its depth is how long frame
+// production can stall (host CPU spike, source hiccup) before the pump has
+// to emit duplicate fields: 24 fields ~= 400 ms at NTSC. It costs one frame
+// buffer per slot (~1 MB at 720x480 BGR24) but no startup delay — the
+// prebuffer waits for defaultPrebufferFields only — and live inputs, which
+// ffmpeg cannot outrun, never fill it.
+//
+// audioChCap must stay well above videoChCap: audio reaches the pipe ahead
+// of video, and if its queue filled first ffmpeg would block on the audio
+// write before the video queue could fill.
+//
 // framePoolSlots is the depth of the free queue. Sized to videoChCap + 2
 // to cover (1 reader in-progress + videoChCap in-channel + 1 tick
 // in-progress) given the invariant that ReadFramesFromPipePooled holds
 // at most one *FrameBuf outside the pool at any time.
 const (
-	videoChCap               = 8
+	videoChCap               = 24
+	audioChCap               = 2 * videoChCap
 	framePoolSlots           = videoChCap + 2
 	lz4FallbackDebugInterval = time.Second
 	fieldDiagEnv             = "GROOVY_FIELD_DIAG"
@@ -896,7 +909,7 @@ func (p *Plane) Run(ctx context.Context) error {
 	videoHeight := p.cfg.resolveVideoHeight()
 	go ReadFramesFromPipePooledContext(ctx, proc.VideoPipe(), p.framePool, videoCh)
 	if audioEnabled {
-		audioCh = make(chan []byte, 16)
+		audioCh = make(chan []byte, audioChCap)
 		go ReadAudioFromPipeContext(ctx, proc.AudioPipe(), audioRate, audioChans, p.cfg.Modeline, audioCh)
 	}
 
@@ -921,7 +934,7 @@ func (p *Plane) Run(ctx context.Context) error {
 	//     Without this, the first ~30-180 ticks consume a starved videoCh
 	//     and emit duplicate-field BLITs while ffmpeg is still warming
 	//     up — operators see that as choppy startup. audioCh is drained
-	//     concurrently so the audio reader can't fill (cap=16) and
+	//     concurrently so the audio reader can't fill (audioChCap) and
 	//     backpressure ffmpeg's muxer into a prebuffer deadlock. Index-
 	//     paired pulls in the tick loop preserve A/V sync because both
 	//     streams arrive from ffmpeg in PTS order.
@@ -1874,7 +1887,7 @@ func scalePCMVolumeInPlace(pcm []byte, volume int) {
 // prebuffer blocks until videoCh has accumulated `target` frames or a
 // terminal condition fires. While waiting it concurrently drains audioCh
 // into a local slice — without that drain, ffmpeg's audio-output pipe
-// would fill (the audio reader's channel is cap=16, ~267 ms of audio)
+// would fill (the audio reader's channel is audioChCap, ~800 ms of audio)
 // and the muxer would backpressure both outputs, preventing the video
 // prebuffer from ever filling. Index-pairing in the tick loop's slice-
 // first pull keeps audio aligned with video because both streams arrive
