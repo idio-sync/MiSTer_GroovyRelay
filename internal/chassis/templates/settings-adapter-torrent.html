@@ -27,10 +27,11 @@
 {{ field (dict
   "Name" $fd.Key
   "Type" "number"
-  "Label" $fd.Label
+  "Label" (settingsLabel $fd.Label)
   "Help" $fd.Help
   "Value" (adapterFieldValue $val "number")
   "Scope" $scope
   "Adapter" .Adapter
-  "RowEnd" (humanizeBytes (asInt64 $val))) }}
+  "InputWidth" "7rem"
+  "BytesUnit" (adapterBytesUnit $fd.Key)) }}
 {{- end -}}

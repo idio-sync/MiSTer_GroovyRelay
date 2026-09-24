@@ -753,8 +753,16 @@
     const adapter = inp.getAttribute('data-adapter');
     const key = inp.getAttribute('name');
     if (inp.dataset.lastSaved === inp.value) return;
+    // Byte ceilings edit in GB/MB; the wire value stays raw bytes (same
+    // data-bytes-scale contract as the bridge fields above).
+    let wireValue = inp.value;
+    const bytesScale = inp.dataset.bytesScale;
+    if (bytesScale && inp.value.trim() !== '') {
+      const human = parseFloat(inp.value);
+      if (Number.isFinite(human)) wireValue = String(Math.round(human * Number(bytesScale)));
+    }
     const body = new URLSearchParams();
-    body.set(key, inp.value);
+    body.set(key, wireValue);
     try {
       const res = await fetch(`/ui/settings/adapter/${encodeURIComponent(adapter)}`, {
         method: 'POST',

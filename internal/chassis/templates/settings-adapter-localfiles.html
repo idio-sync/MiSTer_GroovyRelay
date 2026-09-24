@@ -9,7 +9,7 @@
 {{- end -}}
 
 {{- define "localfiles-library-editor" -}}
-<div class="field-row" style="grid-template-columns: 1fr 1fr auto;" data-localfiles-libraries>
+<div class="field-row" data-localfiles-libraries>
   <label>Libraries <span class="help">Named roots visible to the bridge process.</span></label>
   <div class="localfiles-library-list" data-localfiles-library-list>
     {{ range .Libraries }}
@@ -27,7 +27,7 @@
 {{- end -}}
 
 {{- define "localfiles-browse-drawer" -}}
-<div class="field-row" style="grid-template-columns: 1fr 1fr auto;" data-localfiles-browser>
+<div class="field-row" data-localfiles-browser>
   <label>Browse</label>
   <div class="localfiles-browser">
     <select class="field-input" data-localfiles-browse-lib aria-label="Library to browse">

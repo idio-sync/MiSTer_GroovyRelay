@@ -6009,6 +6009,19 @@ body.receiver .settings-panel .field-row > .field-input.path {
 body.receiver .settings-panel .field-row > .field-input.num {
   max-width: 9.5rem;
 }
+/* Number + unit rows (20 GB, 256 MB, 720 px): the input column hugs the
+   input so the unit reads beside its number, not across the section.
+   Declared before the .hls-grid rules, which keep their own fixed grid. */
+body.receiver .field-row:has(> .row-end) {
+  grid-template-columns: minmax(150px, 210px) auto minmax(0, 1fr);
+}
+body.receiver .field-row:has(> .row-end) > .field-input.num {
+  width: 9.5rem;
+}
+body.receiver .field-row:has(> .row-end) > .row-end {
+  justify-content: flex-start;
+  align-self: center;
+}
 body.receiver .field-row .help code,
 body.receiver .settings-section .section-intro code {
   font-size: 0.95em;
@@ -6560,6 +6573,69 @@ body.receiver .settings-panel .action-btn.ghost:hover {
   color: var(--vfd);
 }
 
+/* Local Files library editor + browse — they sat unstyled on an inline
+   1fr/1fr grid that no other row used. Now they share the standard row
+   grammar: name | folder | remove on one line per library. */
+body.receiver .settings-panel .localfiles-library-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+body.receiver .settings-panel .localfiles-library-row {
+  display: grid;
+  grid-template-columns: minmax(0, 10rem) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  max-width: 640px;
+}
+body.receiver .settings-panel .localfiles-browser {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+body.receiver .settings-panel .localfiles-browser .field-input {
+  width: auto;
+  min-width: 10rem;
+}
+body.receiver .settings-panel .cookies-form {
+  max-width: 640px;
+}
+
+/* Narrow chassis: the tab bar wraps instead of hiding tabs off-screen
+   behind a scrollbar; Close becomes a full-width bar under the tabs. */
+@container chassis (max-width: 640px) {
+  body.receiver .settings-tabs {
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+  body.receiver .settings-tablist {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+  body.receiver .settings-tab {
+    flex: 1 1 auto;
+    padding: 12px 10px;
+    letter-spacing: 0.14em;
+    border-bottom: 1px solid #0a0a0b;
+  }
+  body.receiver .settings-spacer {
+    display: none;
+  }
+  body.receiver .settings-close {
+    flex: 1 1 100%;
+    border-left: 0;
+  }
+  body.receiver .settings-panel .localfiles-library-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  body.receiver .settings-panel .localfiles-library-row .field-input.path {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+
 /* Unit beside a number field (MB, KB, px, 20 GB). */
 body.receiver .field-row .field-unit {
   font: 500 11px/1 'Inter', sans-serif;
@@ -6697,6 +6773,9 @@ body.receiver .hls-grid .field-row > .scope {
   body.receiver .field-row > .scope {
     grid-row: 2;
     grid-column: 2;
+  }
+  body.receiver .field-row:has(> .row-end) {
+    grid-template-columns: auto minmax(0, 1fr);
   }
   body.receiver .settings-panel .field-row > .field-input,
   body.receiver .settings-panel .field-row > .field-input.path {

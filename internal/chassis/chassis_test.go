@@ -4848,7 +4848,10 @@ func TestSettingsAdapterTorrentTemplate_RendersFields(t *testing.T) {
 		`name="traffic_acknowledged"`,
 		`name="download_dir"`,
 		`name="max_cache_bytes"`,
-		"20 GB",
+		// Byte ceilings edit in a human unit; raw bytes stay the wire value.
+		`value="20"`,
+		`data-bytes-scale="1073741824"`,
+		`<span class="field-unit">GB</span>`,
 		`<span class="scope recast">RECAST</span>`,
 		`<span class="scope hot">HOT</span>`,
 		`data-adapter="torrent"`,

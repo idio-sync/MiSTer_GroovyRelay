@@ -140,3 +140,35 @@ func TestSettingsSwitches_HaveAccessibleNames(t *testing.T) {
 		}
 	}
 }
+
+func TestSettingsLabel_SentenceCaseWithUnits(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{
+		"Catalog Request Timeout Seconds": "Catalog request timeout (s)",
+		"Manifest Refresh Hours":          "Manifest refresh (h)",
+		"Max Upload Rate Kbps":            "Max upload rate (kbps)",
+		"Max Cache Bytes":                 "Max cache size",
+		"Allow Local Manifest URLs":       "Allow local manifest URLs",
+		"YouTube Format":                  "YouTube format",
+		"Autoplay on SetAVTransportURI":   "Autoplay on SetAVTransportURI",
+		"Max Video Bitrate (kbps)":        "Max video bitrate (kbps)",
+		"yt-dlp resolver":                 "yt-dlp resolver",
+		"Enabled":                         "Enabled",
+	} {
+		if got := settingsLabel(in); got != want {
+			t.Errorf("settingsLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestAdapterBytesUnit(t *testing.T) {
+	t.Parallel()
+	if got := adapterBytesUnit("max_cache_bytes"); got != "GB" {
+		t.Errorf("torrent cache unit = %q, want GB", got)
+	}
+	for _, k := range []string{"max_manifest_bytes", "max_catalog_bytes"} {
+		if got := adapterBytesUnit(k); got != "MB" {
+			t.Errorf("%s unit = %q, want MB", k, got)
+		}
+	}
+}

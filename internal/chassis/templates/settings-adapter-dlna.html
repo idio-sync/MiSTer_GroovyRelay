@@ -21,7 +21,7 @@
 {{ field (dict
   "Name" $fd.Key
   "Type" $kind
-  "Label" $fd.Label
+  "Label" (settingsLabel $fd.Label)
   "Help" $fd.Help
   "Value" (adapterFieldValue $val $kind)
   "Scope" $scope

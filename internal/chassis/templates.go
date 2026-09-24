@@ -92,6 +92,8 @@ var templateFuncs = template.FuncMap{
 	"asInt64":                 asInt64,
 	"isProviderOverrideField": isProviderOverrideField,
 	"isStreamsBytesField":     isStreamsBytesField,
+	"settingsLabel":           settingsLabel,
+	"adapterBytesUnit":        adapterBytesUnit,
 	"dspKnobAngle": func(value, min, max any) int {
 		v, lo, hi := dspToFloat(value), dspToFloat(min), dspToFloat(max)
 		if hi == lo {
@@ -211,6 +213,46 @@ func isStreamsBytesField(key string) bool {
 		return true
 	}
 	return false
+}
+
+// adapterBytesUnit picks the display unit for an adapter byte-ceiling
+// field so the drawer edits "20" GB instead of "21474836480"; the wire
+// value stays raw bytes (settings-drawer.js scales back via
+// data-bytes-scale). The torrent cache budget spans GiB-TiB; the streams
+// manifest/catalog ceilings are MiB-scale.
+func adapterBytesUnit(key string) string {
+	if key == "max_cache_bytes" {
+		return "GB"
+	}
+	return "MB"
+}
+
+// settingsLabel renders an adapter FieldDef label in the drawer's label
+// style: sentence case, with trailing unit words folded into a bracketed
+// unit ("Catalog Request Timeout Seconds" -> "Catalog request timeout
+// (s)", "Max Cache Bytes" -> "Max cache size"). Acronyms and mixed-case
+// words (URL, HLS, YouTube, SetAVTransportURI, yt-dlp) are kept as-is.
+// Display-only: adapters keep their labels for the legacy UI.
+func settingsLabel(label string) string {
+	for _, suf := range []struct{ word, repl string }{
+		{" Seconds", " (s)"},
+		{" Hours", " (h)"},
+		{" Kbps", " (kbps)"},
+		{" Bytes", " size"},
+	} {
+		if strings.HasSuffix(label, suf.word) {
+			label = strings.TrimSuffix(label, suf.word) + suf.repl
+			break
+		}
+	}
+	words := strings.Split(label, " ")
+	for i := 1; i < len(words); i++ {
+		w := words[i]
+		if len(w) > 1 && w[0] >= 'A' && w[0] <= 'Z' && strings.ToLower(w[1:]) == w[1:] {
+			words[i] = strings.ToLower(w)
+		}
+	}
+	return strings.Join(words, " ")
 }
 
 // dspToFloat coerces a template any value (float64, int, or int64) to
