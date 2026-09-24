@@ -4,7 +4,7 @@
   <span class="strip-label">Equalizer</span>
   <div class="audio-deck">
 
-    <div class="deck-sect">
+    <div class="deck-sect" id="dsp-tone">
       <span class="deck-cap">Tone &middot; Balance</span>
       <div class="knob-row">
         {{ template "dsp-knob" (dict "Key" "bass" "Label" "Bass" "Value" .Bass "Min" -12 "Max" 12) }}
@@ -16,13 +16,13 @@
 
     <div class="deck-div"></div>
 
-    <div class="deck-sect deck-eq">
+    <div class="deck-sect deck-eq" id="dsp-eq">
       <span class="deck-cap">Graphic Equalizer &middot; dB</span>
       <div class="eq-bank">
         {{ range $i, $g := .EQ }}
         <div class="eq-band">
           <input class="eq-range" type="range" min="-12" max="12" step="1" value="{{ $g }}"
-                 data-dsp-eq="{{ $i }}" aria-label="EQ band {{ $i }}">
+                 data-dsp-eq="{{ $i }}" aria-label="EQ {{ index $.EQLabels $i }} hertz" aria-valuetext="{{ $g }} dB">
           <span class="eq-hz">{{ index $.EQLabels $i }}</span>
         </div>
         {{ end }}
@@ -31,19 +31,19 @@
 
     <div class="deck-div"></div>
 
-    <div class="deck-sect">
+    <div class="deck-sect" id="dsp-memory">
       <span class="deck-cap">Preset / Memory</span>
       <div class="btn-row">
-        {{ range $p := .Presets }}<button class="action-btn eqbtn" type="button" data-dsp-preset="{{ $p }}">{{ $p }}</button>{{ end }}
+        {{ range $p := .Presets }}<button class="action-btn eqbtn" type="button" data-dsp-preset="{{ $p }}" aria-pressed="false">{{ $p }}</button>{{ end }}
       </div>
       <div class="btn-row memory-row">
-        {{ range $m := .Memory }}<button class="action-btn eqbtn{{ if $m.Stored }} stored{{ end }}" type="button" data-dsp-memory="{{ $m.Slot }}" title="Tap recall &middot; hold store">{{ if $m.Name }}{{ $m.Name }}{{ else }}M{{ $m.Slot }}{{ end }}</button>{{ end }}
+        {{ range $m := .Memory }}<button class="action-btn eqbtn{{ if $m.Stored }} stored{{ end }}" type="button" data-dsp-memory="{{ $m.Slot }}" title="Tap recall &middot; hold store" aria-label="EQ memory {{ $m.Slot }}{{ if $m.Name }} ({{ $m.Name }}){{ end }}{{ if not $m.Stored }}, empty{{ end }}. Tap to recall, hold to store">{{ if $m.Name }}{{ $m.Name }}{{ else }}M{{ $m.Slot }}{{ end }}</button>{{ end }}
       </div>
       <div class="sw-grid">
-        {{ template "dsp-switch" (dict "Key" "loudness" "Label" "Loud" "On" .Loudness) }}
-        {{ template "dsp-switch" (dict "Key" "mono" "Label" "Mono" "On" .Mono) }}
-        {{ template "dsp-switch" (dict "Key" "subsonic" "Label" "Subsonic" "On" .Subsonic) }}
-        {{ template "dsp-switch" (dict "Key" "defeat" "Label" "EQ Out" "On" (not .Enabled)) }}
+        {{ template "dsp-switch" (dict "Key" "loudness" "Label" "Loud" "Name" "Loudness" "On" .Loudness) }}
+        {{ template "dsp-switch" (dict "Key" "mono" "Label" "Mono" "Name" "Mono" "On" .Mono) }}
+        {{ template "dsp-switch" (dict "Key" "subsonic" "Label" "Subsonic" "Name" "Subsonic filter" "On" .Subsonic) }}
+        {{ template "dsp-switch" (dict "Key" "defeat" "Label" "EQ Out" "Name" "EQ defeat" "On" (not .Enabled)) }}
       </div>
     </div>
 
@@ -55,6 +55,10 @@
         {{ template "mute-control" . }}
         {{ template "volume-control" . }}
       </div>
+      {{- /* Narrow chassis only (CSS): tone/EQ/memory fold behind this key so
+             the phone faceplate leads with volume, like a remote's TONE key. */}}
+      <button class="hw-btn tone-toggle" type="button" data-tone-toggle
+              aria-expanded="false" aria-controls="dsp-tone dsp-eq dsp-memory">Tone</button>
     </div>
 
   </div>
@@ -75,8 +79,8 @@
 {{define "dsp-switch"}}
 <div class="sw-cell">
   <button class="switch{{ if .On }} on{{ end }}" type="button" role="switch"
-          aria-checked="{{ if .On }}true{{ else }}false{{ end }}" data-dsp-switch="{{.Key}}"></button>
-  <span class="sw-lbl">{{.Label}}</span>
+          aria-checked="{{ if .On }}true{{ else }}false{{ end }}" data-dsp-switch="{{.Key}}" aria-label="{{.Name}}"></button>
+  <span class="sw-lbl" aria-hidden="true">{{.Label}}</span>
 </div>
 {{end}}
 

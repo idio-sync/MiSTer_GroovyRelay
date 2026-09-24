@@ -99,6 +99,19 @@ body.receiver *::after {
   box-sizing: border-box;
 }
 
+/* Screen-reader-only text (e.g. the VFD now-playing announcer). */
+body.receiver .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 body.receiver {
   margin: 0;
   padding: 0;
@@ -406,7 +419,6 @@ body.receiver .led.on.red .light::before {
   box-shadow:
     inset 0 0 2px rgba(255, 255, 255, 0.5),
     0 0 7px color-mix(in oklch, var(--lamp-red) 82%, transparent);
-  animation: rec-pulse 1.6s ease-in-out infinite;
 }
 
 body.receiver .led.on.aqua .light::before {
@@ -428,9 +440,11 @@ body.receiver .led.on.aqua .light::before {
   }
 }
 
+/* Legends are silkscreen: printed at full contrast whether or not the
+   lamp behind them is lit (the lamp carries state, not the legend). */
 body.receiver .led .lbl {
-  color: #5a5a5e;
-  font: 600 8px 'Inter', sans-serif;
+  color: #a4a4aa;
+  font: 600 9px 'Inter', sans-serif;
   /* Match the source-cluster nameplate tracking (0.12em) so both
      silkscreen legends on the faceplate agree. */
   letter-spacing: 0.12em;
@@ -450,7 +464,7 @@ body.receiver.idle .led.on.red .light::before {
 
 body.receiver.idle .led.on.aqua .lbl,
 body.receiver.idle .led.on.red .lbl {
-  color: #5a5a5e;
+  color: #a4a4aa;
 }
 
 body.receiver .load-core-btn {
@@ -2128,6 +2142,50 @@ body.receiver .trn:hover {
   color: #e8e8ec;
 }
 
+/* VCR key: cap + silkscreen legend printed beneath it. */
+body.receiver .trn-key {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+body.receiver .trn-legend {
+  color: #a4a4aa;
+  font: 600 9px/1 'Inter', sans-serif;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+body.receiver .trn-glyph {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+  display: block;
+}
+
+body.receiver .trn.primary {
+  position: relative;
+}
+
+/* PLAY lamp on the primary cap: lit only while playing. */
+body.receiver .trn .trn-lamp {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #1d1d22;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.7);
+}
+
+body.receiver [data-transport-state="playing"] .trn .trn-lamp {
+  background: var(--lamp-green);
+  box-shadow: 0 0 5px color-mix(in oklch, var(--lamp-green) 80%, transparent);
+}
+
 body.receiver .trn:active {
   transform: translateY(1px);
 }
@@ -2727,11 +2785,14 @@ body.receiver.settings-open .gear-btn {
 }
 
 @container chassis (max-width: 420px) {
+  /* Phone: the strip label becomes a header row so the key legends get
+     the full width (a 48px column could not hold "TRANSPORT"). */
   body.receiver .transport-strip {
-    grid-template-columns: 48px 1fr auto auto;
+    grid-template-columns: 1fr auto auto;
     grid-template-areas:
-      "label controls controls controls"
-      "label seek volume gear";
+      "label label label"
+      "controls controls controls"
+      "seek volume gear";
     gap: 6px;
   }
 
@@ -2750,11 +2811,24 @@ body.receiver.settings-open .gear-btn {
     min-width: 0;
   }
 
+  body.receiver .trn-key {
+    flex: 1 1 42px;
+    min-width: 42px;
+  }
+
   body.receiver .trn {
     flex: 1 1 34px;
-    width: auto;
+    width: 100%;
     min-width: 42px;
     height: 40px;
+  }
+
+  body.receiver .transport-strip .strip-label,
+  body.receiver .audio-strip .strip-label {
+    justify-self: start;
+    padding: 0 0 2px;
+    border-right: 0;
+    box-shadow: none;
   }
 
   body.receiver .volume-control {
@@ -2982,10 +3056,10 @@ body.receiver .section-strip {
 }
 
 body.receiver .strip-label {
-  font: 600 9px 'Inter', sans-serif;
+  font: 600 10px 'Inter', sans-serif;
   letter-spacing: 0.22em;
   text-transform: uppercase;
-  color: #6a6a6e;
+  color: #a4a4aa;
   padding: 6px 14px 6px 0;
   border-right: 1px solid #0a0a0b;
   box-shadow: 1px 0 0 rgba(255, 255, 255, 0.04);
@@ -4833,13 +4907,15 @@ body.receiver .source-cluster .lamp .state {
   opacity: 0.78;
 }
 
+/* READY is green, as on real gear: amber means standby/warming, red
+   means fault/protect, cyan (VFD) means the source is on air. */
 body.receiver .source-cluster .lamp.configured-idle .led {
-  background: var(--lock-amber, #d99340);
-  box-shadow: 0 0 10px var(--lock-amber-glow), inset 0 0 3px rgba(255, 255, 255, 0.44);
+  background: var(--lamp-green);
+  box-shadow: 0 0 10px color-mix(in oklch, var(--lamp-green) 70%, transparent), inset 0 0 3px rgba(255, 255, 255, 0.44);
 }
 
 body.receiver .source-cluster .lamp.configured-idle .state {
-  color: var(--lock-amber, #d99340);
+  color: var(--lamp-green);
 }
 
 body.receiver .source-cluster .lamp.unavailable .nameplate {
@@ -6276,7 +6352,7 @@ body.receiver .audio-deck {
 }
 body.receiver .audio-deck .deck-sect { display: flex; flex-direction: column; gap: 12px; justify-content: center; }
 body.receiver .audio-deck .deck-cap {
-  color: #6a6a70; font: 700 7px 'Inter', sans-serif; letter-spacing: 0.2em;
+  color: #a4a4aa; font: 700 9px 'Inter', sans-serif; letter-spacing: 0.2em;
   text-transform: uppercase; text-align: center; margin-bottom: 2px;
 }
 body.receiver .audio-deck .deck-div { width: 1px; background: #0a0a0b; box-shadow: 1px 0 0 rgba(255,255,255,0.04); }
@@ -6288,6 +6364,25 @@ body.receiver .audio-deck .deck-eq { padding: 0 4px; }
 body.receiver .audio-deck .deck-level {
   align-items: center;
   min-width: 204px;
+}
+/* TONE key: only the narrow deck folds sections (see @container 900px).
+   Same machined cap as the transport keys. */
+body.receiver .audio-deck .tone-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(180deg, #3a3a3e 0%, #1a1a1c 100%);
+  border: 1px solid #0a0a0b;
+  border-radius: 2px;
+  color: #c0c0c4;
+  font: 700 10px 'Inter', sans-serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), inset 0 -1px 0 rgba(0,0,0,0.4);
+}
+body.receiver .audio-strip.tone-open .tone-toggle {
+  color: var(--vfd-bright);
 }
 
 /* EQ graphic faders — recessed machined channel, VFD-cyan fill, metal cap. */
@@ -6305,10 +6400,10 @@ body.receiver .eq-range:focus { outline: none; }
 body.receiver .eq-range::-webkit-slider-runnable-track {
   width: 26px; height: 104px; border-radius: 5px;
   background:
-    /* VFD fill: glowing bar rising through the channel to the cap */
-    linear-gradient(to top, var(--vfd) 0 var(--eq-fill), rgba(0,0,0,0) var(--eq-fill)) center / 8px 100% no-repeat,
-    /* 0 dB reference hairline at mid-throw */
-    linear-gradient(to top, rgba(0,0,0,0) calc(50% - 1px), rgba(168,168,174,0.45) calc(50% - 1px) calc(50% + 1px), rgba(0,0,0,0) calc(50% + 1px)) center / 14px 100% no-repeat,
+    /* VFD fill from the 0 dB centre detent to the cap: boost rises, cut falls */
+    linear-gradient(to top, rgba(0,0,0,0) min(var(--eq-fill), 50%), var(--vfd) min(var(--eq-fill), 50%) max(var(--eq-fill), 50%), rgba(0,0,0,0) max(var(--eq-fill), 50%)) center / 8px 100% no-repeat,
+    /* 0 dB centre detent, silkscreened across the channel */
+    linear-gradient(to top, rgba(0,0,0,0) calc(50% - 1px), rgba(200,200,206,0.7) calc(50% - 1px) calc(50% + 1px), rgba(0,0,0,0) calc(50% + 1px)) center / 22px 100% no-repeat,
     /* recessed dark channel walls */
     linear-gradient(90deg, rgba(0,0,0,0) calc(50% - 5px), #050506 calc(50% - 5px), #131316 50%, #050506 calc(50% + 5px), rgba(0,0,0,0) calc(50% + 5px)) center / 100% 100% no-repeat,
     /* fader faceplate */
@@ -6334,7 +6429,8 @@ body.receiver .eq-range::-webkit-slider-thumb {
 body.receiver .eq-range::-moz-range-track {
   width: 26px; height: 104px; border-radius: 5px;
   background:
-    linear-gradient(to top, rgba(0,0,0,0) calc(50% - 1px), rgba(168,168,174,0.45) calc(50% - 1px) calc(50% + 1px), rgba(0,0,0,0) calc(50% + 1px)) center / 14px 100% no-repeat,
+    linear-gradient(to top, rgba(0,0,0,0) min(var(--eq-fill), 50%), var(--vfd) min(var(--eq-fill), 50%) max(var(--eq-fill), 50%), rgba(0,0,0,0) max(var(--eq-fill), 50%)) center / 8px 100% no-repeat,
+    linear-gradient(to top, rgba(0,0,0,0) calc(50% - 1px), rgba(200,200,206,0.7) calc(50% - 1px) calc(50% + 1px), rgba(0,0,0,0) calc(50% + 1px)) center / 22px 100% no-repeat,
     linear-gradient(90deg, rgba(0,0,0,0) calc(50% - 5px), #050506 calc(50% - 5px), #131316 50%, #050506 calc(50% + 5px), rgba(0,0,0,0) calc(50% + 5px)) center / 100% 100% no-repeat,
     linear-gradient(180deg, #2c2c30, #1a1a1e);
   box-shadow:
@@ -6343,8 +6439,7 @@ body.receiver .eq-range::-moz-range-track {
     inset 0 0 6px rgba(0,0,0,0.5);
 }
 body.receiver .eq-range::-moz-range-progress {
-  width: 8px; border-radius: 4px;
-  background: var(--vfd);
+  background: transparent; /* fill is drawn from centre on the track */
 }
 body.receiver .eq-range::-moz-range-thumb {
   width: 26px; height: 13px; border-radius: 3px;
@@ -6363,25 +6458,83 @@ body.receiver .eq-range:focus::-webkit-slider-thumb {
     0 0 10px var(--vfd-glow-soft);
 }
 body.receiver .eq-band .eq-hz {
-  color: #8a8a8e; font: 700 8px 'Inter', sans-serif;
+  color: #a4a4aa; font: 700 9px 'Inter', sans-serif;
   letter-spacing: 0.08em;
 }
 body.receiver .audio-deck .btn-row { display: flex; gap: 5px; }
 body.receiver .audio-deck .memory-row { justify-content: center; }
 body.receiver .action-btn.eqbtn { padding: 5px 8px; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
 body.receiver .action-btn.eqbtn.stored { color: var(--vfd); border-color: oklch(0.30 0.06 175); }
+/* Preset whose curve matches the live EQ (aria-pressed mirror). */
+body.receiver .action-btn.eqbtn.active { color: var(--vfd-bright); border-color: var(--vfd); text-shadow: 0 0 6px var(--vfd-glow); }
 body.receiver .sw-grid { display: grid; grid-template-columns: auto auto; gap: 7px 12px; align-items: center; }
 body.receiver .sw-cell { display: flex; align-items: center; gap: 7px; }
-body.receiver .sw-cell .sw-lbl { color: #8a8a8e; font: 700 8px 'Inter', sans-serif; letter-spacing: 0.14em; text-transform: uppercase; }
+/* DSP switches as latching push buttons (Technics LOUDNESS / Sony ES
+   SOURCE DIRECT): a short rectangular cap that sits lower when latched,
+   with an indicator LED above it. Scoped to the audio strip; the settings
+   drawer keeps its own .switch. */
+body.receiver .audio-strip .sw-cell .switch {
+  width: 40px;
+  height: 18px;
+  margin-top: 9px;
+  border: 1px solid #050506;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #4a4a50 0%, #2a2a2e 55%, #1c1c20 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5),
+    0 2px 0 #0a0a0b,
+    0 3px 4px rgba(0, 0, 0, 0.45);
+  transition: transform 60ms ease-out, box-shadow 60ms ease-out;
+}
+body.receiver .audio-strip .sw-cell .switch::before {
+  top: -9px;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  margin-left: -2.5px;
+  border-radius: 50%;
+  background: #1d1d22;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.7);
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+body.receiver .audio-strip .sw-cell .switch.on {
+  transform: translateY(1px);
+  background: linear-gradient(180deg, #3e3e44 0%, #242428 55%, #18181c 100%);
+  border-color: #050506;
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.55),
+    0 1px 0 #0a0a0b;
+}
+body.receiver .audio-strip .sw-cell .switch.on::before {
+  left: 50%;
+  background: var(--lamp-green);
+  box-shadow: 0 0 5px color-mix(in oklch, var(--lamp-green) 80%, transparent), inset 0 0 1px rgba(255, 255, 255, 0.5);
+}
+body.receiver .sw-cell .sw-lbl { color: #a4a4aa; font: 700 9px 'Inter', sans-serif; letter-spacing: 0.14em; text-transform: uppercase; }
 @container chassis (max-width: 900px) {
   body.receiver .audio-deck {
     gap: 14px;
     padding: 14px;
   }
 
-  body.receiver .audio-deck > .deck-div:nth-child(n+4),
-  body.receiver .audio-deck > .deck-sect:nth-child(n+5) {
+  /* Remote-control priority: Level (volume + mute) leads and is always
+     on the faceplate; tone/EQ/memory fold behind the TONE key. */
+  body.receiver .audio-deck > .deck-level {
+    order: -1;
+    min-width: 0;
+  }
+
+  body.receiver .audio-strip:not(.tone-open) .audio-deck > .deck-sect:not(.deck-level),
+  body.receiver .audio-strip:not(.tone-open) .audio-deck > .deck-div {
     display: none;
+  }
+
+  body.receiver .audio-deck .tone-toggle {
+    display: inline-flex;
+    align-self: center;
+    min-height: 40px;
+    padding: 0 16px;
   }
 
   body.receiver .audio-deck .knob-row {
@@ -6452,7 +6605,7 @@ body.receiver .sw-cell .sw-lbl { color: #8a8a8e; font: 700 8px 'Inter', sans-ser
 
 @container chassis (max-width: 420px) {
   body.receiver .audio-strip {
-    grid-template-columns: 48px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: 6px;
   }
 
@@ -6839,7 +6992,13 @@ body.receiver .load-core-btn:focus-visible,
 body.receiver .gear-btn:focus-visible,
 body.receiver .power-btn:focus-visible,
 body.receiver .cast-btn:focus-visible,
-body.receiver .browse-btn:focus-visible {
+body.receiver .browse-btn:focus-visible,
+body.receiver .hw-btn:focus-visible,
+body.receiver .audio-strip .action-btn:focus-visible,
+body.receiver .audio-strip .switch:focus-visible,
+body.receiver .upload-btn:focus-visible,
+body.receiver .eq-range:focus-visible,
+body.receiver .volume-control:has(.volume-range:focus-visible) .volume-dial {
   outline: 2px solid var(--vfd);
   outline-offset: 2px;
 }

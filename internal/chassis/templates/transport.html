@@ -2,25 +2,43 @@
 {{htmlComment "chassis:transport"}}
 <div class="transport-strip" aria-label="Transport controls" data-transport-state="{{.State}}">
   <span class="strip-label">Transport</span>
+  {{- /* VCR key row: drawn SVG legends on the caps, silkscreen names
+         printed below each key, and a PLAY lamp on the primary key. */}}
   <div class="transport-row">
-    <button class="trn" type="button" data-transport-action="previous"
-      {{if not .ActionsEnabled.Previous}}disabled{{end}}
-      aria-label="Previous" title="Previous">&#x23ee;</button>
-    <button class="trn" type="button" data-transport-action="next"
-      {{if not .ActionsEnabled.Next}}disabled{{end}}
-      aria-label="Next" title="Next">&#x23ed;</button>
-    <button class="trn primary" type="button" data-transport-action="pauseResume"
-      {{if not .ActionsEnabled.PauseResume}}disabled{{end}}
-      aria-label="Pause or resume" title="Pause / Resume">
-      <span data-state-icon="playing">&#x23f8;</span>
-      <span data-state-icon="paused">&#x25b6;</span>
-    </button>
-    <button class="trn" type="button" data-transport-action="stop"
-      {{if not .ActionsEnabled.Stop}}disabled{{end}}
-      aria-label="Stop" title="Stop">&#x23f9;</button>
-    <button class="trn" type="button" data-transport-action="replay"
-      {{if not .ActionsEnabled.Replay}}disabled{{end}}
-      aria-label="Replay" title="Replay">&#x27f2;</button>
+    <span class="trn-key">
+      <button class="trn" type="button" data-transport-action="previous"
+        {{if not .ActionsEnabled.Previous}}disabled{{end}}
+        aria-label="Previous" title="Previous"><svg class="trn-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3 3h2v10H3zM13 3v10L6 8z"/></svg></button>
+      <span class="trn-legend" aria-hidden="true">Prev</span>
+    </span>
+    <span class="trn-key">
+      <button class="trn" type="button" data-transport-action="next"
+        {{if not .ActionsEnabled.Next}}disabled{{end}}
+        aria-label="Next" title="Next"><svg class="trn-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M11 3h2v10h-2zM3 3v10l7-5z"/></svg></button>
+      <span class="trn-legend" aria-hidden="true">Next</span>
+    </span>
+    <span class="trn-key">
+      <button class="trn primary" type="button" data-transport-action="pauseResume"
+        {{if not .ActionsEnabled.PauseResume}}disabled{{end}}
+        aria-label="Pause or resume" title="Pause / Resume">
+        <span data-state-icon="playing"><svg class="trn-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 3h3v10H4zM9 3h3v10H9z"/></svg></span>
+        <span data-state-icon="paused"><svg class="trn-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4.5 2.5v11L13.5 8z"/></svg></span>
+        <span class="trn-lamp" aria-hidden="true"></span>
+      </button>
+      <span class="trn-legend" aria-hidden="true"><span data-state-icon="playing">Pause</span><span data-state-icon="paused">Play</span></span>
+    </span>
+    <span class="trn-key">
+      <button class="trn" type="button" data-transport-action="stop"
+        {{if not .ActionsEnabled.Stop}}disabled{{end}}
+        aria-label="Stop" title="Stop"><svg class="trn-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.5 3.5h9v9h-9z"/></svg></button>
+      <span class="trn-legend" aria-hidden="true">Stop</span>
+    </span>
+    <span class="trn-key">
+      <button class="trn" type="button" data-transport-action="replay"
+        {{if not .ActionsEnabled.Replay}}disabled{{end}}
+        aria-label="Replay" title="Replay"><svg class="trn-glyph" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 2.5V0L4.5 3.25 8 6.5V4a4 4 0 1 1-4 4H2.5A5.5 5.5 0 1 0 8 2.5z"/></svg></button>
+      <span class="trn-legend" aria-hidden="true">Replay</span>
+    </span>
   </div>
   <div class="seek-bar" data-transport-seek
     {{if not .ActionsEnabled.Seek}}data-transport-seek-disabled{{end}}

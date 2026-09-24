@@ -181,10 +181,21 @@ function createHarness(initialState = 'idle', options = {}) {
           bodyClasses.delete('live');
           bodyClasses.add(next);
         },
+        current() {
+          return bodyClasses.has('live') ? 'live' : 'idle';
+        },
+      },
+      lamps: {
+        sync(selector, on) {
+          lampCalls.push([selector, on]);
+        },
       },
       events: {},
     },
   };
+
+  const lampCalls = [];
+  const announce = new FakeElement();
 
   const stateCalls = [];
   const bodyClasses = new Set(['receiver', initialState]);
@@ -210,6 +221,8 @@ function createHarness(initialState = 'idle', options = {}) {
         return queueRail;
       case '[data-vfd-uptime]':
         return uptime;
+      case '[data-vfd-announce]':
+        return announce;
       default:
         return null;
     }
@@ -258,6 +271,8 @@ function createHarness(initialState = 'idle', options = {}) {
     stateCalls,
     bodyClasses,
     resizeListeners,
+    announce,
+    lampCalls,
   };
 }
 
@@ -463,4 +478,36 @@ test('vfd event clears is-empty when tier receives text', () => {
 test('connect wires a resize listener for re-measuring tier overflow', () => {
   const h = createHarness('idle');
   assert.equal(h.resizeListeners.length, 1, 'resize listener must be registered exactly once at load, not per connect()/reconnect()');
+});
+
+// Screen-reader announcer: one polite live region speaks title changes
+// while casting, and the stop, but never the uptime-only frames.
+test('now-playing text is announced when it changes while live', () => {
+  const h = createHarness('live');
+  const frame = (primary, secondary, uptime) => h.source.dispatch('vfd', {
+    data: JSON.stringify({ primary, secondary, tertiary: '', uptime }),
+  });
+
+  frame('Blade Runner', 'PLEX', '0H 1m');
+  assert.equal(h.announce.textContent, 'Now playing: Blade Runner, PLEX');
+
+  h.announce.textContent = '';
+  frame('Blade Runner', 'PLEX', '0H 2m');
+  assert.equal(h.announce.textContent, '', 'uptime-only frames must not re-announce');
+
+  frame('Alien', 'PLEX', '0H 2m');
+  assert.equal(h.announce.textContent, 'Now playing: Alien, PLEX');
+});
+
+test('live to idle transition announces standby', () => {
+  const h = createHarness('live');
+  h.source.dispatch('state', { data: JSON.stringify({ state: 'idle' }) });
+  assert.equal(h.announce.textContent, 'Cast stopped. Standby.');
+});
+
+test('LINK lamp follows the SSE connection', () => {
+  const h = createHarness('idle');
+  h.source.dispatch('open');
+  h.source.dispatch('error');
+  assert.deepEqual(h.lampCalls, [['[data-link-led]', true], ['[data-link-led]', false]]);
 });

@@ -1333,3 +1333,55 @@ func isReceiverScopedSelector(part string) bool {
 		return false
 	}
 }
+
+// On a phone the receiver is a remote: master volume + mute must stay on
+// the faceplate (they used to be hidden with the rest of the deck below
+// 900px), and the tone/EQ/memory sections fold behind a TONE key.
+func TestChassisCSS_NarrowDeckKeepsLevelAndFoldsToneBehindKey(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	if strings.Contains(text, ".audio-deck > .deck-sect:nth-child(n+5)") {
+		t.Fatal("narrow deck still hides sections by position, which takes the Level (volume/mute) section with it")
+	}
+	level := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 900px)", "body.receiver .audio-deck > .deck-level")
+	if !strings.Contains(level, "order: -1;") {
+		t.Fatalf("narrow deck should lead with the Level section: %s", level)
+	}
+	folded := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 900px)",
+		"body.receiver .audio-strip:not(.tone-open) .audio-deck > .deck-sect:not(.deck-level),\n  body.receiver .audio-strip:not(.tone-open) .audio-deck > .deck-div")
+	if !strings.Contains(folded, "display: none;") {
+		t.Fatalf("closed TONE key should fold the tone/EQ/memory sections: %s", folded)
+	}
+	toggle := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 900px)", "body.receiver .audio-deck .tone-toggle")
+	if !strings.Contains(toggle, "display: inline-flex;") {
+		t.Fatalf("TONE key should appear on the narrow deck: %s", toggle)
+	}
+	if !strings.Contains(cssRuleBlock(t, text, "body.receiver .audio-deck .tone-toggle"), "display: none;") {
+		t.Fatal("TONE key should be hidden on the wide faceplate, where every section is visible")
+	}
+}
+
+func TestAudioStripTemplate_ToneToggleControlsFoldedSections(t *testing.T) {
+	t.Parallel()
+	tmpl, err := chassisTemplatesFS.ReadFile("templates/audio-strip.html")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	s := string(tmpl)
+	for _, want := range []string{
+		`data-tone-toggle`,
+		`aria-expanded="false"`,
+		`aria-controls="dsp-tone dsp-eq dsp-memory"`,
+		`id="dsp-tone"`,
+		`id="dsp-eq"`,
+		`id="dsp-memory"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("audio-strip template missing %q", want)
+		}
+	}
+}

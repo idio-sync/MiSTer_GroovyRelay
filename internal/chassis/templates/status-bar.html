@@ -4,15 +4,20 @@
   <div class="power-cluster">
     <button class="power-btn" type="button" aria-label="Power" title="Power">&#x23fb;</button>
     <div class="led-row">
-      <span class="led on green" role="status" aria-label="Power on" title="Power on"><span class="light"></span><span class="lbl">PWR</span></span>
-      <span class="led on green" role="status" aria-label="Link online" title="Link online"><span class="light"></span><span class="lbl">LINK</span></span>
-      <span class="led on aqua" role="status" aria-label="On air" title="On air"><span class="light"></span><span class="lbl">ON&nbsp;AIR</span></span>
-      <span class="led on red" role="status" aria-label="Cast active" title="Cast active"><span class="light"></span><span class="lbl">CAST</span></span>
-      <span class="led" role="status" aria-label="Recording inactive" title="Recording inactive"><span class="light"></span><span class="lbl">REC</span></span>
-      <span class="led aqua{{if .AudioStrip.Engaged}} on{{end}}" data-eq-led role="status"
+      {{- /* Lamps are role=img, not role=status: seven polite live regions
+             chatter. State changes are announced once via the VFD's
+             data-vfd-announce region. data-live-led lamps follow body.live
+             (chassis.js State.set); data-link-led follows the SSE link. */ -}}
+      {{- $live := eq .State "live" }}
+      <span class="led on green" role="img" aria-label="Power on" title="Power on"><span class="light"></span><span class="lbl">PWR</span></span>
+      <span class="led on green" data-link-led data-label-on="Link online" data-label-off="Link interrupted" role="img" aria-label="Link online" title="Link online"><span class="light"></span><span class="lbl">LINK</span></span>
+      <span class="led aqua{{if $live}} on{{end}}" data-live-led data-label-on="On air" data-label-off="Off air" role="img" aria-label="{{if $live}}On air{{else}}Off air{{end}}" title="{{if $live}}On air{{else}}Off air{{end}}"><span class="light"></span><span class="lbl">ON&nbsp;AIR</span></span>
+      <span class="led green{{if $live}} on{{end}}" data-live-led data-label-on="Cast active" data-label-off="No cast" role="img" aria-label="{{if $live}}Cast active{{else}}No cast{{end}}" title="{{if $live}}Cast active{{else}}No cast{{end}}"><span class="light"></span><span class="lbl">CAST</span></span>
+      <span class="led" aria-hidden="true"><span class="light"></span><span class="lbl">REC</span></span>
+      <span class="led aqua{{if .AudioStrip.Engaged}} on{{end}}" data-eq-led role="img"
             aria-label="EQ {{if .AudioStrip.Engaged}}active{{else}}inactive{{end}}"
             title="Tone/EQ {{if .AudioStrip.Engaged}}engaged{{else}}flat / defeated{{end}}"><span class="light"></span><span class="lbl">EQ</span></span>
-      <span class="led{{if .LocalFilesStatusLED.On}} on{{end}}{{if .LocalFilesStatusLED.Tone}} {{.LocalFilesStatusLED.Tone}}{{end}}" data-localfiles-led role="status"
+      <span class="led{{if .LocalFilesStatusLED.On}} on{{end}}{{if .LocalFilesStatusLED.Tone}} {{.LocalFilesStatusLED.Tone}}{{end}}" data-localfiles-led role="img"
             aria-label="{{.LocalFilesStatusLED.AriaLabel}}"
             title="{{.LocalFilesStatusLED.Title}}"><span class="light"></span><span class="lbl">{{.LocalFilesStatusLED.Label}}</span></span>
     </div>

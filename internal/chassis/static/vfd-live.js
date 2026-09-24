@@ -20,6 +20,18 @@
   let source = null;
   const subscriptions = new Map();
 
+  // Optional chassis.js surfaces: tolerate their absence (load order,
+  // test fakes) rather than letting a throw abort the event handler.
+  function currentState() {
+    const s = window.Chassis.State;
+    return s && typeof s.current === 'function' ? s.current() : null;
+  }
+
+  function syncLinkLamp(on) {
+    const lamps = window.Chassis.lamps;
+    if (lamps && typeof lamps.sync === 'function') lamps.sync('[data-link-led]', on);
+  }
+
   function subscribe(eventName, handler) {
     if (!subscriptions.has(eventName)) {
       subscriptions.set(eventName, new Set());
@@ -51,7 +63,13 @@
     try {
       const { state } = JSON.parse(ev.data);
       if (state === 'idle' || state === 'live') {
+        const prev = currentState();
         window.Chassis.State.set(state);
+        // Cast start is announced by the now-playing text; announce the stop.
+        if (prev === 'live' && state === 'idle') {
+          lastAnnounced = '';
+          announce('Cast stopped. Standby.');
+        }
         // The .vfd-state element's --idle/--live modifier is only set at
         // server-render time. chassis.css hides the modifier that does not
         // match the body class (body:not(.idle) .vfd-state--idle, and
@@ -216,6 +234,25 @@
     }, 400);
   }
 
+  // Screen-reader announcement of now-playing changes. The VFD rows
+  // themselves are not live regions (uptime ticks would chatter); this
+  // one visually hidden region speaks only when the title text changes.
+  let lastAnnounced = null;
+
+  function announce(text) {
+    const el = document.querySelector('[data-vfd-announce]');
+    if (el) el.textContent = text;
+  }
+
+  function announceNowPlaying(primary, secondary) {
+    const text = [primary, secondary].filter(Boolean).join(', ');
+    if (text === lastAnnounced) return;
+    const first = lastAnnounced === null;
+    lastAnnounced = text;
+    if (first || !text || currentState() !== 'live') return;
+    announce(`Now playing: ${text}`);
+  }
+
   function notePrimary(primary) {
     const next = primary || '';
     if (lastPrimary !== null && next && next !== lastPrimary) {
@@ -228,6 +265,7 @@
     try {
       const data = JSON.parse(ev.data);
       notePrimary(data.primary);
+      announceNowPlaying(data.primary, data.secondary);
       applyTier('data-vfd-primary', data.primary);
       applyTier('data-vfd-secondary', data.secondary);
       applyTier('data-vfd-tertiary', data.tertiary);
@@ -250,6 +288,12 @@
     const secondary = document.querySelector('[data-vfd-secondary]');
     const tertiary = document.querySelector('[data-vfd-tertiary]');
     lastPrimary = primary ? primary.textContent : '';
+    // Seed with the server-rendered text so the first SSE frame, which
+    // repeats what is already on screen, is not announced.
+    lastAnnounced = [primary, secondary]
+      .map((el) => (el ? el.textContent : ''))
+      .filter(Boolean)
+      .join(', ');
     applyDensity(
       primary ? primary.textContent : '',
       secondary ? secondary.textContent : '',
@@ -296,7 +340,9 @@
     source.addEventListener('state', handleStateEvent);
     source.addEventListener('vfd', handleVfdEvent);
     source.addEventListener('source', handleSourceEvent);
+    source.addEventListener('open', () => syncLinkLamp(true));
     source.addEventListener('error', () => {
+      syncLinkLamp(false);
       console.info('vfd-live: stream interrupted; browser will retry using the SSE retry directive');
     });
     attachSubscriptions(source);

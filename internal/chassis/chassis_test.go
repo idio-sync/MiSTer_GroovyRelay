@@ -629,8 +629,10 @@ func TestChassisCSS_TransportNarrowLayoutAndPreviewDisabled(t *testing.T) {
 	text := string(css)
 	for _, want := range []string{
 		`@container chassis (max-width: 420px)`,
-		`"label controls controls controls"`,
-		`"label seek volume gear"`,
+		// Phone: label is a header row so the key legends get full width.
+		`"label label label"`,
+		`"controls controls controls"`,
+		`"seek volume gear"`,
 		`grid-area: label;`,
 		`grid-area: controls;`,
 		`grid-area: seek;`,
@@ -3783,6 +3785,43 @@ func TestFieldHelper_TextWithValue(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in:\n%s", want, s)
 		}
+	}
+}
+
+// Every settings control must carry an accessible name. The label points
+// at the control (for=/id) and names it by the label text alone; the help
+// paragraph is the description, not part of the name.
+func TestFieldHelper_ControlsAreLabelled(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		id   string
+	}{
+		{"bridge text with help", map[string]any{"Name": "mister_host", "Type": "text", "Label": "Host", "Help": "MiSTer IP", "Scope": "reboot"}, "fld-bridge-mister_host"},
+		{"adapter switch", map[string]any{"Name": "enabled", "Type": "switch", "Label": "Enabled", "Adapter": "plex", "Scope": "hot"}, "fld-plex-enabled"},
+		{"select", map[string]any{"Name": "video.mode", "Type": "select", "Label": "Mode", "Scope": "recast"}, "fld-bridge-video-mode"},
+		{"password", map[string]any{"Name": "api key", "Type": "password", "Label": "Key", "Adapter": "jellyfin", "Scope": "hot"}, "fld-jellyfin-api-key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := string(fieldHelper(tc.args))
+			for _, want := range []string{
+				`<label for="` + tc.id + `">`,
+				`id="` + tc.id + `"`,
+				`aria-labelledby="` + tc.id + `-l"`,
+				`<span id="` + tc.id + `-l">`,
+			} {
+				if !strings.Contains(s, want) {
+					t.Errorf("missing %q in:\n%s", want, s)
+				}
+			}
+			if _, hasHelp := tc.args["Help"]; hasHelp {
+				if !strings.Contains(s, `aria-describedby="`+tc.id+`-h"`) || !strings.Contains(s, `class="help" id="`+tc.id+`-h"`) {
+					t.Errorf("help text not wired as description:\n%s", s)
+				}
+			}
+		})
 	}
 }
 

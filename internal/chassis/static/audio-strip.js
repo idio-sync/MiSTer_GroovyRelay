@@ -63,6 +63,30 @@
       .map((el) => Number(el.value));
   }
 
+  // Spoken values for range inputs: "+3 dB" / "0 dB", balance as a side.
+  function dbText(v) {
+    const n = Number(v) || 0;
+    return `${n > 0 ? '+' : ''}${n} dB`;
+  }
+
+  function balanceText(v) {
+    const n = Math.round(Number(v) || 0);
+    if (n === 0) return 'Center';
+    return n < 0 ? `Left ${-n}` : `Right ${n}`;
+  }
+
+  // Mark the preset button whose curve matches the live EQ (aria-pressed
+  // plus the lit legend); none is pressed for a hand-tuned curve.
+  function syncPresetPressed() {
+    const eq = currentEQ();
+    document.querySelectorAll('[data-dsp-preset]').forEach((el) => {
+      const curve = PRESETS[String(el.dataset.dspPreset || '').toLowerCase()];
+      const match = !!curve && curve.length === eq.length && curve.every((g, i) => g === eq[i]);
+      el.setAttribute('aria-pressed', match ? 'true' : 'false');
+      el.classList.toggle('active', match);
+    });
+  }
+
   function numeric(value, fallback) {
     const n = Number.parseFloat(value);
     return Number.isFinite(n) ? n : fallback;
@@ -115,6 +139,8 @@
     if (el.value !== formatted) {
       el.value = formatted;
     }
+    el.setAttribute('aria-valuetext',
+      el.dataset.dspKnobRange === 'balance' ? balanceText(next) : dbText(next));
     const root = knobRoot(el);
     if (root) {
       root.dataset.dspValue = formatted;
@@ -152,13 +178,14 @@
     const v = Number(el.value);
     const pct = max > min ? ((v - min) / (max - min)) * 100 : 0;
     el.style.setProperty('--eq-fill', `${Math.max(0, Math.min(100, pct)).toFixed(1)}%`);
+    el.setAttribute('aria-valuetext', dbText(v));
   }
 
   function bindEQ() {
     document.querySelectorAll('[data-dsp-eq]').forEach((el) => {
       paintEQFill(el);
       el.addEventListener('pointerdown', () => { editing = true; });
-      el.addEventListener('input', () => { editing = true; paintEQFill(el); preview({ eq: currentEQ() }); });
+      el.addEventListener('input', () => { editing = true; paintEQFill(el); syncPresetPressed(); preview({ eq: currentEQ() }); });
       el.addEventListener('change', () => { editing = false; commit({ eq: currentEQ() }); });
     });
   }
@@ -259,6 +286,7 @@
           slider.value = String(curve[Number(slider.dataset.dspEq)] || 0);
           paintEQFill(slider);
         });
+        syncPresetPressed();
         commit({ eq: curve.slice() });
       });
     });
@@ -284,6 +312,12 @@
       };
       el.addEventListener('pointerdown', startHold);
       el.addEventListener('pointerup', endHold);
+      // Keyboard Enter/Space fire click with detail 0 and no pointer
+      // events; treat that as a tap (recall). Store stays a long-press.
+      el.addEventListener('click', (ev) => {
+        if (ev.detail !== 0) return;
+        postMemory({ op: 'recall', slot }).catch((e) => console.warn('audio-strip recall', e));
+      });
       el.addEventListener('pointerleave', () => { if (holdTimer) { window.clearTimeout(holdTimer); holdTimer = 0; } });
     });
   }
@@ -316,6 +350,7 @@
       const el = document.querySelector(sel);
       if (el) paintEQFill(el);
     });
+    if (params.eq) syncPresetPressed();
     const sw = (key, on) => {
       const el = document.querySelector(`[data-dsp-switch="${key}"]`);
       if (!el) return;
@@ -341,11 +376,27 @@
     }
   }
 
+  // Narrow chassis: the TONE key folds/unfolds the tone, EQ and memory
+  // sections (CSS hides them unless .audio-strip.tone-open).
+  function bindToneToggle() {
+    const btn = document.querySelector('[data-tone-toggle]');
+    const strip = document.querySelector('[data-audio-strip]');
+    if (!btn || !strip) return;
+    btn.addEventListener('click', () => {
+      const open = !strip.classList.contains('tone-open');
+      strip.classList.toggle('tone-open', open);
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      btn.classList.toggle('lit', open);
+    });
+  }
+
   function init() {
+    bindToneToggle();
     bindEQ();
     bindKnobs();
     bindSwitches();
     bindPresets();
+    syncPresetPressed();
     bindMemories();
     window.Chassis.events.subscribe('audioDsp', handleEvent);
   }

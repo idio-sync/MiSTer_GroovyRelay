@@ -438,13 +438,28 @@ func fieldHelper(args map[string]any) template.HTML {
 		rowClass += " has-err"
 	}
 
+	// Accessible name: the <label> points at the control via for=, and the
+	// control is named by the label text alone (aria-labelledby) so the
+	// help paragraph becomes its description rather than part of its name.
+	scopeKey := "bridge"
+	if adapter != "" {
+		scopeKey = adapter
+	}
+	ctrlID := fieldControlID(scopeKey, name)
+	a11yAttr := fmt.Sprintf(` id="%s" aria-labelledby="%s-l"`, ctrlID, ctrlID)
+	if help != "" {
+		a11yAttr += fmt.Sprintf(` aria-describedby="%s-h"`, ctrlID)
+	}
+	identAttr += a11yAttr
+
 	// Label cell.
 	var labelHTML string
 	if help != "" {
-		labelHTML = fmt.Sprintf(`<label>%s <span class="help">%s</span></label>`,
-			html.EscapeString(label), html.EscapeString(help))
+		labelHTML = fmt.Sprintf(`<label for="%s"><span id="%s-l">%s</span> <span class="help" id="%s-h">%s</span></label>`,
+			ctrlID, ctrlID, html.EscapeString(label), ctrlID, html.EscapeString(help))
 	} else {
-		labelHTML = fmt.Sprintf(`<label>%s</label>`, html.EscapeString(label))
+		labelHTML = fmt.Sprintf(`<label for="%s"><span id="%s-l">%s</span></label>`,
+			ctrlID, ctrlID, html.EscapeString(label))
 	}
 
 	// Middle cell — type-specific.
@@ -555,6 +570,22 @@ func fieldHelper(args map[string]any) template.HTML {
 
 	return template.HTML(fmt.Sprintf(`<div class="%s">%s%s%s%s</div>`,
 		rowClass, labelHTML, middleHTML, errHTML, scopeHTML))
+}
+
+// fieldControlID derives a stable, document-unique element id for a
+// settings control from its owner (adapter name or "bridge") and field
+// key. Anything outside [A-Za-z0-9_-] collapses to "-".
+func fieldControlID(owner, name string) string {
+	clean := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+				return r
+			}
+			return '-'
+		}, s)
+	}
+	return "fld-" + clean(owner) + "-" + clean(name)
 }
 
 // parseTemplates parses the embedded chassis templates with the helper

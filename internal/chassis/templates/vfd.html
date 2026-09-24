@@ -1,6 +1,7 @@
 {{define "vfd"}}
 {{htmlComment "chassis:vfd"}}
 <div class="screen-frame">
+  <p class="sr-only" data-vfd-announce aria-live="polite" aria-atomic="true"></p>
   <div class="screen vfd vfd-density {{if and .Primary .Secondary .Tertiary}}vfd-density--dense{{else if and .Primary .Secondary}}vfd-density--sparse-two{{else if .Primary}}vfd-density--sparse-one{{else}}vfd-density--empty{{end}}">
     <div class="vfd-state {{if eq .State "live"}}vfd-state--live{{else}}vfd-state--idle{{end}}">
       <div class="vfd-metadata-zone">

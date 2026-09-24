@@ -17,9 +17,23 @@
       }
       document.body.classList.remove('idle', 'live');
       document.body.classList.add(next);
+      syncLamp('[data-live-led]', next === State.LIVE);
       animators.notify(next);
     },
   };
+
+  // syncLamp lights/darkens status-bar lamps and keeps their accessible
+  // label truthful (data-label-on / data-label-off).
+  function syncLamp(selector, on) {
+    document.querySelectorAll(selector).forEach((led) => {
+      led.classList.toggle('on', on);
+      const label = led.getAttribute(on ? 'data-label-on' : 'data-label-off');
+      if (label) {
+        led.setAttribute('aria-label', label);
+        led.setAttribute('title', label);
+      }
+    });
+  }
 
   // Animator registry. Phase 0 is empty; later specs register loops here.
   const animators = {
@@ -323,6 +337,7 @@
   }
 
   window.Chassis = { State, animators };
+  window.Chassis.lamps = { sync: syncLamp };
 
   // setupBlocked returns true while first-run setup mode is active. Cast
   // scripts call this before POSTing; the server-side 409 is authoritative.
