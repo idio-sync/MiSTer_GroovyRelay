@@ -3,6 +3,8 @@ package jellyfin
 import (
 	"sync"
 	"time"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
 // LinkPhase is the link state machine's current phase. It is distinct
@@ -122,7 +124,7 @@ func (s *LinkState) SetLinked(user, serverID string) {
 func (s *LinkState) SetError(msg string) {
 	s.mu.Lock()
 	s.phase = LinkError
-	s.lastErr = msg
+	s.lastErr = adapters.RedactErrorText(msg)
 	s.updatedAt = time.Now()
 	cb := s.onPhaseChange
 	s.mu.Unlock()

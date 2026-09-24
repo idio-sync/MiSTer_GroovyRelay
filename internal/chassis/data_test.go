@@ -164,6 +164,33 @@ func TestApplySourceLampState_DerivesIssueFromAdapterStatus(t *testing.T) {
 	}
 }
 
+// A lamp's LastError lands in the page's title/aria-label and in the
+// SSE lamp frames, both readable by anyone on the LAN, so credential-
+// bearing URLs in adapter errors must be redacted before they get here.
+func TestApplySourceLampState_RedactsCredentialsInLastError(t *testing.T) {
+	t.Parallel()
+	base := &ReceiverPageData{Source: SourceData{Buttons: []SourceButton{
+		{Label: "JELLYFIN", Action: ""},
+	}}}
+	applySourceLampState(base, []adapters.SourceAvailabilityViewer{
+		fakeSourceViewer{
+			id:         "jellyfin",
+			configured: "yes",
+			status: adapters.Status{
+				State:     adapters.StateError,
+				LastError: `jellyfin: probe: Get "http://jf:8096/System/Info?api_key=SECRET123": connection refused`,
+			},
+		},
+	}, "", "")
+	got := base.Source.Buttons[0].LastError
+	if strings.Contains(got, "SECRET123") || strings.Contains(got, "api_key") {
+		t.Fatalf("LastError leaks credential: %q", got)
+	}
+	if !strings.Contains(got, "connection refused") {
+		t.Errorf("LastError lost its diagnostic detail: %q", got)
+	}
+}
+
 func TestApplySourceLampState_EmptyRefClearsCasting(t *testing.T) {
 	t.Parallel()
 	base := &ReceiverPageData{Source: SourceData{Buttons: []SourceButton{

@@ -94,7 +94,7 @@ func (s *Server) buildAdapterPanelData(a adapters.Adapter, toast *toastData, err
 	case adapters.StateRunning:
 		data.StatusDetail = "since " + st.Since.Format("15:04:05")
 	case adapters.StateError:
-		data.StatusDetail = st.LastError
+		data.StatusDetail = adapters.RedactErrorText(st.LastError)
 	}
 
 	values := map[string]any{}

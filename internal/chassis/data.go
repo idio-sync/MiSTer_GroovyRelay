@@ -1016,7 +1016,7 @@ func localFilesStatusLED(reg *adapters.Registry) StatusLEDData {
 	case adapters.StateError:
 		led.On = true
 		led.Tone = "red"
-		if msg := strings.TrimSpace(status.LastError); msg != "" {
+		if msg := strings.TrimSpace(adapters.RedactErrorText(status.LastError)); msg != "" {
 			led.AriaLabel += ": " + msg
 			led.Title = led.AriaLabel
 		}
@@ -1197,7 +1197,8 @@ func applySourceLampState(base *ReceiverPageData, viewers []adapters.SourceAvail
 		b.Casting = id == castingSource && id != ""
 		if st, ok := issues[id]; ok {
 			b.Issue = true
-			b.LastError = st.LastError
+			// Backstop: LastError reaches title/aria-label and SSE frames.
+			b.LastError = adapters.RedactErrorText(st.LastError)
 		} else {
 			b.Issue = false
 			b.LastError = ""

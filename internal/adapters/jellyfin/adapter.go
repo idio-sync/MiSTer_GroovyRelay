@@ -553,8 +553,11 @@ func (a *Adapter) postCapabilitiesNow(ctx context.Context) error {
 	})
 }
 
-// setState atomically updates state, stateSince, and lastErr.
+// setState atomically updates state, stateSince, and lastErr. errMsg is
+// redacted first: probe and websocket failures wrap URLs carrying the
+// access token as ?api_key=, and lastErr is surfaced to the UI and logs.
 func (a *Adapter) setState(s adapters.State, errMsg string) {
+	errMsg = adapters.RedactErrorText(errMsg)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.state = s
