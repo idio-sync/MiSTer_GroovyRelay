@@ -34,9 +34,15 @@ type AdapterConfig struct {
 	// token. When AuthToken is empty the registration loop is skipped.
 	TokenStore *StoredData
 	// HostIP is the LAN address advertised to plex.tv in the
-	// registration loop. Empty disables registration even if a token
-	// is present (typically set to outboundIP() by main.go).
+	// registration loop (typically set to outboundIP() by main.go).
+	// When empty, the loop falls back to ResolveHostIP.
 	HostIP string
+	// ResolveHostIP is an optional late-binding source for the
+	// advertised address. When HostIP is empty (auto-detect failed at
+	// boot, e.g. the container started before the default route was
+	// up), the registration loop polls it until it returns a non-empty
+	// address. Nil with an empty HostIP disables registration.
+	ResolveHostIP func() string
 	// Version is the build version string spliced into /resources
 	// platformVersion and X-Plex-Version headers.
 	Version string
@@ -56,7 +62,7 @@ type AdapterConfig struct {
 // Locking discipline (review fix C2):
 //
 //	mu guards plexCfg, state/lastErr/stateSince, pending, regCancel,
-//	and the in-memory auth-token field on cfg.TokenStore. Hold mu for
+//	runCtx, and the in-memory auth-token field on cfg.TokenStore. Hold mu for
 //	short critical sections only — never across network I/O. Snapshot
 //	helpers (snapshotCfg, snapshotPending) copy the fields out so
 //	callers can render/compare without the lock held.
@@ -74,6 +80,10 @@ type Adapter struct {
 	stateSince time.Time
 	regCancel  context.CancelFunc // cancels the plex.tv registration loop; nil when inactive
 	pending    *pendingLink       // in-flight PIN flow; nil between flows
+	// runCtx is the ctx passed to Start; non-nil only between Start and
+	// Stop. A link that completes while running derives its registration
+	// loop from it (startRegistrationLocked).
+	runCtx context.Context
 
 	// linkStartMu serializes handleLinkStart so two rapid clicks can't
 	// interleave RequestPIN calls. Separate from mu because RequestPIN
@@ -190,7 +200,6 @@ func (a *Adapter) Start(ctx context.Context) error {
 	// across network construction or goroutine launches.
 	cfgSnap := a.snapshotCfg()
 	deviceUUID := a.cfg.TokenStore.DeviceUUID // TokenStore guaranteed non-nil by NewAdapter
-	authToken := a.snapshotToken()
 
 	// Timeline broadcaster (1 Hz push loop). Runs until Stop closes
 	// the broker's stop channel.
@@ -217,29 +226,48 @@ func (a *Adapter) Start(ctx context.Context) error {
 		slog.Info("GDM discovery active", "port", 32412)
 	}
 
-	// plex.tv device registration loop. Requires a linked auth token
-	// and an outbound IP to advertise; otherwise we log and skip so
-	// the user knows to run `--link`.
-	if authToken != "" && a.cfg.HostIP != "" {
-		regCtx, cancel := context.WithCancel(ctx)
-		a.mu.Lock()
-		a.regCancel = cancel
-		a.mu.Unlock()
-		go RunRegistrationLoop(regCtx,
-			deviceUUID,
-			authToken,
-			a.cfg.HostIP,
-			a.cfg.Bridge.UI.HTTPPort,
-			cfgSnap.DeviceName,
-			a.cfg.Version,
-		)
-		slog.Info("plex.tv device registration loop started", "hostIP", a.cfg.HostIP)
-	} else {
-		slog.Info("plex.tv registration skipped (no auth token; run with --link)")
-	}
+	// plex.tv device registration loop. Requires a linked auth token;
+	// if the account is linked later through the UI, pollPendingLink
+	// starts the loop then.
+	a.mu.Lock()
+	a.runCtx = ctx
+	a.startRegistrationLocked()
+	a.mu.Unlock()
 
 	a.setState(adapters.StateRunning, "")
 	return nil
+}
+
+// startRegistrationLocked launches the plex.tv registration loop if the
+// adapter is running, a token is present, and no loop is active. Called
+// from Start and from a successful UI link. Caller must hold a.mu; the
+// loop itself does its network I/O on its own goroutine.
+func (a *Adapter) startRegistrationLocked() {
+	if a.runCtx == nil || a.regCancel != nil {
+		return
+	}
+	token := a.cfg.TokenStore.AuthToken
+	if token == "" {
+		slog.Info("plex.tv registration skipped (no auth token; link via the UI or run with --link)")
+		return
+	}
+	if a.cfg.HostIP == "" && a.cfg.ResolveHostIP == nil {
+		slog.Warn("plex.tv registration skipped (no host IP; set bridge.host_ip)")
+		return
+	}
+	regCtx, cancel := context.WithCancel(a.runCtx)
+	a.regCancel = cancel
+	uuid := a.cfg.TokenStore.DeviceUUID
+	deviceName := a.plexCfg.DeviceName
+	go func() {
+		hostIP, ok := waitForHostIP(regCtx, a.cfg.HostIP, a.cfg.ResolveHostIP)
+		if !ok {
+			return
+		}
+		slog.Info("plex.tv device registration loop started", "hostIP", hostIP)
+		RunRegistrationLoop(regCtx, uuid, token, hostIP,
+			a.cfg.Bridge.UI.HTTPPort, deviceName, a.cfg.Version)
+	}()
 }
 
 // Stop tears down background work in reverse-dependency order. The
@@ -249,6 +277,7 @@ func (a *Adapter) Stop() error {
 	a.mu.Lock()
 	cancel := a.regCancel
 	a.regCancel = nil
+	a.runCtx = nil
 	pending := a.pending
 	a.pending = nil
 	a.mu.Unlock()

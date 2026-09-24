@@ -27,6 +27,10 @@ var pollInterval = 2 * time.Second
 // full minute for the ticker to fire.
 var registerInterval = 60 * time.Second
 
+// hostIPRetryInterval is how often waitForHostIP re-runs the host IP
+// resolver while auto-detect keeps failing. Exposed as a var for tests.
+var hostIPRetryInterval = 10 * time.Second
+
 // PinResponse matches the JSON returned by the plex.tv PIN endpoints. When
 // the PIN has not yet been claimed AuthToken is the empty string; once the
 // user enters the PIN in plex.tv/link it fills in.
@@ -198,6 +202,39 @@ func RevokeDevice(uuid, token string) error {
 	}
 	slog.Info("plex.tv revoke ok", "uuid", uuid)
 	return nil
+}
+
+// waitForHostIP returns the address to advertise to plex.tv. A non-empty
+// static (configured or boot-time detected) address wins immediately.
+// Otherwise it polls resolve every hostIPRetryInterval until it yields an
+// address, so a bridge that booted before the network was up still
+// registers once the default route appears. Returns false if ctx ends
+// first or there is nothing to poll.
+func waitForHostIP(ctx context.Context, static string, resolve func() string) (string, bool) {
+	if static != "" {
+		return static, true
+	}
+	if resolve == nil {
+		return "", false
+	}
+	if ip := resolve(); ip != "" {
+		return ip, true
+	}
+	slog.Warn("plex.tv registration waiting: host IP not detected yet; retrying (set bridge.host_ip to skip auto-detect)",
+		"retry_every", hostIPRetryInterval)
+	tick := time.NewTicker(hostIPRetryInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return "", false
+		case <-tick.C:
+			if ip := resolve(); ip != "" {
+				slog.Info("plex.tv registration: host IP detected", "hostIP", ip)
+				return ip, true
+			}
+		}
+	}
 }
 
 // RunRegistrationLoop performs an immediate RegisterDevice and then keeps it

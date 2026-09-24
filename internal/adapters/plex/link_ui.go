@@ -194,6 +194,18 @@ func (a *Adapter) pollPendingLink(pl *pendingLink, pinID int, deviceUUID string)
 		a.finishPendingLink(pl, "", fmt.Sprintf("token received but save failed: %v", err))
 		return
 	}
+	// Start advertising to plex.tv now rather than on the next restart —
+	// Start only launched the loop if a token existed at boot, and Unlink
+	// cancels it. A loop still running from a previous link is replaced
+	// so it doesn't keep registering with the superseded token. No-op
+	// when the adapter is stopped.
+	a.mu.Lock()
+	if a.regCancel != nil {
+		a.regCancel()
+		a.regCancel = nil
+	}
+	a.startRegistrationLocked()
+	a.mu.Unlock()
 	a.finishPendingLink(pl, token, "")
 }
 

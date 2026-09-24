@@ -224,8 +224,11 @@ func main() {
 		Core:       coreMgr,
 		TokenStore: store,
 		HostIP:     hostIP,
-		Version:    version,
-		EventLog:   elog,
+		// Retried by the registration loop when boot-time detection
+		// failed (container up before the network).
+		ResolveHostIP: quietOutboundIP,
+		Version:       version,
+		EventLog:      elog,
 	})
 	if err != nil {
 		dieFriendly("plex adapter init", err)
@@ -644,13 +647,27 @@ func executableDir() string {
 // Returns "" on failure (offline host); callers treat empty as "skip
 // plex.tv registration" so the bridge still runs on the LAN via GDM.
 func outboundIP() string {
-	conn, err := net.Dial("udp", "8.8.8.8:53")
+	ip, err := detectOutboundIP()
 	if err != nil {
 		slog.Warn("outboundIP: no route", "err", err)
-		return ""
+	}
+	return ip
+}
+
+// quietOutboundIP is outboundIP without the per-failure WARN, for
+// callers that poll it on a timer and log their own wait state.
+func quietOutboundIP() string {
+	ip, _ := detectOutboundIP()
+	return ip
+}
+
+func detectOutboundIP() (string, error) {
+	conn, err := net.Dial("udp", "8.8.8.8:53")
+	if err != nil {
+		return "", err
 	}
 	defer conn.Close()
-	return conn.LocalAddr().(*net.UDPAddr).IP.String()
+	return conn.LocalAddr().(*net.UDPAddr).IP.String(), nil
 }
 
 // runLinkFlow drives the plex.tv PIN pairing dance: request a PIN,
