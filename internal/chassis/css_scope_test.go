@@ -1461,3 +1461,40 @@ func TestChassisVFDDimmer_Wiring(t *testing.T) {
 		}
 	}
 }
+
+// POWER key + cold start wiring: the status bar exposes the hooks
+// power-on.js binds, and shell.html's pre-paint script must use the same
+// session key and class as power-on.js or the cold start double-fires or
+// the panel stays dark.
+func TestChassisPowerKey_Wiring(t *testing.T) {
+	t.Parallel()
+	read := func(fsys interface{ ReadFile(string) ([]byte, error) }, name string) string {
+		b, err := fsys.ReadFile(name)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", name, err)
+		}
+		return string(b)
+	}
+	bar := read(chassisTemplatesFS, "templates/status-bar.html")
+	for _, want := range []string{"data-power-btn", "data-power-led", `aria-pressed="true"`} {
+		if !strings.Contains(bar, want) {
+			t.Errorf("status bar missing %q", want)
+		}
+	}
+	shell := read(chassisTemplatesFS, "templates/shell.html")
+	js := read(chassisStaticFS, "static/power-on.js")
+	for _, shared := range []string{"'chassis.poweredOn'", "'powering-up'"} {
+		if !strings.Contains(shell, shared) || !strings.Contains(js, shared) {
+			t.Errorf("shell.html pre-paint script and power-on.js must share %s", shared)
+		}
+	}
+	css := read(chassisStaticFS, "static/chassis.css")
+	for _, want := range []string{
+		"body.receiver.panel-standby .screen",
+		"body.receiver.panel-standby .led.on[data-power-led] .light::before",
+	} {
+		if !strings.Contains(css, want) {
+			t.Errorf("chassis.css missing standby rule %q", want)
+		}
+	}
+}

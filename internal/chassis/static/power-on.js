@@ -57,6 +57,99 @@
     }, ms);
   }
 
+  // --- Cold start + POWER key ------------------------------------------
+  // A real receiver comes out of standby with an amber lamp, a relay click,
+  // then the display lighting. The first load in a tab does the same:
+  // `powering-up` holds the faceplate dark with PWR amber, then the relay
+  // "closes" into the normal warm bloom. Once per tab session (reloads and
+  // SSE reconnects do not replay it); skipped under reduced motion or when
+  // session storage is unavailable.
+  //
+  // POWER toggles a client-side panel standby: displays and lamps go dark
+  // and PWR shows amber, but the bridge and any cast keep running. POWER
+  // again, or any other key or click, wakes the panel.
+  const COLD_CLASS = 'powering-up';
+  const STANDBY_CLASS = 'panel-standby';
+  const COLD_KEY = 'chassis.poweredOn';
+  const RELAY_MS = 600;
+
+  function reducedMotion() {
+    return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+
+  function setPowerLamp(on) {
+    const led = document.querySelector('[data-power-led]');
+    if (!led) return;
+    const label = on ? 'Power on' : 'Power: standby';
+    led.setAttribute('aria-label', label);
+    led.setAttribute('title', label);
+  }
+
+  function firstLoadThisSession() {
+    try {
+      const store = window.sessionStorage;
+      if (!store || store.getItem(COLD_KEY)) return false;
+      store.setItem(COLD_KEY, '1');
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function coldStart() {
+    const body = document.body;
+    if (!body) return;
+    // shell.html's pre-paint script normally marks the body before first
+    // paint (so the lit panel never flashes); fall back to marking it here.
+    const pending = body.classList.contains(COLD_CLASS)
+      || (!reducedMotion() && firstLoadThisSession());
+    if (!pending) return;
+    body.classList.add(COLD_CLASS);
+    setPowerLamp(false);
+    setTimeout(() => {
+      body.classList.remove(COLD_CLASS);
+      setPowerLamp(true);
+      runRitual(WARM_CLASS, COOL_CLASS, WARM_MS);
+    }, RELAY_MS);
+  }
+
+  function bindPowerKey() {
+    const btn = document.querySelector('[data-power-btn]');
+    const body = document.body;
+    if (!btn || !body) return;
+
+    const setStandby = (standby) => {
+      body.classList.toggle(STANDBY_CLASS, standby);
+      btn.setAttribute('aria-pressed', standby ? 'false' : 'true');
+      btn.setAttribute('title', standby
+        ? 'Panel standby (the bridge keeps running): press to wake'
+        : 'Panel power: press for standby (the bridge keeps running)');
+      setPowerLamp(!standby);
+      // Going dark is a CSS filter fade (the power-down keyframes end at
+      // full brightness, which would flash before standby holds). Waking
+      // gets the full filament bloom.
+      if (!standby) {
+        runRitual(WARM_CLASS, COOL_CLASS, WARM_MS);
+      }
+    };
+
+    btn.setAttribute('aria-pressed', 'true');
+    btn.setAttribute('title', 'Panel power: press for standby (the bridge keeps running)');
+    btn.addEventListener('click', () => {
+      setStandby(!body.classList.contains(STANDBY_CLASS));
+    });
+
+    // Any other key or click wakes the panel, like touching a front-panel
+    // key on a unit whose display is off. POWER's own click owns the toggle.
+    const wake = (ev) => {
+      if (!body.classList.contains(STANDBY_CLASS)) return;
+      if (ev && ev.target && btn.contains(ev.target)) return;
+      setStandby(false);
+    };
+    document.addEventListener('pointerdown', wake, true);
+    document.addEventListener('keydown', wake, true);
+  }
+
   window.Chassis.animators.register({
     handleState(state) {
       if (!primed) {
@@ -89,4 +182,6 @@
   }
 
   bootBanner();
+  bindPowerKey();
+  coldStart();
 })();

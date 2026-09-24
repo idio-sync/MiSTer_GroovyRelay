@@ -32,6 +32,10 @@
   <script defer src="/ui/static/self-test.js?v={{.Version}}"></script>
 </head>
 <body class="receiver {{.State}}{{if .SetupMode}} setup settings-open{{end}}">
+  <!-- Pre-paint cold start: mark the first load in a tab before anything
+       paints so the lit faceplate never flashes; power-on.js runs the relay
+       close. Mirrors power-on.js firstLoadThisSession (key chassis.poweredOn). -->
+  <script>try{if(!matchMedia('(prefers-reduced-motion: reduce)').matches&&!sessionStorage.getItem('chassis.poweredOn')){sessionStorage.setItem('chassis.poweredOn','1');document.body.classList.add('powering-up');}}catch(e){}</script>
   {{htmlComment "chassis:shell"}}
   <div class="receiver">
     {{if .SetupMode}}{{template "setup-banner.html" .}}{{end}}
