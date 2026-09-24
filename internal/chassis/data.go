@@ -25,17 +25,17 @@ type ReceiverPageData struct {
 	// Only handleIndex populates it; see firstrun.go / setup.go.
 	SetupMode   bool
 	SetupStatus SetupStatus
-	VFD                 VFDData
-	Source              SourceData
-	Meter               MeterData
-	Transport           TransportData
-	AudioStrip          AudioStripData
-	Visualizer          VisualizerData
-	Input               InputData
-	Presets             PresetsData
-	Catalog             CatalogData
-	History             HistoryData
-	Settings            SettingsData
+	VFD         VFDData
+	Source      SourceData
+	Meter       MeterData
+	Transport   TransportData
+	AudioStrip  AudioStripData
+	Visualizer  VisualizerData
+	Input       InputData
+	Presets     PresetsData
+	Catalog     CatalogData
+	History     HistoryData
+	Settings    SettingsData
 }
 
 // StatusLEDData renders a compact lamp in the receiver status bar.
