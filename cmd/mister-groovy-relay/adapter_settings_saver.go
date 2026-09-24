@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -17,6 +18,12 @@ type adapterLookup interface {
 type bridgeAdapterSettingsSaver struct {
 	saver *uiserver.AdapterSaver
 	reg   adapterLookup
+	// setRunning starts (run=true) or stops the named adapter. Called when
+	// a save flips its enabled flag, so the chassis Settings toggle brings
+	// the adapter's background work (discovery, registration, websocket,
+	// refresh loops) up or down without a restart — ApplyConfig alone only
+	// updates the in-memory config. Nil skips lifecycle dispatch.
+	setRunning func(name string, run bool) error
 }
 
 func newBridgeAdapterSettingsSaver(saver *uiserver.AdapterSaver, reg adapterLookup) *bridgeAdapterSettingsSaver {
@@ -76,9 +83,19 @@ func (b *bridgeAdapterSettingsSaver) SaveTouched(name string, touched map[string
 		return "", &cmdChipError{status: http.StatusNotFound, chip: "UNKNOWN ADAPTER"}
 	}
 	fields := projectWritableSurface(name, a.Fields())
+	wasEnabled := a.IsEnabled()
 	scope, err := b.saver.SaveTouched(name, touched, a, fields)
 	if err != nil {
 		return "", translateSaverError(err)
+	}
+	if nowEnabled := a.IsEnabled(); nowEnabled != wasEnabled && b.setRunning != nil {
+		// The save itself succeeded and is on disk, so a lifecycle failure
+		// doesn't fail it; the adapter's Status (StateError + LastError)
+		// carries the failure to the UI.
+		if err := b.setRunning(name, nowEnabled); err != nil {
+			slog.Warn("adapter enable toggle: lifecycle failed",
+				"adapter", name, "enabled", nowEnabled, "err", err)
+		}
 	}
 	label, labelOK := chassis.WireLabelForScope(scope)
 	if !labelOK {

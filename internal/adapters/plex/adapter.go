@@ -96,10 +96,9 @@ type Adapter struct {
 	// keeps it single-shot regardless of call order.
 	//
 	// NOTE: this makes the initial companion/timeline pair immutable.
-	// A future UI-driven re-enable flow that calls Stop() then Start()
-	// will NOT get a fresh TimelineBroker (TimelineBroker.Stop is
-	// one-shot). Phase 5's toggle work must recreate restartable
-	// pieces or refactor them to be restart-safe.
+	// Stop()→Start() (the UI enable toggle) reuses them, so each must
+	// stay restart-safe: TimelineBroker.Start re-arms its loop after
+	// Stop, and GDM discovery is rebuilt on every Start.
 	finalizeOnce sync.Once
 
 	companion *Companion
@@ -203,7 +202,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 
 	// Timeline broadcaster (1 Hz push loop). Runs until Stop closes
 	// the broker's stop channel.
-	go a.timeline.RunBroadcastLoop()
+	a.timeline.Start()
 
 	// GDM multicast discovery. Best-effort: port conflicts shouldn't
 	// take down the adapter — out-of-LAN registration may still succeed.

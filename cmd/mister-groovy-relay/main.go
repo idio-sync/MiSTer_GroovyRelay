@@ -451,6 +451,26 @@ func main() {
 		}
 		return a.Start(ctx)
 	}
+	// setAdapterRunning is the chassis Settings enable-toggle lifecycle hook:
+	// start on enable (via startAdapter), stop on disable. Stop shares startMu
+	// so a toggle can't interleave with a concurrent start. Adapters that
+	// never started (or whose Start failed) are still stopped, since a failed
+	// Start can leave retry goroutines behind; every Stop is idempotent.
+	setAdapterRunning := func(name string, run bool) error {
+		if run {
+			return startAdapter(name)
+		}
+		startMu.Lock()
+		defer startMu.Unlock()
+		a, ok := reg.Get(name)
+		if !ok {
+			return fmt.Errorf("setAdapterRunning: adapter %q not registered", name)
+		}
+		if a.Status().State == adapters.StateStopped {
+			return nil
+		}
+		return a.Stop()
+	}
 	// ensureStarted enables + hot-starts a disabled adapter mid-process (spec
 	// §10). Only "streams" is supported today. It (1) persists enabled=true via
 	// the catalog manager, then (2) starts through startAdapter.
@@ -465,6 +485,7 @@ func main() {
 	}
 
 	adapterSaverWrapper := newBridgeAdapterSettingsSaver(adapterSaver, reg)
+	adapterSaverWrapper.setRunning = setAdapterRunning
 	adapterHostEditor := newBridgeAdapterHostEditor(adapterSaver, reg)
 	adapterCookieStore := newBridgeAdapterCookieStore(reg)
 	localFilesBridge := newBridgeLocalFiles(localFilesAdapter, adapterSaver)

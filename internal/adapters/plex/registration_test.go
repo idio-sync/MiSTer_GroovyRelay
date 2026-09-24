@@ -223,3 +223,32 @@ func TestWaitForHostIP(t *testing.T) {
 		}
 	})
 }
+
+// Stop→Start (the chassis enable toggle) must bring registration and the
+// timeline loop back, not leave a disabled-then-enabled adapter dark.
+func TestAdapter_RestartResumesRegistrationAndTimeline(t *testing.T) {
+	calls := fakePlexTV(t, "")
+	a := newRegistrationAdapter(t, AdapterConfig{
+		TokenStore: &StoredData{DeviceUUID: "uuid-restart", AuthToken: "tok"},
+		HostIP:     "10.0.0.5",
+	})
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitRegister(t, calls)
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Stop() })
+	waitRegister(t, calls)
+
+	a.timeline.mu.Lock()
+	running := a.timeline.stop != nil
+	a.timeline.mu.Unlock()
+	if !running {
+		t.Error("timeline broadcast loop not running after restart")
+	}
+}

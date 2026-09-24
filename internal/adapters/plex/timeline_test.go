@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -657,6 +658,37 @@ func TestTimeline_StopIsIdempotent(t *testing.T) {
 	b := newTestBroker(t, core.SessionStatus{})
 	b.Stop()
 	b.Stop() // must not panic on double close
+}
+
+// Stop→Start (the adapter enable toggle) must run a fresh broadcast loop;
+// a one-shot stop channel would leave re-enabled controllers without
+// timeline pushes.
+func TestTimeline_RestartsAfterStop(t *testing.T) {
+	var ticks atomic.Int32
+	b := NewTimelineBroker(TimelineConfig{DeviceUUID: "uuid-1"}, func() core.SessionStatus {
+		ticks.Add(1)
+		return core.SessionStatus{}
+	})
+	waitTick := func(after int32) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for ticks.Load() <= after {
+			if time.Now().After(deadline) {
+				t.Fatalf("no broadcast tick after %d", after)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
+	b.Start()
+	b.Start() // no-op while running; must not spawn a second loop
+	waitTick(0)
+	b.Stop()
+
+	stopped := ticks.Load()
+	b.Start()
+	t.Cleanup(b.Stop)
+	waitTick(stopped)
 }
 
 func TestCompanion_TimelineSubscribeWiresBroker(t *testing.T) {

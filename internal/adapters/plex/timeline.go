@@ -50,8 +50,10 @@ type TimelineBroker struct {
 	lastPMSURL   string
 	lastPMSBody  string
 	lastPMSToken string
-	stop         chan struct{}
-	stopOnce     sync.Once
+	// stop is closed by Stop to end the current broadcast loop; Start
+	// installs a fresh one so the broker survives Stop→Start (adapter
+	// disable/enable). Guarded by mu; nil while no loop is running.
+	stop chan struct{}
 
 	// TTL is the stale-subscriber prune threshold. Defaults to 90s per the
 	// Plex-mpv-shim convention; tests override this to avoid real waits.
@@ -73,8 +75,7 @@ func NewTimelineBroker(cfg TimelineConfig, statusFn func() core.SessionStatus) *
 		cfg:         cfg,
 		status:      statusFn,
 		subscribers: make(map[string]*subscriber),
-		stop:        make(chan struct{}),
-		TTL:         defaultSubscriberTTL,
+		TTL:        defaultSubscriberTTL,
 		httpClient:  &http.Client{Timeout: 1 * time.Second},
 	}
 }
@@ -86,14 +87,26 @@ func (t *TimelineBroker) SetPlayContextProvider(fn func() PlayMediaRequest) {
 	t.playContext = fn
 }
 
-// RunBroadcastLoop ticks every second and pushes the current timeline XML to
-// every live subscriber. Returns when Stop is called. Run in a goroutine.
-func (t *TimelineBroker) RunBroadcastLoop() {
+// Start launches the loop that ticks every second and pushes the current
+// timeline XML to every live subscriber. No-op if a loop is already
+// running; after Stop, Start runs a fresh loop.
+func (t *TimelineBroker) Start() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stop != nil {
+		return
+	}
+	stop := make(chan struct{})
+	t.stop = stop
+	go t.runBroadcastLoop(stop)
+}
+
+func (t *TimelineBroker) runBroadcastLoop(stop <-chan struct{}) {
 	tick := time.NewTicker(1 * time.Second)
 	defer tick.Stop()
 	for {
 		select {
-		case <-t.stop:
+		case <-stop:
 			return
 		case <-tick.C:
 			t.broadcastOnce()
@@ -101,10 +114,15 @@ func (t *TimelineBroker) RunBroadcastLoop() {
 	}
 }
 
-// Stop signals the broadcast loop to exit. Idempotent; subsequent calls are
-// no-ops (sync.Once-guarded so a second Stop doesn't panic on a double close).
+// Stop signals the broadcast loop to exit. Idempotent; a Stop with no
+// running loop is a no-op.
 func (t *TimelineBroker) Stop() {
-	t.stopOnce.Do(func() { close(t.stop) })
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stop != nil {
+		close(t.stop)
+		t.stop = nil
+	}
 }
 
 // timeNow returns the broker's current time. Tests can override t.now to

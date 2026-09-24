@@ -239,3 +239,106 @@ func TestTranslateSaverError_ApplyErrorMapsToApplyFailed(t *testing.T) {
 		t.Errorf("chip = %q status = %d, want APPLY FAILED / 500", chip.Chip(), chip.StatusCode())
 	}
 }
+
+// fakeToggleAdapter tracks its enabled flag from the section ApplyConfig
+// receives, like the real adapters, so SaveTouched sees a true transition.
+type fakeToggleAdapter struct {
+	mu      sync.Mutex
+	enabled bool
+}
+
+func (f *fakeToggleAdapter) Name() string            { return "dlna" }
+func (f *fakeToggleAdapter) DisplayName() string     { return "DLNA" }
+func (f *fakeToggleAdapter) Status() adapters.Status { return adapters.Status{} }
+func (f *fakeToggleAdapter) IsEnabled() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.enabled
+}
+func (f *fakeToggleAdapter) Fields() []adapters.FieldDef {
+	return []adapters.FieldDef{
+		{Key: "enabled", Kind: adapters.KindBool, ApplyScope: adapters.ScopeHotSwap},
+		{Key: "device_name", Kind: adapters.KindText, ApplyScope: adapters.ScopeHotSwap},
+	}
+}
+func (f *fakeToggleAdapter) CurrentValues() map[string]any {
+	return map[string]any{"enabled": f.IsEnabled(), "device_name": "MiSTer"}
+}
+func (f *fakeToggleAdapter) DecodeConfig(prim toml.Primitive, meta toml.MetaData) error { return nil }
+func (f *fakeToggleAdapter) Validate(prim toml.Primitive, meta toml.MetaData) error     { return nil }
+func (f *fakeToggleAdapter) ApplyConfig(prim toml.Primitive, meta toml.MetaData) (adapters.ApplyScope, error) {
+	var cfg struct {
+		Enabled bool `toml:"enabled"`
+	}
+	if err := meta.PrimitiveDecode(prim, &cfg); err != nil {
+		return 0, err
+	}
+	f.mu.Lock()
+	f.enabled = cfg.Enabled
+	f.mu.Unlock()
+	return adapters.ScopeHotSwap, nil
+}
+func (f *fakeToggleAdapter) Start(ctx context.Context) error { return nil }
+func (f *fakeToggleAdapter) Stop() error                     { return nil }
+
+// Flipping "enabled" from the chassis Settings form must start/stop the
+// adapter; ApplyConfig alone only updates in-memory config, which left
+// adapters disabled at boot (DLNA SSDP, Plex GDM, Jellyfin WS, URL
+// yt-dlp probe) dead until a process restart.
+func TestBridgeAdapterSettingsSaver_EnabledToggleDrivesLifecycle(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cfgPath := dir + "/config.toml"
+	if err := os.WriteFile(cfgPath, []byte(`[bridge]
+mister.host = "x"
+data_dir = "`+dir+`"
+
+[adapters.dlna]
+enabled = false
+device_name = "MiSTer"
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	saver := uiserver.NewAdapterSaver(cfgPath, &sync.Mutex{})
+	fake := &fakeToggleAdapter{}
+	reg := &fakeRegistry{entries: map[string]adapters.Adapter{"dlna": fake}}
+	wrapper := newBridgeAdapterSettingsSaver(saver, reg)
+
+	type call struct {
+		name string
+		run  bool
+	}
+	var calls []call
+	failNext := false
+	wrapper.setRunning = func(name string, run bool) error {
+		calls = append(calls, call{name, run})
+		if failNext {
+			failNext = false
+			return errors.New("start failed")
+		}
+		return nil
+	}
+
+	save := func(touched map[string]string) {
+		t.Helper()
+		if _, err := wrapper.SaveTouched("dlna", touched); err != nil {
+			t.Fatalf("SaveTouched(%v): %v", touched, err)
+		}
+	}
+
+	save(map[string]string{"enabled": "true"})
+	save(map[string]string{"device_name": "Den"}) // no enabled transition
+	save(map[string]string{"enabled": "false"})
+	failNext = true
+	save(map[string]string{"enabled": "true"}) // lifecycle error must not fail the save
+
+	want := []call{{"dlna", true}, {"dlna", false}, {"dlna", true}}
+	if len(calls) != len(want) {
+		t.Fatalf("setRunning calls = %+v; want %+v", calls, want)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Errorf("setRunning call %d = %+v; want %+v", i, calls[i], want[i])
+		}
+	}
+}
