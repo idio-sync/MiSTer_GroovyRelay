@@ -22,7 +22,10 @@
             title="{{.LocalFilesStatusLED.Title}}"><span class="light"></span><span class="lbl">{{.LocalFilesStatusLED.Label}}</span></span>
     </div>
   </div>
-  <button class="dimmer-btn" type="button" data-vfd-dimmer aria-label="Display dimmer: bright" title="Display dimmer">Dimmer</button>
+  <div class="panel-keys">
+    <button class="panel-key" type="button" data-meter-display-toggle aria-controls="meter-window" aria-pressed="true" aria-label="Meter display" title="Meter display on/off">Display</button>
+    <button class="panel-key dimmer-btn" type="button" data-vfd-dimmer aria-label="Display dimmer: bright" title="Display dimmer">Dimmer</button>
+  </div>
   <button class="load-core-btn loaded" id="status-load-core-btn" type="button" aria-label="Load core"><span class="label-text">&#9656; Load core</span></button>
   <div class="brand-plate"><span class="name">{{.BrandName}}</span><span class="model">model GR-<em>480i</em> &middot; stereo bridge</span></div>
 </div>

@@ -1,8 +1,11 @@
 {{define "meter"}}
 {{htmlComment "chassis:meter"}}
-<div class="meter-source-row">
+<div class="meter-source-row" id="meter-window">
   <div class="screen-frame meter-screen-frame">
     <div class="screen meter-screen meter-screen--compact">
+      {{- /* Idle: the telemetry readouts hide and the glass shows one
+             NO SIGNAL readout (chassis.css, body.idle). */}}
+      <div class="meter-nosignal"><span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~ ~~~~~~</span><span class="seg-text">NO SIGNAL</span></span></div>
       <div class="meter-source-strip meter-row">
         <div class="audio-grp">
           <span class="grp codec-grp">

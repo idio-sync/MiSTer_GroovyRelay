@@ -321,12 +321,14 @@ body.receiver .status-bar > .load-core-btn {
   grid-column: 3;
 }
 
-/* DIMMER sits at the right of the flexible middle column, beside LOAD
-   CORE, like a front-panel key next to the display. */
-body.receiver .status-bar > .dimmer-btn {
+/* DISPLAY + DIMMER sit at the right of the flexible middle column,
+   beside LOAD CORE, like front-panel keys next to the display. */
+body.receiver .status-bar > .panel-keys {
   grid-column: 2;
   grid-row: 1;
   justify-self: end;
+  display: flex;
+  gap: 6px;
 }
 
 body.receiver .status-bar > .brand-plate {
@@ -774,7 +776,7 @@ body.receiver[data-dimmer="2"] .screen {
   filter: brightness(0.45);
 }
 
-body.receiver .dimmer-btn {
+body.receiver .panel-key {
   height: 26px;
   padding: 0 10px;
   background: linear-gradient(180deg, #3a3a3e 0%, #1a1a1c 100%);
@@ -788,11 +790,26 @@ body.receiver .dimmer-btn {
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), inset 0 -1px 0 rgba(0,0,0,0.4);
 }
 
-body.receiver .dimmer-btn:active {
+body.receiver .panel-key:active {
   transform: translateY(1px);
 }
 
-body.receiver .dimmer-btn:focus-visible {
+body.receiver .panel-key[aria-pressed="false"] {
+  color: #6a6a70;
+}
+
+@container chassis (max-width: 600px) {
+  body.receiver .status-bar > .panel-keys {
+    gap: 4px;
+  }
+
+  body.receiver .panel-key {
+    padding: 0 7px;
+    letter-spacing: 0.1em;
+  }
+}
+
+body.receiver .panel-key:focus-visible {
   outline: 2px solid var(--vfd);
   outline-offset: 2px;
 }
@@ -1304,6 +1321,33 @@ body.receiver.idle .source-cluster .hw-btn.active {
 }
 
 /* ---- 7. Meter screen (3 rows) ---- */
+/* DISPLAY key off: the meter window leaves the faceplate entirely. */
+body.receiver[data-meter-display="off"] .meter-source-row {
+  display: none;
+}
+
+/* Idle: ~30 dashed readouts read as a broken screen, so the glass shows
+   one NO SIGNAL readout instead (the readouts stay in the DOM for the
+   next cast). */
+body.receiver .meter-screen .meter-nosignal {
+  display: none;
+  position: absolute;
+  inset: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--vfd-dim);
+  font: 400 22px 'DSEG14-Classic', monospace;
+  letter-spacing: 0.08em;
+  pointer-events: none;
+}
+
+body.receiver.idle .meter-screen .meter-nosignal {
+  display: flex;
+}
+
+body.receiver.idle .meter-screen > :not(.meter-nosignal) {
+  visibility: hidden;
+}
 body.receiver .meter-source-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

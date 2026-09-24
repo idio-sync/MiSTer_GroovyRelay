@@ -1498,3 +1498,45 @@ func TestChassisPowerKey_Wiring(t *testing.T) {
 		}
 	}
 }
+
+// Idle meter window: with no cast, the ~30 telemetry readouts read as a
+// broken screen, so the glass shows a single NO SIGNAL readout instead.
+// DISPLAY key: a front-panel key switches the meter window off and on.
+func TestChassisMeterIdleAndDisplayKey_Wiring(t *testing.T) {
+	t.Parallel()
+	read := func(fsys interface{ ReadFile(string) ([]byte, error) }, name string) string {
+		b, err := fsys.ReadFile(name)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", name, err)
+		}
+		return string(b)
+	}
+	meter := read(chassisTemplatesFS, "templates/meter.html")
+	for _, want := range []string{`class="meter-nosignal"`, `NO SIGNAL`, `id="meter-window"`} {
+		if !strings.Contains(meter, want) {
+			t.Errorf("meter.html missing %q", want)
+		}
+	}
+	css := read(chassisStaticFS, "static/chassis.css")
+	idle := cssRuleBlock(t, css, "body.receiver.idle .meter-screen .meter-nosignal")
+	if !strings.Contains(idle, "display: flex;") {
+		t.Errorf("idle meter must show NO SIGNAL: %s", idle)
+	}
+	hidden := cssRuleBlock(t, css, "body.receiver.idle .meter-screen > :not(.meter-nosignal)")
+	if !strings.Contains(hidden, "visibility: hidden;") {
+		t.Errorf("idle meter must hide the telemetry readouts: %s", hidden)
+	}
+	off := cssRuleBlock(t, css, `body.receiver[data-meter-display="off"] .meter-source-row`)
+	if !strings.Contains(off, "display: none;") {
+		t.Errorf("DISPLAY off must remove the meter window: %s", off)
+	}
+	bar := read(chassisTemplatesFS, "templates/status-bar.html")
+	for _, want := range []string{"data-meter-display-toggle", `aria-controls="meter-window"`} {
+		if !strings.Contains(bar, want) {
+			t.Errorf("status bar missing %q", want)
+		}
+	}
+	if !strings.Contains(read(chassisTemplatesFS, "templates/shell.html"), "/ui/static/meter-display.js") {
+		t.Error("shell.html must load meter-display.js")
+	}
+}
