@@ -321,6 +321,14 @@ body.receiver .status-bar > .load-core-btn {
   grid-column: 3;
 }
 
+/* DIMMER sits at the right of the flexible middle column, beside LOAD
+   CORE, like a front-panel key next to the display. */
+body.receiver .status-bar > .dimmer-btn {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+}
+
 body.receiver .status-bar > .brand-plate {
   grid-column: 4;
   min-width: 0;
@@ -755,6 +763,40 @@ body.receiver .screen {
   border-radius: 2px;
 }
 
+/* DIMMER key (vfd-dimmer.js): three glass brightness levels, applied to
+   both display windows. The power-on/retune animations are one-shot, so
+   this static filter resumes as soon as they finish. */
+body.receiver[data-dimmer="1"] .screen {
+  filter: brightness(0.7);
+}
+
+body.receiver[data-dimmer="2"] .screen {
+  filter: brightness(0.45);
+}
+
+body.receiver .dimmer-btn {
+  height: 26px;
+  padding: 0 10px;
+  background: linear-gradient(180deg, #3a3a3e 0%, #1a1a1c 100%);
+  border: 1px solid #0a0a0b;
+  border-radius: 2px;
+  color: #a4a4aa;
+  font: 700 9px 'Inter', sans-serif;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), inset 0 -1px 0 rgba(0,0,0,0.4);
+}
+
+body.receiver .dimmer-btn:active {
+  transform: translateY(1px);
+}
+
+body.receiver .dimmer-btn:focus-visible {
+  outline: 2px solid var(--vfd);
+  outline-offset: 2px;
+}
+
 body.receiver .screen::after {
   content: "";
   position: absolute;
@@ -874,14 +916,17 @@ body.receiver .vfd .vfd-row .seg-text {
   display: inline-block;
 }
 
+/* A VFD marquee advances one character cell per tick and dwells at both
+   ends; vfd-live.js sets --vfd-scroll-steps to the cell count so the
+   travel lands exactly on cell boundaries. */
 body.receiver .vfd .vfd-row.is-scrolling .seg-text {
   will-change: transform;
-  animation: vfd-marquee var(--vfd-scroll-dur, 8s) linear infinite;
+  animation: vfd-marquee var(--vfd-scroll-dur, 8s) steps(var(--vfd-scroll-steps, 1), end) infinite;
 }
 
 @keyframes vfd-marquee {
   0%, 8% { transform: translateX(0); }
-  100% { transform: translateX(calc(-1 * var(--vfd-scroll-dist, 0px))); }
+  88%, 100% { transform: translateX(calc(-1 * var(--vfd-scroll-dist, 0px))); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1039,13 +1084,16 @@ body.receiver .vfd .right-panel .big-time {
   letter-spacing: 0.04em;
 }
 
+/* Uptime reads "44H 38M": alphanumeric, so 14-segment (DSEG7 drew the
+   M as a backwards-looking box). */
 body.receiver .vfd .right-panel .freq {
   color: var(--vfd-dim);
-  font-family: 'DSEG7-Classic', monospace;
-  font-size: 21px;
+  font-family: 'DSEG14-Classic', monospace;
+  font-size: 19px;
   font-weight: 400;
   line-height: 1.1;
   letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 body.receiver .vfd .right-panel .uptime-label {
@@ -4069,10 +4117,12 @@ body.receiver .history-row .title {
   line-height: 1.15;
 }
 
+/* Source and age are alphanumeric ("LOCAL FILES", "49D AGO"): 14-segment,
+   at the dim-but-legible VFD level rather than the 35% ghost tone. */
 body.receiver .history-row .source,
 body.receiver .history-row .when {
-  font: 700 10px 'DSEG7-Modern', monospace;
-  color: var(--vfd-faded);
+  font: 700 10px 'DSEG14-Classic', monospace;
+  color: var(--vfd-dim);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   white-space: nowrap;

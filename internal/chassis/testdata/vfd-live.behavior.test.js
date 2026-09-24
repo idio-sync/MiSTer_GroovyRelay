@@ -511,3 +511,18 @@ test('LINK lamp follows the SSE connection', () => {
   h.source.dispatch('error');
   assert.deepEqual(h.lampCalls, [['[data-link-led]', true], ['[data-link-led]', false]]);
 });
+
+// Marquee steps one character cell at a time: the scroll distance is a
+// whole number of cells (overflow rounded up plus a two-cell gap) and the
+// step count rides --vfd-scroll-steps for CSS steps().
+test('overflowing tier marquees in whole character steps', () => {
+  const h = createHarness('live');
+  const title = 'ABCDEFGHIJKLMNOPQRSTUVWXY'; // 25 cells
+  h.primary.scrollWidth = 500; // 20px per cell
+  h.primaryRow.clientWidth = 200; // 300px overflow = 15 cells
+  h.source.dispatch('vfd', { data: JSON.stringify({ primary: title, secondary: '', tertiary: '' }) });
+
+  assert.equal(h.primaryRow.classes.has('is-scrolling'), true);
+  assert.equal(h.primaryRow.style._props.get('--vfd-scroll-steps'), '17');
+  assert.equal(h.primaryRow.style._props.get('--vfd-scroll-dist'), '340px');
+});

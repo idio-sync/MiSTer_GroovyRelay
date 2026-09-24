@@ -1385,3 +1385,79 @@ func TestAudioStripTemplate_ToneToggleControlsFoldedSections(t *testing.T) {
 		}
 	}
 }
+
+// Real VFDs never draw letters on 7-segment digits: alphanumeric readouts
+// (history source/age, uptime "44H 38M") use the 14-segment face, and
+// DSEG7 is reserved for pure digits.
+func TestChassisCSS_AlphanumericVFDTextUsesFourteenSegment(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	for _, sel := range []string{
+		"body.receiver .history-row .source,\nbody.receiver .history-row .when",
+		"body.receiver .vfd .right-panel .freq",
+	} {
+		rule := cssRuleBlock(t, text, sel)
+		if strings.Contains(rule, "DSEG7") || !strings.Contains(rule, "DSEG14-Classic") {
+			t.Errorf("%q must use DSEG14-Classic, not DSEG7: %s", sel, rule)
+		}
+		if !strings.Contains(rule, "text-transform: uppercase;") {
+			t.Errorf("%q must uppercase (14-segment has no lowercase): %s", sel, rule)
+		}
+	}
+	if strings.Contains(cssRuleBlock(t, text, "body.receiver .history-row .source,\nbody.receiver .history-row .when"), "var(--vfd-faded)") {
+		t.Error("history source/age must not use the 35%-alpha --vfd-faded (about 1.5:1 contrast)")
+	}
+}
+
+// A VFD marquee advances one character cell at a time and dwells at each
+// end; it does not glide pixel by pixel.
+func TestChassisCSS_VFDMarqueeStepsByCharacter(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	rule := cssRuleBlock(t, text, "body.receiver .vfd .vfd-row.is-scrolling .seg-text")
+	if strings.Contains(rule, " linear ") || !strings.Contains(rule, "steps(var(--vfd-scroll-steps") {
+		t.Fatalf("marquee must use steps(var(--vfd-scroll-steps)), not linear: %s", rule)
+	}
+	kf := text[strings.Index(text, "@keyframes vfd-marquee"):]
+	kf = kf[:strings.Index(kf, "\n}")]
+	if !strings.Contains(kf, "88%, 100%") {
+		t.Fatalf("marquee keyframes must dwell at the end as well as the start: %s", kf)
+	}
+}
+
+// DIMMER key: a front-panel button cycling the display glass through
+// three brightness levels via body[data-dimmer].
+func TestChassisVFDDimmer_Wiring(t *testing.T) {
+	t.Parallel()
+	bar, err := chassisTemplatesFS.ReadFile("templates/status-bar.html")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(bar), "data-vfd-dimmer") {
+		t.Error("status bar missing the DIMMER key (data-vfd-dimmer)")
+	}
+	shell, err := chassisTemplatesFS.ReadFile("templates/shell.html")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(shell), "/ui/static/vfd-dimmer.js") {
+		t.Error("shell.html must load vfd-dimmer.js")
+	}
+	css, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	for _, want := range []string{`body.receiver[data-dimmer="1"]`, `body.receiver[data-dimmer="2"]`} {
+		if !strings.Contains(string(css), want) {
+			t.Errorf("chassis.css missing dimmer level %q", want)
+		}
+	}
+}

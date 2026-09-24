@@ -96,21 +96,30 @@
     measureScroll(row, el);
   }
 
-  // measureScroll toggles marquee animation when a tier's text overflows
-  // its column. Distance + duration are set as CSS custom properties so
-  // the @keyframes can translate by exactly the overflow (constant ~40px/s
-  // so long titles aren't dizzyingly fast).
+  // measureScroll toggles the marquee when a tier's text overflows its
+  // column. Like a real VFD it advances whole character cells: the
+  // distance is the overflow rounded up to cells plus a two-cell gap, the
+  // cell count drives CSS steps(), and the travel runs ~150ms per cell
+  // across the 80% of the cycle between the start and end dwells.
+  const MARQUEE_CELL_S = 0.15;
+  const MARQUEE_TRAVEL = 0.8;
+
   function measureScroll(row, el) {
     if (!row || !el) return;
     row.classList.remove('is-scrolling');
     row.style.removeProperty('--vfd-scroll-dist');
     row.style.removeProperty('--vfd-scroll-dur');
+    row.style.removeProperty('--vfd-scroll-steps');
     const overflow = el.scrollWidth - row.clientWidth;
     if (overflow > 4) {
-      const dist = overflow + 24; // trailing gap before the loop restarts
-      const dur = Math.max(6, dist / 40);
+      const cells = Math.max((el.textContent || '').length, 1);
+      const cellWidth = el.scrollWidth / cells; // DSEG faces are monospaced
+      const steps = Math.ceil(overflow / cellWidth) + 2;
+      const dist = +(steps * cellWidth).toFixed(2);
+      const dur = Math.max(4, (steps * MARQUEE_CELL_S) / MARQUEE_TRAVEL);
       row.style.setProperty('--vfd-scroll-dist', dist + 'px');
       row.style.setProperty('--vfd-scroll-dur', dur + 's');
+      row.style.setProperty('--vfd-scroll-steps', String(steps));
       row.classList.add('is-scrolling');
     }
   }
