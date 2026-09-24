@@ -338,8 +338,8 @@ var (
 	probeInputFn = func(ctx context.Context, ffprobePath string, input ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return ffmpeg.ProbeInput(ctx, ffprobePath, input)
 	}
-	probeCropFn = func(ctx context.Context, ffmpegPath, inputURL string, headers map[string]string, duration time.Duration, policy ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
-		return ffmpeg.ProbeCrop(ctx, ffmpegPath, inputURL, headers, duration, policy)
+	probeCropFn = func(ctx context.Context, ffmpegPath string, spec ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
+		return ffmpeg.ProbeCrop(ctx, ffmpegPath, spec)
 	}
 	checkVisualizerFiltersFn = ffmpeg.CheckVisualizerFilters
 )
@@ -687,8 +687,17 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 		// ffmpeg so a forgotten "Referer" / "Cookie" can't leak via the crop
 		// probe (spec line 115 mandates this happens at the core/FFmpeg
 		// boundary so adapters stay naive).
-		filteredHeaders := req.MediaInputPolicy.FilterHeaders(req.InputHeaders)
-		cropRect, _ = probeCropFn(ctx, ffmpegPath, req.StreamURL, filteredHeaders, 2*time.Second, req.MediaInputPolicy)
+		cropSpec := ffmpeg.CropProbeSpec{
+			URL:            req.StreamURL,
+			Headers:        req.MediaInputPolicy.FilterHeaders(req.InputHeaders),
+			Policy:         req.MediaInputPolicy,
+			SampleDuration: 2 * time.Second,
+		}
+		if starts := cropSampleStarts(req, probe); len(starts) > 0 {
+			cropSpec.Starts = starts
+			cropSpec.SampleDuration = time.Second
+		}
+		cropRect, _ = probeCropFn(ctx, ffmpegPath, cropSpec)
 		var srcW, srcH int
 		if probe != nil {
 			srcW, srcH = probe.Width, probe.Height
@@ -701,6 +710,24 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 		}
 	}
 	return probe, cropRect, ffmpegPath, nil
+}
+
+// cropSampleMinDuration is the shortest runtime worth spreading crop samples
+// over; shorter clips sample from the start.
+const cropSampleMinDuration = 30.0
+
+// cropSampleStarts returns where the auto-crop probe samples a seekable
+// source: 20/50/80% of the runtime, clear of intros and credits, so a logo
+// on black or one dark scene cannot define the crop. Transcode streams (the
+// URL already starts at the resume offset and cannot seek), capture inputs
+// and sources of unknown or short duration return nil: one sample from the
+// start of the stream.
+func cropSampleStarts(req SessionRequest, probe *ffmpeg.ProbeResult) []float64 {
+	if !req.DirectPlay || req.AudioCapture.Enabled || probe == nil || probe.Duration < cropSampleMinDuration {
+		return nil
+	}
+	d := probe.Duration
+	return []float64{0.2 * d, 0.5 * d, 0.8 * d}
 }
 
 // startPlaneLocked spawns a new data plane. Caller MUST hold m.mu AND have

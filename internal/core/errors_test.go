@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 )
@@ -92,7 +91,7 @@ func TestErrPlaneError_WrapsModelineFailure(t *testing.T) {
 	probeInputFn = func(_ context.Context, _ string, _ ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976}, nil
 	}
-	probeCropFn = func(_ context.Context, _, _ string, _ map[string]string, _ time.Duration, _ ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(_ context.Context, _ string, _ ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		return nil, nil
 	}
 

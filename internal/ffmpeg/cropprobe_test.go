@@ -9,41 +9,11 @@ import (
 	"time"
 )
 
-// argvForCropProbe rebuilds the argv slice the way probeCropWithBinary
-// would, but without spawning ffmpeg. This lets us assert policy flag
-// placement portably even when ffmpeg isn't on PATH.
-func argvForCropProbe(headers map[string]string, duration time.Duration, policy MediaInputPolicy, inputURL string) []string {
-	args := []string{
-		"-hide_banner",
-		"-loglevel", "info",
-		"-t", "2.0",
-	}
-	_ = duration // placeholder so signature matches probeCropWithBinary's intent
-	args = policy.Apply(args)
-	if len(headers) > 0 {
-		var sb strings.Builder
-		for k, v := range headers {
-			sb.WriteString(k)
-			sb.WriteString(": ")
-			sb.WriteString(v)
-			sb.WriteString("\r\n")
-		}
-		args = append(args, "-headers", sb.String())
-	}
-	args = append(args,
-		"-i", inputURL,
-		"-vf", "cropdetect=limit=24:round=2:reset=0",
-		"-f", "null", "-",
-	)
-	return args
-}
-
 // TestProbeCrop_ZeroPolicyArgvUnchanged guarantees that the historical
-// crop-probe argv shape is preserved when no policy is set. Pre-existing
-// crop probes for Plex/Jellyfin/URL casts must produce identical argv
-// after the refactor.
+// crop-probe argv shape is preserved when no policy is set and the probe
+// samples from the start of the stream.
 func TestProbeCrop_ZeroPolicyArgvUnchanged(t *testing.T) {
-	got := argvForCropProbe(nil, 2*time.Second, MediaInputPolicy{}, "http://pms/clip.mp4")
+	got := cropProbeArgs(CropProbeSpec{URL: "http://pms/clip.mp4", SampleDuration: 2 * time.Second}, noCropSeek)
 	want := []string{
 		"-hide_banner",
 		"-loglevel", "info",
@@ -70,7 +40,7 @@ func TestProbeCrop_PolicyAppliedBeforeInput(t *testing.T) {
 		DisableReconnect:  true,
 		RWTimeout:         5 * time.Second,
 	}
-	got := argvForCropProbe(nil, 2*time.Second, policy, "http://example/clip.mp4")
+	got := cropProbeArgs(CropProbeSpec{URL: "http://example/clip.mp4", Policy: policy, SampleDuration: 2 * time.Second}, noCropSeek)
 	joined := strings.Join(got, " ")
 	for _, want := range []string{
 		"-protocol_whitelist file,http,https",
@@ -141,7 +111,7 @@ func TestProbeCrop_FindsLetterbox(t *testing.T) {
 		t.Skipf("fixture generation failed (%v): %s", err, out)
 	}
 
-	rect, err := probeCropWithBinary(ctx, ffmpegBin, clip, nil, 2*time.Second, MediaInputPolicy{})
+	rect, err := probeCropWithBinary(ctx, ffmpegBin, CropProbeSpec{URL: clip, SampleDuration: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("ProbeCrop: %v", err)
 	}
@@ -185,7 +155,7 @@ func TestProbeCrop_NoLetterboxReturnsFullFrame(t *testing.T) {
 		t.Skipf("fixture generation failed (%v): %s", err, out)
 	}
 
-	rect, err := probeCropWithBinary(ctx, ffmpegBin, clip, nil, 2*time.Second, MediaInputPolicy{})
+	rect, err := probeCropWithBinary(ctx, ffmpegBin, CropProbeSpec{URL: clip, SampleDuration: 2 * time.Second})
 	if err != nil {
 		t.Fatalf("ProbeCrop: %v", err)
 	}
@@ -227,5 +197,81 @@ func TestPlausibleCropRect(t *testing.T) {
 				t.Fatalf("PlausibleCropRect(%+v, %d, %d) = %v, want %v", tc.rect, tc.w, tc.h, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestProbeCrop_SeekPrecedesInput: each spread sample seeks with an input
+// -ss so ffmpeg jumps straight to the sample instead of decoding up to it.
+func TestProbeCrop_SeekPrecedesInput(t *testing.T) {
+	got := strings.Join(cropProbeArgs(CropProbeSpec{URL: "http://pms/film.mkv", SampleDuration: time.Second}, 1234.5), " ")
+	ssIdx := strings.Index(got, "-ss 1234.500")
+	iIdx := strings.Index(got, "-i http://pms/film.mkv")
+	if ssIdx < 0 || iIdx < 0 || ssIdx >= iIdx {
+		t.Fatalf("want -ss 1234.500 before -i: %s", got)
+	}
+	if !strings.Contains(got, "-t 1.0") {
+		t.Fatalf("want per-sample -t 1.0: %s", got)
+	}
+}
+
+func TestUnionCropRects(t *testing.T) {
+	got := unionCropRects([]*CropRect{
+		nil,                               // a sample that saw only black
+		{W: 1440, H: 600, X: 240, Y: 240}, // dark scene: content box too small
+		{W: 1440, H: 1080, X: 240, Y: 0},  // bright scene: full pillarbox
+		{W: 1400, H: 1000, X: 260, Y: 40},
+	})
+	want := &CropRect{W: 1440, H: 1080, X: 240, Y: 0}
+	if got == nil || *got != *want {
+		t.Fatalf("union = %+v, want %+v", got, want)
+	}
+	if unionCropRects([]*CropRect{nil, nil}) != nil {
+		t.Fatal("union of no rects must be nil")
+	}
+}
+
+// TestProbeCrop_SpreadSamplesSkipLogoIntro: a pillarboxed programme that
+// opens on a small logo. Sampling only the stream start finds the logo box;
+// spreading samples across the runtime finds the real content bars.
+func TestProbeCrop_SpreadSamplesSkipLogoIntro(t *testing.T) {
+	ffmpegBin := findFFBinary("ffmpeg")
+	if ffmpegBin == "" {
+		t.Skip("ffmpeg not findable")
+	}
+	clip := filepath.Join(t.TempDir(), "logo-then-pillarbox.mp4")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	// 320x180 frame. 0-4 s: 40x20 logo centered on black. 4-30 s: 240x180
+	// 4:3 programme pillarboxed at x=40 (moving testsrc so cropdetect sees
+	// full-bandwidth content).
+	gen := exec.CommandContext(ctx, ffmpegBin,
+		"-hide_banner", "-loglevel", "error",
+		"-f", "lavfi", "-i", "testsrc=size=240x180:rate=10:duration=30",
+		"-vf", "pad=320:180:40:0:color=black,"+
+			"drawbox=x=0:y=0:w=320:h=180:color=black:t=fill:enable='lt(t,4)',"+
+			"drawbox=x=140:y=80:w=40:h=20:color=white:t=fill:enable='lt(t,4)'",
+		"-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast",
+		"-y", clip,
+	)
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Skipf("fixture generation failed (%v): %s", err, out)
+	}
+
+	fromStart, err := probeCropWithBinary(ctx, ffmpegBin, CropProbeSpec{URL: clip, SampleDuration: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("ProbeCrop from start: %v", err)
+	}
+	if fromStart == nil || fromStart.W > 60 {
+		t.Fatalf("fixture sanity: start-only probe should see the logo box, got %+v", fromStart)
+	}
+
+	spread, err := probeCropWithBinary(ctx, ffmpegBin, CropProbeSpec{
+		URL: clip, SampleDuration: time.Second, Starts: []float64{6, 15, 24},
+	})
+	if err != nil {
+		t.Fatalf("ProbeCrop spread: %v", err)
+	}
+	if spread == nil || spread.W < 236 || spread.W > 244 || spread.H != 180 || spread.X < 36 || spread.X > 44 {
+		t.Fatalf("spread probe = %+v, want ~240x180+40+0", spread)
 	}
 }

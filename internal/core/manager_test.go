@@ -476,7 +476,7 @@ func TestManager_SessionGenerationStatusIncrementsOnFreshStarts(t *testing.T) {
 	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, Duration: 120}, nil
 	}
-	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		return nil, nil
 	}
 	newPlane = func(dataplane.PlaneConfig) planeRunner { return &contextDonePlane{done: make(chan struct{})} }
@@ -516,7 +516,7 @@ func TestManager_SessionGenerationStableAcrossPauseResumeAndSeek(t *testing.T) {
 	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, Duration: 120}, nil
 	}
-	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		return nil, nil
 	}
 	newPlane = func(dataplane.PlaneConfig) planeRunner { return &contextDonePlane{done: make(chan struct{})} }
@@ -583,7 +583,7 @@ func TestManager_StartSessionFiltersBlockedHeadersBeforePipeline(t *testing.T) {
 	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60}, nil
 	}
-	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		return nil, nil
 	}
 	var captured dataplane.PlaneConfig
@@ -879,7 +879,7 @@ func TestAUXStartPreemptsPriorSessionAfterSuccessfulProbe(t *testing.T) {
 		probed = append(probed, input.URL)
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, AudioRate: 48000}, nil
 	}
-	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		return nil, nil
 	}
 	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
@@ -949,7 +949,7 @@ func TestAUXStreamURLProbeFailureDoesNotPreemptActiveCast(t *testing.T) {
 	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, AudioRate: 48000}, nil
 	}
-	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		return nil, nil
 	}
 	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
@@ -1033,7 +1033,7 @@ func TestAUXStartPlaneFailureReportsAfterPreempt(t *testing.T) {
 		probed = append(probed, input.URL)
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, AudioRate: 48000}, nil
 	}
-	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		return nil, nil
 	}
 	checkVisualizerFiltersFn = func(context.Context, string, ffmpeg.VisualizerMode) error {
@@ -1131,7 +1131,7 @@ func TestManager_SessionAspectModeOverrideSkipsAutoCropAndReachesPipeline(t *tes
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60}, nil
 	}
 	cropCalls := 0
-	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		cropCalls++
 		return nil, nil
 	}
@@ -1346,7 +1346,7 @@ func TestManager_PlaySeekAndStartIfSessionRejectStaleGeneration(t *testing.T) {
 		probeCalls++
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, Duration: 120}, nil
 	}
-	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		return nil, nil
 	}
 	newPlane = func(dataplane.PlaneConfig) planeRunner {
@@ -1415,7 +1415,7 @@ func TestManager_StartSessionIfSessionPreservesNewSessionInstalledWhileOldPlaneD
 	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, Duration: 120}, nil
 	}
-	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		return nil, nil
 	}
 	newPlane = func(dataplane.PlaneConfig) planeRunner {
@@ -2067,10 +2067,10 @@ func TestProbeForStart_ThreadsPolicyToProbeAndProbeCrop(t *testing.T) {
 		// the FSM further than probeForStart's return.
 		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976}, nil
 	}
-	probeCropFn = func(_ context.Context, _, _ string, headers map[string]string, _ time.Duration, policy ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(_ context.Context, _ string, spec ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		cropCalls++
-		capturedCrop = policy
-		capturedCropHeaders = headers
+		capturedCrop = spec.Policy
+		capturedCropHeaders = spec.Headers
 		return nil, nil
 	}
 
@@ -2144,7 +2144,7 @@ func TestProbeForStart_ThreadsFilteredHeadersToProbeInput(t *testing.T) {
 		capturedHeaders = input.Headers
 		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976}, nil
 	}
-	probeCropFn = func(_ context.Context, _, _ string, _ map[string]string, _ time.Duration, _ ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(_ context.Context, _ string, _ ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		return nil, nil
 	}
 
@@ -2331,7 +2331,7 @@ func TestManager_VisualizerSkipsProbeCropAndCapturesDuration(t *testing.T) {
 		return nil
 	}
 	cropCalls := 0
-	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		cropCalls++
 		return &ffmpeg.CropRect{W: 1, H: 1}, nil
 	}
@@ -3107,7 +3107,7 @@ func TestManager_VisualizerRejectsNilProbeWithoutPanic(t *testing.T) {
 	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return nil, nil
 	}
-	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		t.Fatal("ProbeCrop must not run after visualizer nil-probe audio validation fails")
 		return nil, nil
 	}
@@ -3133,7 +3133,7 @@ func TestManager_VisualizerRejectsProbeWithoutAudio(t *testing.T) {
 	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, Duration: 10}, nil
 	}
-	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		t.Fatal("ProbeCrop must not run after visualizer audio validation fails")
 		return nil, nil
 	}
@@ -3227,7 +3227,7 @@ func TestStartPlaneLocked_SameSessionReplay_DoesNotFireOldOnStop(t *testing.T) {
 	probeInputFn = func(_ context.Context, _ string, _ ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 720, Height: 480, FrameRate: 29.97}, nil
 	}
-	probeCropFn = func(_ context.Context, _, _ string, _ map[string]string, _ time.Duration, _ ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(_ context.Context, _ string, _ ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		return nil, nil
 	}
 
@@ -3312,7 +3312,7 @@ func TestStartPlaneLocked_DifferentSession_FiresOldOnStop(t *testing.T) {
 	probeInputFn = func(_ context.Context, _ string, _ ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 720, Height: 480, FrameRate: 29.97}, nil
 	}
-	probeCropFn = func(_ context.Context, _, _ string, _ map[string]string, _ time.Duration, _ ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(_ context.Context, _ string, _ ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		return nil, nil
 	}
 
@@ -3385,9 +3385,9 @@ func TestProbeForStart_ZeroPolicyPreservesBehavior(t *testing.T) {
 		probePolicy = input.Policy
 		return &ffmpeg.ProbeResult{Width: 1280, Height: 720, FrameRate: 24}, nil
 	}
-	probeCropFn = func(_ context.Context, _, _ string, headers map[string]string, _ time.Duration, policy ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
-		cropPolicy = policy
-		capturedHeaders = headers
+	probeCropFn = func(_ context.Context, _ string, spec ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
+		cropPolicy = spec.Policy
+		capturedHeaders = spec.Headers
 		return nil, nil
 	}
 
@@ -3686,7 +3686,7 @@ func TestProbeForStart_DropsImplausibleCropRect(t *testing.T) {
 	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
 		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976}, nil
 	}
-	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		return &ffmpeg.CropRect{W: 400, H: 200, X: 760, Y: 440}, nil
 	}
 	m := newTestManager(t)
@@ -3712,7 +3712,7 @@ func TestProbeForStart_KeepsPillarboxCropRect(t *testing.T) {
 		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 29.97}, nil
 	}
 	want := ffmpeg.CropRect{W: 1440, H: 1080, X: 240, Y: 0}
-	probeCropFn = func(context.Context, string, string, map[string]string, time.Duration, ffmpeg.MediaInputPolicy) (*ffmpeg.CropRect, error) {
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
 		r := want
 		return &r, nil
 	}
@@ -3725,5 +3725,81 @@ func TestProbeForStart_KeepsPillarboxCropRect(t *testing.T) {
 	}
 	if cropRect == nil || *cropRect != want {
 		t.Fatalf("crop rect = %+v, want %+v", cropRect, want)
+	}
+}
+
+// Seekable direct-play sources spread short crop samples across the
+// runtime so a logo intro or one dark scene cannot define the crop.
+func TestProbeForStart_SpreadsCropSamplesAcrossSeekableSource(t *testing.T) {
+	origProbe := probeInputFn
+	origCrop := probeCropFn
+	t.Cleanup(func() {
+		probeInputFn = origProbe
+		probeCropFn = origCrop
+	})
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976, Duration: 100}, nil
+	}
+	var got ffmpeg.CropProbeSpec
+	probeCropFn = func(_ context.Context, _ string, spec ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
+		got = spec
+		return nil, nil
+	}
+	m := newTestManager(t)
+	m.bridge.Video.AspectMode = "auto"
+
+	if _, _, _, err := m.probeForStart(SessionRequest{StreamURL: "http://pms/film.mkv", DirectPlay: true}); err != nil {
+		t.Fatalf("probeForStart: %v", err)
+	}
+	if want := []float64{20, 50, 80}; !reflect.DeepEqual(got.Starts, want) {
+		t.Fatalf("crop sample starts = %v, want %v", got.Starts, want)
+	}
+	if got.SampleDuration != time.Second {
+		t.Fatalf("sample duration = %v, want 1s", got.SampleDuration)
+	}
+	if got.URL != "http://pms/film.mkv" {
+		t.Fatalf("crop probe URL = %q", got.URL)
+	}
+}
+
+func TestProbeForStart_SingleCropSampleWhenNotSeekable(t *testing.T) {
+	cases := []struct {
+		name       string
+		directPlay bool
+		duration   float64
+	}{
+		{"transcode stream starts at the resume offset", false, 100},
+		{"short clip", true, 10},
+		{"unknown duration", true, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			origProbe := probeInputFn
+			origCrop := probeCropFn
+			t.Cleanup(func() {
+				probeInputFn = origProbe
+				probeCropFn = origCrop
+			})
+			probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+				return &ffmpeg.ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976, Duration: tc.duration}, nil
+			}
+			var got ffmpeg.CropProbeSpec
+			probeCropFn = func(_ context.Context, _ string, spec ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
+				got = spec
+				return nil, nil
+			}
+			m := newTestManager(t)
+			m.bridge.Video.AspectMode = "auto"
+
+			if _, _, _, err := m.probeForStart(SessionRequest{StreamURL: "http://pms/x.mkv", DirectPlay: tc.directPlay}); err != nil {
+				t.Fatalf("probeForStart: %v", err)
+			}
+			if len(got.Starts) != 0 {
+				t.Fatalf("crop sample starts = %v, want none (sample from stream start)", got.Starts)
+			}
+			if got.SampleDuration != 2*time.Second {
+				t.Fatalf("sample duration = %v, want 2s", got.SampleDuration)
+			}
+		})
 	}
 }
