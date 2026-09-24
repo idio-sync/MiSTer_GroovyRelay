@@ -2,6 +2,7 @@ package ffmpeg
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -928,7 +929,7 @@ func TestBuildFilterChain_LogicalCanvasAndAnamorphicStretch(t *testing.T) {
 			outputW:                    720,
 			outputH:                    480,
 			mode:                       "letterbox",
-			wantLogicalScale:           "scale=w=640:h=480:force_original_aspect_ratio=decrease",
+			wantLogicalScale:           "scale=w='min(640,2*round(480*dar/2))':h='min(480,2*round(640/dar/2))'",
 			wantLogicalPadOrCrop:       "pad=w=640:h=480:x=(ow-iw)/2:y=(oh-ih)/2:color=black",
 			wantFinalAnamorphicStretch: "scale=w=720:h=480",
 		},
@@ -937,7 +938,7 @@ func TestBuildFilterChain_LogicalCanvasAndAnamorphicStretch(t *testing.T) {
 			outputW:                    720,
 			outputH:                    240,
 			mode:                       "letterbox",
-			wantLogicalScale:           "scale=w=320:h=240:force_original_aspect_ratio=decrease",
+			wantLogicalScale:           "scale=w='min(320,2*round(240*dar/2))':h='min(240,2*round(320/dar/2))'",
 			wantLogicalPadOrCrop:       "pad=w=320:h=240:x=(ow-iw)/2:y=(oh-ih)/2:color=black",
 			wantFinalAnamorphicStretch: "scale=w=720:h=240",
 		},
@@ -946,7 +947,7 @@ func TestBuildFilterChain_LogicalCanvasAndAnamorphicStretch(t *testing.T) {
 			outputW:                    720,
 			outputH:                    576,
 			mode:                       "letterbox",
-			wantLogicalScale:           "scale=w=768:h=576:force_original_aspect_ratio=decrease",
+			wantLogicalScale:           "scale=w='min(768,2*round(576*dar/2))':h='min(576,2*round(768/dar/2))'",
 			wantLogicalPadOrCrop:       "pad=w=768:h=576:x=(ow-iw)/2:y=(oh-ih)/2:color=black",
 			wantFinalAnamorphicStretch: "scale=w=720:h=576",
 		},
@@ -955,16 +956,16 @@ func TestBuildFilterChain_LogicalCanvasAndAnamorphicStretch(t *testing.T) {
 			outputW:                    720,
 			outputH:                    288,
 			mode:                       "letterbox",
-			wantLogicalScale:           "scale=w=384:h=288:force_original_aspect_ratio=decrease",
+			wantLogicalScale:           "scale=w='min(384,2*round(288*dar/2))':h='min(288,2*round(384/dar/2))'",
 			wantLogicalPadOrCrop:       "pad=w=384:h=288:x=(ow-iw)/2:y=(oh-ih)/2:color=black",
 			wantFinalAnamorphicStretch: "scale=w=720:h=288",
 		},
 		{
-			name:                       "NTSC 480i zoom → 640x480 logical scale=increase + crop, stretch to 720x480",
+			name:                       "NTSC 480i zoom → 640x480 logical cover-scale + crop, stretch to 720x480",
 			outputW:                    720,
 			outputH:                    480,
 			mode:                       "zoom",
-			wantLogicalScale:           "scale=w=640:h=480:force_original_aspect_ratio=increase",
+			wantLogicalScale:           "scale=w='max(640,2*round(480*dar/2))':h='max(480,2*round(640/dar/2))'",
 			wantLogicalPadOrCrop:       "crop=640:480",
 			wantFinalAnamorphicStretch: "scale=w=720:h=480",
 		},
@@ -974,7 +975,7 @@ func TestBuildFilterChain_LogicalCanvasAndAnamorphicStretch(t *testing.T) {
 			outputH:                    480,
 			mode:                       "auto",
 			cropRect:                   &CropRect{W: 1920, H: 800, X: 0, Y: 140},
-			wantLogicalScale:           "scale=w=640:h=480:force_original_aspect_ratio=decrease",
+			wantLogicalScale:           "scale=w='min(640,2*round(480*dar/2))':h='min(480,2*round(640/dar/2))'",
 			wantLogicalPadOrCrop:       "pad=w=640:h=480:x=(ow-iw)/2:y=(oh-ih)/2:color=black",
 			wantFinalAnamorphicStretch: "scale=w=720:h=480",
 		},
@@ -1001,6 +1002,95 @@ func TestBuildFilterChain_LogicalCanvasAndAnamorphicStretch(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildFilterChain_HonorsSourceSampleAspectRatioWithFFmpeg runs the real
+// chain over a white anamorphic frame and measures the picture box on the
+// 720x480 output. Anamorphic sources (DVD rips, HDV) store non-square
+// pixels; fitting by storage dimensions squeezes 16:9 DVDs into a 1.5:1
+// picture and stretches 4:3 DVDs.
+func TestBuildFilterChain_HonorsSourceSampleAspectRatioWithFFmpeg(t *testing.T) {
+	ffmpegPath := findFFBinary("ffmpeg")
+	if ffmpegPath == "" {
+		t.Skip("ffmpeg not found; skipping SAR behavior test")
+	}
+	cases := []struct {
+		name          string
+		srcW, srcH    int
+		sar           string
+		mode          string
+		wantW, wantH  int // picture box on the 720x480 output
+		allowedJitter int
+	}{
+		// 16:9 in a 4:3 logical canvas → 640x360, stretched to 720x360.
+		{"16:9 DVD letterbox", 720, 480, "32/27", "letterbox", 720, 360, 2},
+		// 4:3 DVD fills the canvas exactly.
+		{"4:3 DVD letterbox", 720, 480, "8/9", "letterbox", 720, 480, 0},
+		// HDV 1440x1080 at SAR 4:3 is 16:9.
+		{"HDV letterbox", 1440, 1080, "4/3", "letterbox", 720, 360, 2},
+		// Square pixels are unchanged by the fix.
+		{"square 16:9 letterbox", 1920, 1080, "1/1", "letterbox", 720, 360, 2},
+		// Unknown SAR (0) is treated as square.
+		{"unknown SAR letterbox", 720, 480, "0", "letterbox", 720, 426, 2},
+		// Zoom fills the canvas regardless of SAR.
+		{"16:9 DVD zoom", 720, 480, "32/27", "zoom", 720, 480, 0},
+		// A 2.37:1 film inside a 16:9 DVD: the crop rect is in storage
+		// pixels (720x360), the fit uses its display aspect → 640x270.
+		{"16:9 DVD auto crop", 720, 480, "32/27", "auto", 720, 270, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := PipelineSpec{
+				SourceProbe: &ProbeResult{Width: tc.srcW, Height: tc.srcH, FrameRate: 29.97},
+				OutputWidth: 720, OutputHeight: 480,
+				FieldOrder: "tff", AspectMode: tc.mode,
+			}
+			if tc.mode == "auto" {
+				spec.CropRect = &CropRect{W: tc.srcW, H: tc.srcH * 3 / 4, X: 0, Y: tc.srcH / 8}
+			}
+			src := fmt.Sprintf("color=c=white:s=%dx%d:r=30000/1001,setsar=%s,format=yuv420p", tc.srcW, tc.srcH, tc.sar)
+			runCtx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(runCtx, ffmpegPath,
+				"-hide_banner", "-v", "error",
+				"-f", "lavfi", "-i", src,
+				"-vf", buildFilterChain(spec),
+				"-frames:v", "1",
+				"-pix_fmt", "bgr24", "-f", "rawvideo", "-",
+			)
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("ffmpeg failed: %v\nchain=%s", err, buildFilterChain(spec))
+			}
+			if len(out) != 720*480*3 {
+				t.Fatalf("frame bytes = %d, want %d", len(out), 720*480*3)
+			}
+			bright := func(x, y int) bool { return out[(y*720+x)*3] > 128 }
+			gotH := 0
+			for y := 0; y < 480; y++ {
+				if bright(360, y) {
+					gotH++
+				}
+			}
+			gotW := 0
+			for x := 0; x < 720; x++ {
+				if bright(x, 240) {
+					gotW++
+				}
+			}
+			if abs(gotW-tc.wantW) > tc.allowedJitter || abs(gotH-tc.wantH) > tc.allowedJitter {
+				t.Fatalf("picture box = %dx%d, want %dx%d (±%d)\nchain=%s",
+					gotW, gotH, tc.wantW, tc.wantH, tc.allowedJitter, buildFilterChain(spec))
+			}
+		})
+	}
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // TestBuildFilterChain_NoStretchWhenLogicalEqualsOutput verifies that when the

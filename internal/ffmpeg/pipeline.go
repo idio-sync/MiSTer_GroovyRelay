@@ -215,24 +215,32 @@ func buildFilterChain(s PipelineSpec) string {
 	}
 	filters = append(filters, "fps="+fpsExpr)
 
-	// 3. Aspect / crop in the square-pixel logical canvas.
+	// 3. Aspect / crop in the square-pixel logical canvas. The fit is
+	//    computed from the source's display aspect (ffmpeg's `dar` =
+	//    iw/ih*sar) rather than its storage dimensions: anamorphic sources
+	//    (DVD 720x480 at SAR 32:27 or 8:9, HDV 1440x1080 at 4:3) otherwise
+	//    land at the wrong aspect. The crop rect is in storage pixels, so it
+	//    runs first and leaves SAR intact for the fit.
 	logicalW, logicalH := logicalCanvas(s.OutputHeight)
 	switch {
 	case s.AspectMode == "auto" && s.CropRect != nil:
 		r := s.CropRect
 		filters = append(filters,
 			fmt.Sprintf("crop=%d:%d:%d:%d", r.W, r.H, r.X, r.Y),
-			fmt.Sprintf("scale=w=%d:h=%d:force_original_aspect_ratio=decrease", logicalW, logicalH),
+			displayAspectFitScale(logicalW, logicalH, "min"),
+			"setsar=1",
 			fmt.Sprintf("pad=w=%d:h=%d:x=(ow-iw)/2:y=(oh-ih)/2:color=black", logicalW, logicalH),
 		)
 	case s.AspectMode == "zoom":
 		filters = append(filters,
-			fmt.Sprintf("scale=w=%d:h=%d:force_original_aspect_ratio=increase", logicalW, logicalH),
+			displayAspectFitScale(logicalW, logicalH, "max"),
+			"setsar=1",
 			fmt.Sprintf("crop=%d:%d", logicalW, logicalH),
 		)
 	default: // letterbox, or auto with no probed rect yet
 		filters = append(filters,
-			fmt.Sprintf("scale=w=%d:h=%d:force_original_aspect_ratio=decrease", logicalW, logicalH),
+			displayAspectFitScale(logicalW, logicalH, "min"),
+			"setsar=1",
 			fmt.Sprintf("pad=w=%d:h=%d:x=(ow-iw)/2:y=(oh-ih)/2:color=black", logicalW, logicalH),
 		)
 	}
@@ -255,6 +263,18 @@ func buildFilterChain(s PipelineSpec) string {
 	}
 
 	return strings.Join(filters, ",")
+}
+
+// displayAspectFitScale returns a scale step that sizes the source by its
+// display aspect into a w×h square-pixel box: bound="min" fits inside the box
+// (letterbox/pillarbox), bound="max" covers it (zoom; caller crops). Unlike
+// force_original_aspect_ratio, which fits by storage dimensions, `dar`
+// includes the sample aspect ratio (ffmpeg treats an unknown SAR as 1:1).
+// round() rather than trunc() keeps an exact-aspect source from losing a
+// pixel to float error (a 4:3 DVD must fill 640x480, not 638x480).
+func displayAspectFitScale(w, h int, bound string) string {
+	return fmt.Sprintf("scale=w='%s(%d,2*round(%d*dar/2))':h='%s(%d,2*round(%d/dar/2))'",
+		bound, w, h, bound, h, w)
 }
 
 func escapeSubtitlePath(p string) string {
