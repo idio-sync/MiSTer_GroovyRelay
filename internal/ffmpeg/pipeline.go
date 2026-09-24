@@ -184,7 +184,7 @@ func logicalCanvas(outputHeight int) (int, int) {
 // path here because it has proven less interoperable with the Groovy receiver.
 //
 // Order is load-bearing:
-//  1. yadif (only if interlaced source) → one progressive frame per input frame.
+//  1. bwdif (only if interlaced source) → one progressive frame per input field.
 //  2. crop/scale/pad for aspect mode in a square-pixel logical canvas.
 //  3. anamorphic stretch from logical canvas to OutputWidth×OutputHeight.
 //  4. subtitle burn-in on the stretched buffer.
@@ -201,10 +201,14 @@ func logicalCanvas(outputHeight int) (int, int) {
 func buildFilterChain(s PipelineSpec) string {
 	var filters []string
 
-	// 1. Deinterlace source if needed. send_frame = 1 input frame → 1 output
-	//    frame (not 2 — we want to preserve source rate for the next step).
+	// 1. Deinterlace source if needed. send_field = 1 output frame per
+	//    input field, so a 60i source keeps its 59.94 distinct moments per
+	//    second: the data plane blits one output frame per field tick, and
+	//    send_frame + fps doubling would repeat every frame (half the
+	//    motion, visible judder on sports/broadcast/video-shot material).
+	//    50i sources become 50p, which fps then maps to the field rate.
 	if s.SourceProbe != nil && s.SourceProbe.Interlaced {
-		filters = append(filters, "yadif=mode=send_frame")
+		filters = append(filters, "bwdif=mode=send_field")
 	}
 
 	// 2. Aspect / crop in the square-pixel logical canvas. The fit is

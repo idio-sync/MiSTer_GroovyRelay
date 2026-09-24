@@ -29,8 +29,8 @@ func TestBuildFilterChain_Progressive24p(t *testing.T) {
 			t.Errorf("chain missing %q: %s", need, chain)
 		}
 	}
-	if strings.Contains(chain, "yadif") {
-		t.Errorf("progressive source should not yadif: %s", chain)
+	if strings.Contains(chain, "bwdif") {
+		t.Errorf("progressive source should not be deinterlaced: %s", chain)
 	}
 	for _, unwanted := range []string{"telecine", "interlace=scan=", "separatefields"} {
 		if strings.Contains(chain, unwanted) {
@@ -46,15 +46,15 @@ func TestBuildFilterChain_Interlaced30i(t *testing.T) {
 		FieldOrder: "tff", AspectMode: "letterbox",
 	}
 	chain := buildFilterChain(spec)
-	if !strings.Contains(chain, "yadif") {
-		t.Errorf("expected yadif for interlaced source: %s", chain)
+	if !strings.Contains(chain, "bwdif=mode=send_field") {
+		t.Errorf("expected per-field bwdif for interlaced source: %s", chain)
 	}
 	if !strings.Contains(chain, "fps=60000/1001") {
 		t.Errorf("expected fps normalizer for interlaced source: %s", chain)
 	}
-	// yadif must be the very first filter (before any rate conversion).
-	if !strings.HasPrefix(chain, "yadif") {
-		t.Errorf("yadif must come first: %s", chain)
+	// The deinterlacer must be the very first filter (before scaling or rate conversion).
+	if !strings.HasPrefix(chain, "bwdif") {
+		t.Errorf("deinterlacer must come first: %s", chain)
 	}
 }
 
@@ -120,6 +120,53 @@ func TestBuildFilterChain_RateNormalizeIsLastStep(t *testing.T) {
 				t.Errorf("chain has %d fps filters, want 1: %s", n, chain)
 			}
 		})
+	}
+}
+
+// TestBuildFilterChain_InterlacedSourceKeepsFieldMotionWithFFmpeg: a 60i
+// source carries 59.94 distinct moments per second. The data plane blits one
+// output frame per field tick, so deinterlacing to one frame per field keeps
+// that motion; deinterlacing to one frame per frame and letting fps double it
+// halves the motion samples (every output pair identical, visible judder on
+// sports, broadcast TV and video-shot material).
+func TestBuildFilterChain_InterlacedSourceKeepsFieldMotionWithFFmpeg(t *testing.T) {
+	ffmpegPath := findFFBinary("ffmpeg")
+	if ffmpegPath == "" {
+		t.Skip("ffmpeg not found; skipping interlaced motion test")
+	}
+	spec := PipelineSpec{
+		SourceProbe: &ProbeResult{Width: 720, Height: 480, FrameRate: 29.97, Interlaced: true},
+		OutputWidth: 720, OutputHeight: 480,
+		FieldOrder: "tff", AspectMode: "letterbox",
+	}
+	// testsrc2 at 59.94p woven into 29.97i: every field is a distinct moment.
+	src := "testsrc2=s=720x480:r=60000/1001:d=1,tinterlace=mode=interleave_top,setfield=tff"
+	runCtx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, ffmpegPath,
+		"-hide_banner", "-v", "error",
+		"-f", "lavfi", "-i", src,
+		"-vf", buildFilterChain(spec),
+		"-pix_fmt", "bgr24", "-f", "rawvideo", "-",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("ffmpeg failed: %v\nchain=%s", err, buildFilterChain(spec))
+	}
+	frameBytes := 720 * 480 * 3
+	frames := len(out) / frameBytes
+	if frames < 50 {
+		t.Fatalf("frames = %d, want ~60", frames)
+	}
+	repeats := 0
+	for i := 1; i < frames; i++ {
+		if string(out[(i-1)*frameBytes:i*frameBytes]) == string(out[i*frameBytes:(i+1)*frameBytes]) {
+			repeats++
+		}
+	}
+	if repeats > 2 {
+		t.Fatalf("%d of %d consecutive output frames are repeats; want each field tick to carry a new moment\nchain=%s",
+			repeats, frames-1, buildFilterChain(spec))
 	}
 }
 
