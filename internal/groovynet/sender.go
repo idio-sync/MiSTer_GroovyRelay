@@ -180,7 +180,13 @@ func (s *Sender) SendPayload(payload []byte) error {
 	defer s.mu.Unlock()
 	totalChunks := (len(payload) + groovy.MaxDatagram - 1) / groovy.MaxDatagram
 	chunkIdx := 0
-	pace := s.paceInterval
+	pc := pacer{
+		interval: s.paceInterval,
+		batch:    paceBatch,
+		margin:   paceSleepMargin,
+		now:      time.Now,
+		sleep:    time.Sleep,
+	}
 	sendStart := time.Now()
 	s.payloadSendStart = sendStart
 	for i := 0; i < len(payload); i += groovy.MaxDatagram {
@@ -207,24 +213,14 @@ func (s *Sender) SendPayload(payload []byte) error {
 			return err
 		}
 		chunkIdx++
-		// Per-chunk pacing via busy-wait against an absolute cumulative
-		// deadline. Linux's nanosleep clamps sub-ms sleeps to ~100-200 µs
-		// (kernel HZ + hrtimer slack), so time.Sleep(paceInterval) for
-		// values under ~500 µs over-sleeps by 10-20×, blowing the tick
-		// budget. Busy-waiting against a cumulative wall-clock target
-		// achieves true microsecond precision and self-corrects: if one
-		// chunk's syscall took longer than the per-chunk slice, the next
-		// chunk's deadline is already past and we skip the wait entirely.
-		// Cost: a few ms of spin CPU per field — acceptable on any modern
-		// host, and orders of magnitude cheaper than the 50+ ms over-sleep
-		// the naive approach incurs.
-		if pace > 0 && i+groovy.MaxDatagram < len(payload) {
-			deadline := sendStart.Add(time.Duration(chunkIdx) * pace)
-			for time.Now().Before(deadline) {
-				// spin — runtime.Gosched() would yield to the scheduler
-				// but at sub-ms granularity the scheduler latency itself
-				// dominates the sleep. Pure spin is intentional.
-			}
+		// Batched pacing against a cumulative deadline: paceBatch datagrams
+		// go out back-to-back, then the pacer waits until the next
+		// datagram's slot, sleeping most of the wait and spinning only the
+		// last paceSleepMargin (see pacer). Average rate is one datagram
+		// per paceInterval, as before; per-datagram waits were too short to
+		// sleep, which made pacing a busy-wait for the whole send.
+		if i+groovy.MaxDatagram < len(payload) {
+			pc.afterDatagram(sendStart, chunkIdx, totalChunks)
 		}
 	}
 	return nil

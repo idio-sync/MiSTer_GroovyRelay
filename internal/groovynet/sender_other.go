@@ -6,7 +6,12 @@ import (
 	"errors"
 	"net"
 	"syscall"
+	"time"
 )
+
+// paceSleepMargin is the tail of each pacing wait that is spun rather than
+// slept; conservative for untested timer implementations.
+const paceSleepMargin = 200 * time.Microsecond
 
 // isSendBufferFull reports whether err means the kernel send queue was full
 // (ENOBUFS from sendto).

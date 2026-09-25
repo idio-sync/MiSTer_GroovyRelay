@@ -6,9 +6,14 @@ import (
 	"errors"
 	"net"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+// paceSleepMargin is the tail of each pacing wait that is spun rather than
+// slept. Linux timer slack is ~50 µs, so sleeps land within ~100 µs.
+const paceSleepMargin = 100 * time.Microsecond
 
 // isSendBufferFull reports whether err means the kernel send queue was full
 // (ENOBUFS from sendto).

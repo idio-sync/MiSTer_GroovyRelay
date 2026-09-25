@@ -6,9 +6,16 @@ import (
 	"errors"
 	"net"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
+
+// paceSleepMargin is the tail of each pacing wait that is spun rather than
+// slept. Measured on Windows with Go 1.26: sub-ms sleeps overshoot by
+// ~0.25-0.45 ms typically and ~0.9 ms at p99, so a 640 µs batch wait is
+// spun entirely, exactly as before batching.
+const paceSleepMargin = time.Millisecond
 
 // isSendBufferFull reports whether err means the kernel send queue was full.
 // Winsock surfaces this as WSAENOBUFS (10055). Go's syscall.ENOBUFS on
