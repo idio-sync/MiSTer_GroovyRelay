@@ -2,6 +2,7 @@ package ffmpeg
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -35,6 +36,24 @@ func appendProbeCaptureInputArgs(args []string, c CaptureInputSpec) []string {
 	return appendCaptureInputArgs(args, c)
 }
 
+// rawPCMFormat matches FFmpeg's raw PCM demuxer names: s16le, f32be, u8, …
+var rawPCMFormat = regexp.MustCompile(`^[suf](8|16|24|32|64)(le|be)?$`)
+
+func isRawPCMFormat(format string) bool {
+	return rawPCMFormat.MatchString(format)
+}
+
+func channelLayout(channels int) string {
+	switch channels {
+	case 1:
+		return "mono"
+	case 2:
+		return "stereo"
+	default:
+		return fmt.Sprintf("%dc", channels)
+	}
+}
+
 func appendCaptureInputArgsWithoutQueue(args []string, c CaptureInputSpec) []string {
 	if c.Format != "" {
 		args = append(args, "-f", c.Format)
@@ -43,7 +62,13 @@ func appendCaptureInputArgsWithoutQueue(args []string, c CaptureInputSpec) []str
 		args = append(args, "-sample_rate", fmt.Sprintf("%d", c.SampleRate))
 	}
 	if c.Channels > 0 {
-		args = append(args, "-channels", fmt.Sprintf("%d", c.Channels))
+		if isRawPCMFormat(c.Format) {
+			// Raw PCM demuxers dropped -channels (FFmpeg 7+ rejects it; ffprobe
+			// silently ignores it and reports mono). -ch_layout exists since 5.1.
+			args = append(args, "-ch_layout", channelLayout(c.Channels))
+		} else {
+			args = append(args, "-channels", fmt.Sprintf("%d", c.Channels))
+		}
 	}
 	if c.AnalyzeDuration > 0 {
 		args = append(args, "-analyzeduration", fmt.Sprintf("%d", c.AnalyzeDuration.Microseconds()))
