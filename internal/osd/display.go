@@ -50,8 +50,9 @@ const (
 // Display is the OSD state shared between the control plane (Show*, from
 // HTTP handlers) and the data plane (Draw, once per field). It outlives any
 // single cast so an overlay triggered during preemption carries into the
-// next session. All methods are safe for concurrent use; the mutex is only
-// held to copy state, never while drawing.
+// next session. All methods are safe for concurrent use and on a nil
+// *Display (which shows nothing); the mutex is only held to copy state,
+// never while drawing.
 type Display struct {
 	mu sync.Mutex
 	st state
@@ -86,6 +87,9 @@ func NewDisplay(opts Options) *Display {
 
 // SetOptions applies new settings; the next Draw uses them.
 func (d *Display) SetOptions(opts Options) {
+	if d == nil {
+		return
+	}
 	d.mu.Lock()
 	d.st.opts = opts
 	d.mu.Unlock()
@@ -93,6 +97,9 @@ func (d *Display) SetOptions(opts Options) {
 
 // ShowVolume shows the volume bar (or MUTING) for VolumeDuration.
 func (d *Display) ShowVolume(volume int, muted bool, now time.Time) {
+	if d == nil {
+		return
+	}
 	volume = min(max(volume, 0), 100)
 	text := strconv.Itoa(volume)
 	d.mu.Lock()
@@ -107,6 +114,9 @@ func (d *Display) ShowVolume(volume int, muted bool, now time.Time) {
 // ChannelDuration. The label is upper-cased and truncated to
 // MaxChannelRunes.
 func (d *Display) ShowChannel(label string, now time.Time) {
+	if d == nil {
+		return
+	}
 	label = strings.ToUpper(label)
 	if r := []rune(label); len(r) > MaxChannelRunes {
 		label = string(r[:MaxChannelRunes])
@@ -119,10 +129,48 @@ func (d *Display) ShowChannel(label string, now time.Time) {
 
 // ShowTransport announces a playback action for TransportDuration.
 func (d *Display) ShowTransport(t Transport, now time.Time) {
+	if d == nil {
+		return
+	}
 	d.mu.Lock()
 	d.st.transport = t
 	d.st.transportUntil = now.Add(TransportDuration)
 	d.mu.Unlock()
+}
+
+// Showing is a snapshot of the elements Draw would put on screen at a given
+// instant. Hidden elements are zero-valued.
+type Showing struct {
+	VolumeVisible bool
+	Volume        int
+	Muted         bool
+	Channel       string
+	Transport     Transport
+}
+
+// Showing reports what Draw would draw at now. A nil or disabled Display
+// shows nothing.
+func (d *Display) Showing(now time.Time) Showing {
+	if d == nil {
+		return Showing{}
+	}
+	d.mu.Lock()
+	s := d.st
+	d.mu.Unlock()
+	var out Showing
+	if !s.opts.Enabled {
+		return out
+	}
+	if now.Before(s.volumeUntil) {
+		out.VolumeVisible, out.Volume, out.Muted = true, s.volume, s.muted
+	}
+	if now.Before(s.channelUntil) {
+		out.Channel = s.channel
+	}
+	if now.Before(s.transportUntil) {
+		out.Transport = s.transport
+	}
+	return out
 }
 
 // Draw stamps every live element onto c. A nil Display draws nothing.

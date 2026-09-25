@@ -65,6 +65,14 @@ func TestNilDisplayDrawIsNoOp(t *testing.T) {
 	}
 }
 
+func TestNilDisplayMutatorsAreNoOps(t *testing.T) {
+	var d *Display
+	d.SetOptions(Options{Enabled: true})
+	d.ShowVolume(50, false, testNow)
+	d.ShowChannel("CH 07", testNow)
+	d.ShowTransport(TransportPlay, testNow)
+}
+
 func TestDisplayDisabledDrawsNothing(t *testing.T) {
 	c := newFieldCanvas()
 	d := NewDisplay(Options{Enabled: false})
@@ -298,6 +306,34 @@ func TestAllElementsStayInsideTitleSafe(t *testing.T) {
 			t.Errorf("%dx%d: overlay bbox %+v escapes title-safe [%d,%d]-[%d,%d]",
 				size[0], size[1], b, l.safeX0, l.safeY0, l.safeX1, l.safeY1)
 		}
+	}
+}
+
+func TestShowingReportsWhatDrawWouldDraw(t *testing.T) {
+	var nilDisplay *Display
+	if got := nilDisplay.Showing(testNow); got != (Showing{}) {
+		t.Fatalf("nil Showing = %+v, want zero", got)
+	}
+
+	d := NewDisplay(Options{Enabled: true})
+	if got := d.Showing(testNow); got != (Showing{}) {
+		t.Fatalf("idle Showing = %+v, want zero", got)
+	}
+
+	d.ShowVolume(40, true, testNow)
+	d.ShowChannel("plex", testNow)
+	d.ShowTransport(TransportRewind, testNow)
+	want := Showing{VolumeVisible: true, Volume: 40, Muted: true, Channel: "PLEX", Transport: TransportRewind}
+	if got := d.Showing(testNow); got != want {
+		t.Fatalf("Showing = %+v, want %+v", got, want)
+	}
+	if got := d.Showing(testNow.Add(ChannelDuration)); got != (Showing{}) {
+		t.Fatalf("Showing after every duration = %+v, want zero", got)
+	}
+
+	d.SetOptions(Options{Enabled: false})
+	if got := d.Showing(testNow); got != (Showing{}) {
+		t.Fatalf("disabled Showing = %+v, want zero", got)
 	}
 }
 
