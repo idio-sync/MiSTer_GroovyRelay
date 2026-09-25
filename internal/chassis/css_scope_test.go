@@ -1127,8 +1127,8 @@ func TestChassisCSS_LevelSectionCentersMasterVolumeKnob(t *testing.T) {
 }
 
 // Faceplate finish: the black anodised panel is brushed horizontally (ES
-// front panels), never vertically, and not as a single even stripe that
-// would read as CRT scanlines.
+// front panels), as a 1px hairline at low contrast. Coarse or strong
+// stripes band visibly and read as CRT scanlines.
 func TestChassisCSS_FaceplateGrainIsHorizontal(t *testing.T) {
 	t.Parallel()
 	src, err := chassisStaticFS.ReadFile("static/chassis.css")
@@ -1139,8 +1139,11 @@ func TestChassisCSS_FaceplateGrainIsHorizontal(t *testing.T) {
 	if strings.Contains(rule, "repeating-linear-gradient(90deg, transparent 0 1px") {
 		t.Fatalf("faceplate grain must not be vertical hairlines: %s", rule)
 	}
-	if n := strings.Count(rule, "repeating-linear-gradient(180deg"); n < 3 {
-		t.Fatalf("faceplate grain needs >=3 overlapping horizontal periods (got %d) so it is irregular: %s", n, rule)
+	if !strings.Contains(rule, "repeating-linear-gradient(180deg, transparent 0 1px, rgba(255, 255, 255, 0.015) 1px 2px)") {
+		t.Fatalf("faceplate grain must be a horizontal 1px hairline at 1.5%%: %s", rule)
+	}
+	if strings.Count(rule, "repeating-linear-gradient(") != 1 {
+		t.Fatalf("faceplate grain must be a single fine layer; stacked coarse periods band into scanlines: %s", rule)
 	}
 }
 

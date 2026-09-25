@@ -229,16 +229,13 @@ body.receiver .receiver::before {
   position: absolute;
   inset: 0;
   border-radius: 4px;
-  /* Black anodised faceplate, brushed side to side like an ES front panel.
-     Three overlapping stripe periods (3/5/7px) plus broad, faint bands
-     along the length keep the grain irregular so it never reads as CRT
-     scanlines. Pure gradients: no image, no noise filter to repaint. */
+  /* Black anodised faceplate, brushed side to side like an ES front panel:
+     a 1px hairline at 1.5% so the grain is felt rather than seen. Coarser
+     or stronger stripes (tried: 3-7px periods at 2-3.5%) band visibly
+     and read as CRT scanlines. */
   background:
     linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.3) 100%),
-    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0) 0 37px, rgba(255, 255, 255, 0.012) 37px 61px, rgba(255, 255, 255, 0) 61px 97px),
-    repeating-linear-gradient(180deg, transparent 0 2px, rgba(255, 255, 255, 0.022) 2px 3px),
-    repeating-linear-gradient(180deg, transparent 0 4px, rgba(0, 0, 0, 0.035) 4px 5px),
-    repeating-linear-gradient(180deg, transparent 0 6px, rgba(255, 255, 255, 0.016) 6px 7px);
+    repeating-linear-gradient(180deg, transparent 0 1px, rgba(255, 255, 255, 0.015) 1px 2px);
   pointer-events: none;
   z-index: 0;
 }
