@@ -333,12 +333,12 @@ func (a *Adapter) IsEnabled() bool {
 	return a.cfg.Enabled
 }
 
-// IsLinked implements adapters.LinkAware. Delegates to LinkState.
+// IsLinked reports whether a token is persisted. Delegates to LinkState.
 func (a *Adapter) IsLinked() bool {
 	return a.link.State() == LinkLinked
 }
 
-// LinkPhase implements adapters.LinkAware. Maps the LinkPhase enum to
+// LinkPhase maps the LinkPhase enum to
 // the parent spec's adapter-defined phase strings.
 func (a *Adapter) LinkPhase() string {
 	switch a.link.State() {
@@ -355,17 +355,17 @@ func (a *Adapter) LinkPhase() string {
 	}
 }
 
-// SetEnabled implements ui.EnableSetter. The toggle handler
-// (ui.Server handleAdapterToggle) calls this in sync with
-// Start/Stop. Without it the toggle endpoint returns 500.
+// SetEnabled flips the in-memory enabled flag. The chassis toggles
+// adapters through ApplyConfig; this setter remains for tests and
+// programmatic callers.
 func (a *Adapter) SetEnabled(v bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.cfg.Enabled = v
 }
 
-// CurrentValues implements ui.ValueProvider via duck-typing — surfaces
-// the current cfg values to the UI for form prefill.
+// CurrentValues surfaces the current cfg values to the chassis UI for
+// form prefill (duck-typed contract, no shared interface).
 func (a *Adapter) CurrentValues() map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -25,7 +25,6 @@ func productionImportRules(repoRoot string) []productionImportRule {
 			fromPkg: modulePath + "/internal/chassis",
 			fromDir: filepath.Join(repoRoot, "internal", "chassis"),
 			forbidden: []string{
-				modulePath + "/internal/ui",
 				modulePath + "/internal/uiserver",
 				modulePath + "/internal/misterctl",
 				modulePath + "/internal/adapters/auxadapter",
@@ -38,10 +37,12 @@ func productionImportRules(repoRoot string) []productionImportRule {
 			},
 		},
 		{
-			fromPkg: modulePath + "/internal/ui",
-			fromDir: filepath.Join(repoRoot, "internal", "ui"),
+			fromPkg: modulePath + "/internal/companion",
+			fromDir: filepath.Join(repoRoot, "internal", "companion"),
 			forbidden: []string{
 				modulePath + "/internal/chassis",
+				modulePath + "/internal/uiserver",
+				modulePath + "/internal/adapters/url",
 			},
 		},
 		{
@@ -56,7 +57,6 @@ func productionImportRules(repoRoot string) []productionImportRule {
 			fromDir: filepath.Join(repoRoot, "internal", "playback"),
 			forbidden: []string{
 				modulePath + "/internal/chassis",
-				modulePath + "/internal/ui",
 				modulePath + "/internal/uiserver",
 			},
 		},
@@ -67,7 +67,6 @@ func productionImportRules(repoRoot string) []productionImportRule {
 				modulePath + "/internal/adapters",
 				modulePath + "/internal/chassis",
 				modulePath + "/internal/playback",
-				modulePath + "/internal/ui",
 				modulePath + "/internal/uiserver",
 			},
 		},
@@ -77,7 +76,6 @@ func productionImportRules(repoRoot string) []productionImportRule {
 			forbidden: []string{
 				modulePath + "/internal/chassis",
 				modulePath + "/internal/playback",
-				modulePath + "/internal/ui",
 				modulePath + "/internal/uiserver",
 			},
 		},

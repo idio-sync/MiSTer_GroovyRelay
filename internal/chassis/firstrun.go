@@ -33,7 +33,7 @@ func (s *Server) firstRunActive() bool {
 }
 
 // SetupStatus is the configured-enough state surfaced to the page and the
-// status endpoint. Mirrors internal/ui/setup.go firstIncompleteStep.
+// status endpoint.
 type SetupStatus struct {
 	HostSet       bool `json:"hostSet"`
 	SourceEnabled bool `json:"sourceEnabled"`

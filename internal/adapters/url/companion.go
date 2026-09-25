@@ -31,7 +31,7 @@ func foreignSession(st core.SessionStatus) bool {
 }
 
 // CompanionHistory returns redacted point-in-time history snapshots for
-// the browser extension. Raw URLs never cross the internal/ui boundary.
+// the browser extension. Raw URLs never cross the internal/companion boundary.
 func (a *Adapter) CompanionHistory() []companion.CompanionHistoryEntry {
 	history := a.history.List()
 	out := make([]companion.CompanionHistoryEntry, 0, len(history))
@@ -58,7 +58,7 @@ func (a *Adapter) CompanionLastURLDisplay() string {
 
 // CompanionDisplay enriches URL-owned core sessions with the URL adapter's
 // title/history knowledge. Foreign adapter refs intentionally return zero so
-// internal/ui can fall back to the registry display name.
+// internal/companion can fall back to the registry display name.
 func (a *Adapter) CompanionDisplay(adapterRef string) companion.CompanionSessionDisplay {
 	if !strings.HasPrefix(adapterRef, "url:") {
 		return companion.CompanionSessionDisplay{}

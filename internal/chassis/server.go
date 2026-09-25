@@ -130,8 +130,8 @@ type Config struct {
 	// CoreLauncher SSH-sends the canonical load_core command to the
 	// MiSTer for the Pipeline pane's "Launch core" action button.
 	// Production passes the existing bridgeMisterLauncher instance from
-	// cmd/mister-groovy-relay/launcher.go — the same launcher already
-	// wired into ui.Config.MisterLauncher for /ui/*. May be nil in
+	// cmd/mister-groovy-relay/launcher.go — the same launcher wired
+	// into companion.Config.Launcher for the extension. May be nil in
 	// unit-test fixtures; the handler responds 503 NOT READY when nil.
 	CoreLauncher CoreLauncher
 
@@ -351,6 +351,10 @@ func audioScopeViewerIsLive(v AudioScopeViewer) bool {
 // refresher exactly once. Safe to call multiple times (sync.Once
 // guards the goroutine start) but only the first call wins.
 func (s *Server) Mount(mux *http.ServeMux) {
+	// Bare host URL lands on the chassis. {$} matches "/" exactly so
+	// it doesn't become a catch-all that shadows adapter-owned prefix
+	// routes (e.g. Plex Companion's /player/).
+	mux.HandleFunc("GET /{$}", handleRootRedirect)
 	mux.HandleFunc("GET /ui", s.handleIndex)
 	mux.HandleFunc("GET /ui/{$}", s.handleIndex)
 	mux.HandleFunc("GET /ui/static/", s.handleStatic)

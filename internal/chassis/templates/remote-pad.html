@@ -1,0 +1,22 @@
+{{define "remote-pad"}}
+{{htmlComment "chassis:remote-pad"}}
+{{- /* Phone remote (Sony RM style). Shown only on phone-width chassis
+       (chassis.css, @container 600px). In the remote view the keypad keys
+       recall presets and step the volume by pressing the existing preset
+       tile / volume control (remote.js), so casting, setup gating and
+       volume posting stay in their own modules. In the panel view only the
+       REMOTE toggle remains, so the way back is always one key away. */ -}}
+<div class="remote-pad" role="group" aria-label="Remote">
+  <span class="remote-cap">Remote</span>
+  <div class="remote-keys" role="group" aria-label="Preset keys">
+    {{- range $i, $slot := .Slots }}
+    <button class="remote-key" type="button" data-remote-preset="{{$slot.Slot}}" aria-label="Preset {{inc $i}}">{{inc $i}}</button>
+    {{- end }}
+  </div>
+  <div class="remote-row">
+    <button class="remote-key vol" type="button" data-remote-volume="-5" aria-label="Volume down">Vol &minus;</button>
+    <button class="remote-key vol" type="button" data-remote-volume="5" aria-label="Volume up">Vol +</button>
+    <button class="panel-key remote-view-toggle" type="button" data-phone-view-toggle aria-label="Show the full panel">Panel</button>
+  </div>
+</div>
+{{end}}

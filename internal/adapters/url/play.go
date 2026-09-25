@@ -4,10 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"html/template"
-	"io"
 	"log/slog"
 	"net/http"
 	stdurl "net/url"
@@ -29,41 +26,6 @@ import (
 
 const audioClassificationProbeTimeout = 800 * time.Millisecond
 
-// handlePlay accepts a paste from the UI form or a JSON POST. Routes
-// the URL to either the direct path (existing v1 behavior) or the
-// yt-dlp resolver, based on mode + hostname allowlist. On success
-// builds a v1.5 SessionRequest (DirectPlay + Capabilities all true)
-// and calls Manager.
-//
-// mode form/JSON field values:
-//   - "" or "auto" → host in cfg.YtdlpHosts → ytdlp; else direct
-//   - "ytdlp" → forced ytdlp (400 if YtdlpEnabled=false)
-//   - "direct" → forced direct (existing v1 behavior)
-//
-// Spec: docs/specs/2026-04-25-url-ytdlp-design.md §"HTTP surface" +
-// docs/specs/2026-04-25-url-adapter-controls-design.md §"Capability
-// and DirectPlay flips".
-func (a *Adapter) handlePlay(w http.ResponseWriter, r *http.Request) {
-	rawURL, mode, hlsBufferMode, err := extractURLAndMode(r)
-	if err != nil {
-		a.respondError(w, r, http.StatusBadRequest, err.Error(), "url")
-		return
-	}
-	ref, resolvedVia, status, err := a.castURLWithHLSBuffer(r.Context(), rawURL, mode, hlsBufferMode)
-	if err != nil {
-		field := ""
-		if status == http.StatusBadRequest {
-			// 400 from castURL is either bad URL or bad mode value;
-			// extractURLAndMode caught form-shape errors. We can't
-			// always tell which, but "url" is the more common case.
-			field = "url"
-		}
-		a.respondError(w, r, status, err.Error(), field)
-		return
-	}
-	a.respondStarted(w, r, ref, rawURL, resolvedVia)
-}
-
 // castURL is the shared cast-spawning logic. It validates the URL,
 // records into history (so failed casts surface for one-click retry),
 // dispatches direct vs. yt-dlp per mode + cfg + probe, resolves if
@@ -71,9 +33,10 @@ func (a *Adapter) handlePlay(w http.ResponseWriter, r *http.Request) {
 // session. Returns the AdapterRef, resolvedVia ("direct" or "ytdlp"),
 // the HTTP status to use on error, and the error.
 //
-// Used by handlePlay, banner resume/replay actions, and handleHistoryPlay. Each
-// of these re-resolves the URL (yt-dlp tokens expire), so they all funnel
-// through here.
+// Used by HandleQuickCast (chassis Cast drawer), banner resume/replay
+// actions, and the Companion* browser-extension entry points (play,
+// resume, replay, history play). Each of these re-resolves the URL
+// (yt-dlp tokens expire), so they all funnel through here.
 type urlSessionStarter func(core.SessionRequest) (bool, error)
 type urlStreamStarter func(context.Context, streamhandoff.Resolver, streamhandoff.Resolution) (streamhandoff.StartResult, bool, error)
 
@@ -237,8 +200,8 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 		resolvedDuration = res.Duration
 		audioClass, audioProbe = a.classifyResolvedURLMedia(ctx, res, mediaPolicy)
 		resolvedVia = "ytdlp"
-		// Backfill the title onto the just-bumped history entry so the
-		// panel shows "Big Buck Bunny" rather than just the youtu.be
+		// Backfill the title onto the just-bumped history entry so
+		// history shows "Big Buck Bunny" rather than just the youtu.be
 		// shortlink. SetTitle no-ops on empty title and on missing
 		// entries, so this is safe to call unconditionally here.
 		a.history.SetTitle(rawURL, resolvedTitle)
@@ -300,11 +263,11 @@ func (a *Adapter) castURLWithStarter(ctx context.Context, rawURL, mode, hlsBuffe
 		InputHeaders:      headers,
 		AudioStreamURL:    audioStreamURL,
 		AudioInputHeaders: audioHeaders,
-		// v1.5: unconditional caps + DirectPlay so the panel's controls
-		// reach core.Manager. Per-source seekability is enforced by the
-		// panel (Duration > 0 gating) and by the Resume handler's
-		// Duration-based branching. Spec §"Capability and DirectPlay
-		// flips".
+		// v1.5: unconditional caps + DirectPlay so the now-playing
+		// banner's transport controls reach core.Manager. Per-source
+		// seekability is enforced by the banner (Duration > 0 gating)
+		// and by the resume action's Duration-based branching. Spec
+		// §"Capability and DirectPlay flips".
 		Capabilities:     core.Capabilities{CanSeek: true, CanPause: true},
 		AdapterRef:       ref,
 		Source:           "url",
@@ -412,59 +375,6 @@ func (a *Adapter) classifyURLByProbe(ctx context.Context, mediaURL string, heade
 		return adapters.Unknown, nil
 	}
 	return adapters.ClassifyProbeResult(probe), probe
-}
-
-// extractURLAndMode parses URL dispatch and HLS-buffer fields from form-encoded
-// or JSON bodies. mode and hls_buffer both default to "auto" if absent.
-func extractURLAndMode(r *http.Request) (rawURL, mode, hlsBufferMode string, err error) {
-	ct := r.Header.Get("Content-Type")
-	if strings.HasPrefix(ct, "application/json") {
-		body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, 4096))
-		if err != nil {
-			return "", "", "", fmt.Errorf("read body: %w", err)
-		}
-		var payload struct {
-			URL           string `json:"url"`
-			Mode          string `json:"mode"`
-			HLSBuffer     string `json:"hls_buffer"`
-			HLSBufferMode string `json:"hls_buffer_mode"`
-		}
-		if err := json.Unmarshal(body, &payload); err != nil {
-			return "", "", "", fmt.Errorf("invalid JSON: %w", err)
-		}
-		if payload.URL == "" {
-			return "", "", "", fmt.Errorf("url is required")
-		}
-		m := strings.ToLower(strings.TrimSpace(payload.Mode))
-		if m == "" {
-			m = "auto"
-		}
-		hlsRaw := payload.HLSBuffer
-		if strings.TrimSpace(hlsRaw) == "" {
-			hlsRaw = payload.HLSBufferMode
-		}
-		hlsMode, err := normalizeHLSBufferMode(hlsRaw)
-		if err != nil {
-			return "", "", "", err
-		}
-		return strings.TrimSpace(payload.URL), m, hlsMode, nil
-	}
-	if err := r.ParseForm(); err != nil {
-		return "", "", "", fmt.Errorf("parse form: %w", err)
-	}
-	v := strings.TrimSpace(r.Form.Get("url"))
-	if v == "" {
-		return "", "", "", fmt.Errorf("url is required")
-	}
-	m := strings.ToLower(strings.TrimSpace(r.Form.Get("mode")))
-	if m == "" {
-		m = "auto"
-	}
-	hlsMode, err := normalizeHLSBufferMode(r.Form.Get("hls_buffer"))
-	if err != nil {
-		return "", "", "", err
-	}
-	return v, m, hlsMode, nil
 }
 
 func normalizeHLSBufferMode(raw string) (string, error) {
@@ -631,53 +541,14 @@ func (a *Adapter) markRunning(url string) {
 	a.stateSince = time.Now()
 }
 
-// respondError writes a 4xx/5xx response. HX-Request = HTML fragment;
-// otherwise JSON.
-func (a *Adapter) respondError(w http.ResponseWriter, r *http.Request, code int, msg, field string) {
-	if isHTMXRequest(r) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(code)
-		fmt.Fprintf(w, `<div class="gr-callout err" id="url-panel"><p>%s</p></div>`, template.HTMLEscapeString(msg))
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	payload := map[string]string{"error": msg}
-	if field != "" {
-		payload["field"] = field
-	}
-	_ = json.NewEncoder(w).Encode(payload)
+// snapshotLastURL returns a.lastURL under a.mu. Used by banner and companion
+// controls that need the most-recent URL for guarded replay/resume or for
+// credential redaction in error paths.
+func (a *Adapter) snapshotLastURL() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.lastURL
 }
-
-// respondStarted writes the 202 success response.
-//
-// The HTMX branch redacts credentials (user:pass@) from the URL before
-// echoing it to the browser — the panel could otherwise display a
-// password to anyone shoulder-surfing the operator's screen. The JSON
-// branch echoes the URL verbatim because the API caller submitted it
-// and already possesses any credentials within.
-func (a *Adapter) respondStarted(w http.ResponseWriter, r *http.Request, ref, url, resolvedVia string) {
-	if isHTMXRequest(r) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusAccepted)
-		fmt.Fprintf(w,
-			`<div class="gr-callout ok" id="url-panel"><p>Playing: <code>%s</code></p></div>`,
-			template.HTMLEscapeString(redactURL(url)))
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"adapter_ref":  ref,
-		"state":        "running",
-		"url":          url,
-		"resolved_via": resolvedVia,
-	})
-}
-
-// isHTMXRequest mirrors internal/ui/server.go's helper. Local copy so the
-// adapter doesn't take a UI-package dependency.
-func isHTMXRequest(r *http.Request) bool { return r.Header.Get("HX-Request") == "true" }
 
 // newAdapterRef returns "url:<8 hex>". 4 random bytes is plenty of entropy
 // for a single-active-session adapter; collisions are inconsequential
@@ -697,4 +568,17 @@ func redactURL(raw string) string {
 		return "<unparseable url>"
 	}
 	return u.Redacted()
+}
+
+// redactErr returns err.Error() with any occurrence of lastURL replaced by its
+// redacted form.
+func redactErr(err error, lastURL string) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if lastURL == "" {
+		return msg
+	}
+	return strings.ReplaceAll(msg, lastURL, redactURL(lastURL))
 }

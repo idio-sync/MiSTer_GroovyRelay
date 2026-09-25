@@ -364,8 +364,8 @@ func TestRevokeDevice_DeletesViaLegacyXMLEndpoint(t *testing.T) {
 }
 
 // TestRevokeDevice_Returns4xxAsError ensures plex.tv 401 (already-revoked
-// token, expired token) surfaces as an error so handleUnlink can log it.
-// Local cleanup proceeds regardless; the error is informational.
+// token, expired token) surfaces as an error so Unlink can log it. Local
+// cleanup proceeds regardless; the error is informational.
 func TestRevokeDevice_Returns4xxAsError(t *testing.T) {
 	srv := newLoopbackServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -387,7 +387,7 @@ func TestRevokeDevice_Returns4xxAsError(t *testing.T) {
 
 // TestRevokeDevice_TransportErrorSurfacesError pins behavior for the offline
 // case: if plex.tv is unreachable, RevokeDevice returns an error rather than
-// silently succeeding. handleUnlink will log and continue with local cleanup.
+// silently succeeding. Unlink will log and continue with local cleanup.
 func TestRevokeDevice_TransportErrorSurfacesError(t *testing.T) {
 	restore := PlexAPIBase
 	// Unroutable address forces a transport failure inside the bounded

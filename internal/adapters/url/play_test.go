@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	neturl "net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -452,24 +451,17 @@ func TestCastURL_OwncastForcedDirectStillResolves(t *testing.T) {
 
 func TestPlay_RejectsMalformedURL(t *testing.T) {
 	a := newTestAdapter(t, &fakeCore{})
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader("url=not%20a%20valid%20url"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", w.Code)
+	_, err := quickCast(t, a, map[string]string{"url": "not a valid url"})
+	if got := quickCastErrStatus(t, err); got != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", got)
 	}
 }
 
 func TestPlay_RejectsEmptyURL(t *testing.T) {
 	a := newTestAdapter(t, &fakeCore{})
-	req := httptest.NewRequest(http.MethodPost, "/play", strings.NewReader("url="))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", w.Code)
+	_, err := quickCast(t, a, map[string]string{"url": "  "})
+	if got := quickCastErrStatus(t, err); got != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", got)
 	}
 }
 
@@ -484,13 +476,9 @@ func TestPlay_RejectsBadScheme(t *testing.T) {
 		t.Run(in, func(t *testing.T) {
 			fc := &fakeCore{}
 			a := newTestAdapter(t, fc)
-			req := httptest.NewRequest(http.MethodPost, "/play",
-				strings.NewReader("url="+in))
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			w := httptest.NewRecorder()
-			a.handlePlay(w, req)
-			if w.Code != http.StatusBadRequest {
-				t.Errorf("status = %d, want 400", w.Code)
+			_, err := quickCast(t, a, map[string]string{"url": in})
+			if got := quickCastErrStatus(t, err); got != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", got)
 			}
 			if got := fc.snapshot().StreamURL; got != "" {
 				t.Errorf("StartSession called despite bad scheme: %q", got)
@@ -502,14 +490,7 @@ func TestPlay_RejectsBadScheme(t *testing.T) {
 func TestPlay_HappyPath_BuildsSessionRequest(t *testing.T) {
 	fc := &fakeCore{}
 	a := newTestAdapter(t, fc)
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader("url=https%3A%2F%2Fexample.com%2Fvideo.mp4"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-	if w.Code != http.StatusAccepted {
-		t.Errorf("status = %d, want 202", w.Code)
-	}
+	res := mustQuickCast(t, a, map[string]string{"url": "https://example.com/video.mp4"})
 	got := fc.snapshot()
 	if got.StreamURL != "https://example.com/video.mp4" {
 		t.Errorf("StreamURL = %q", got.StreamURL)
@@ -523,6 +504,9 @@ func TestPlay_HappyPath_BuildsSessionRequest(t *testing.T) {
 	if !strings.HasPrefix(got.AdapterRef, "url:") {
 		t.Errorf("AdapterRef should start with 'url:', got %q", got.AdapterRef)
 	}
+	if res.AdapterRef != got.AdapterRef {
+		t.Errorf("QuickCastResult.AdapterRef = %q, want the started session's ref %q", res.AdapterRef, got.AdapterRef)
+	}
 	if got.OnStop == nil {
 		t.Errorf("OnStop should be set")
 	}
@@ -531,88 +515,31 @@ func TestPlay_HappyPath_BuildsSessionRequest(t *testing.T) {
 func TestPlay_StartSessionFailure_500(t *testing.T) {
 	fc := &fakeCore{startErr: errors.New("probe failed")}
 	a := newTestAdapter(t, fc)
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader("url=https%3A%2F%2Fexample.com%2Fv.mp4"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
+	_, err := quickCast(t, a, map[string]string{"url": "https://example.com/v.mp4"})
+	if got := quickCastErrStatus(t, err); got != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", got)
 	}
 	if a.Status().State != adapters.StateError {
 		t.Errorf("State = %v, want StateError", a.Status().State)
 	}
 }
 
-func TestPlay_HXRequest_RespondsHTML(t *testing.T) {
-	fc := &fakeCore{}
+// A credentialed URL must never be echoed back in the cast failure
+// message: castURL redacts user:pass@ before surfacing StartSession
+// errors (which ffprobe often builds from the input URL).
+func TestPlay_StartFailure_RedactsCredentialsInError(t *testing.T) {
+	const raw = "https://user:secret@example.com/v.mp4"
+	fc := &fakeCore{startErr: errors.New("probe " + raw + ": 401 Unauthorized")}
 	a := newTestAdapter(t, fc)
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader("url=https%3A%2F%2Fexample.com%2Fv.mp4"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("HX-Request", "true")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
-		t.Errorf("Content-Type = %q, want text/html", ct)
+	_, err := quickCast(t, a, map[string]string{"url": raw})
+	if err == nil {
+		t.Fatal("quick cast error = nil, want start failure")
 	}
-	if !strings.Contains(w.Body.String(), "example.com") {
-		t.Errorf("response body should mention the URL: %s", w.Body.String())
+	if strings.Contains(err.Error(), "secret") {
+		t.Errorf("cast error leaked password: %v", err)
 	}
-}
-
-func TestPlay_HXRequest_RedactsCredentialsInBody(t *testing.T) {
-	// A credentialed URL must be redacted in the HTML success fragment
-	// shown to the operator (anyone shoulder-surfing the panel would
-	// otherwise see the password). The JSON branch echoes the URL
-	// verbatim — the API caller already possesses it.
-	fc := &fakeCore{}
-	a := newTestAdapter(t, fc)
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader("url=https%3A%2F%2Fuser%3Asecret%40example.com%2Fv.mp4"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("HX-Request", "true")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-	body := w.Body.String()
-	if strings.Contains(body, "secret") {
-		t.Errorf("HTMX 202 fragment leaked password: %s", body)
-	}
-	if !strings.Contains(body, "example.com") {
-		t.Errorf("redaction stripped the host too: %s", body)
-	}
-}
-
-func TestPlay_NoHXRequest_RespondsJSON(t *testing.T) {
-	fc := &fakeCore{}
-	a := newTestAdapter(t, fc)
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader("url=https%3A%2F%2Fexample.com%2Fv.mp4"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
-		t.Errorf("Content-Type = %q, want application/json", ct)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, `"adapter_ref"`) || !strings.Contains(body, `"state":"running"`) {
-		t.Errorf("JSON body missing expected keys: %s", body)
-	}
-}
-
-func TestPlay_AcceptsJSONBody(t *testing.T) {
-	fc := &fakeCore{}
-	a := newTestAdapter(t, fc)
-	body := `{"url": "https://example.com/v.mp4"}`
-	req := httptest.NewRequest(http.MethodPost, "/play", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-	if w.Code != http.StatusAccepted {
-		t.Errorf("status = %d, want 202", w.Code)
-	}
-	if got := fc.snapshot().StreamURL; got != "https://example.com/v.mp4" {
-		t.Errorf("StreamURL = %q", got)
+	if !strings.Contains(err.Error(), "example.com") {
+		t.Errorf("redaction stripped the host too: %v", err)
 	}
 }
 
@@ -657,7 +584,7 @@ func TestOnStop_ReasonHandling(t *testing.T) {
 			}
 			// Pretend a session is running.
 			a.setState(adapters.StateRunning, "")
-			// makeOnStop("", "") returns the closure that handlePlay
+			// makeOnStop("", "") returns the closure that castURL
 			// would normally produce; calling it with tc.reason
 			// exercises the state-transition switch unchanged from
 			// the deleted handleOnStop method.
@@ -723,15 +650,8 @@ func TestPlay_ModeAuto_HostInAllowlist_RoutesToYtdlp(t *testing.T) {
 	}
 	a := newAdapterWithResolver(t, fr)
 
-	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fabc&mode=auto")
-	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
+	mustQuickCast(t, a, map[string]string{"url": "https://youtu.be/abc", "mode": "auto"})
 
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
-	}
 	if len(fr.calls) != 1 {
 		t.Fatalf("resolver calls = %d, want 1", len(fr.calls))
 	}
@@ -749,15 +669,8 @@ func TestPlay_ModeAuto_HostNotInAllowlist_GoesDirect(t *testing.T) {
 	fr := &fakeResolver{}
 	a := newAdapterWithResolver(t, fr)
 
-	body := strings.NewReader("url=https%3A%2F%2Fexample.com%2Fvideo.mp4&mode=auto")
-	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
+	mustQuickCast(t, a, map[string]string{"url": "https://example.com/video.mp4", "mode": "auto"})
 
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202", w.Code)
-	}
 	if len(fr.calls) != 0 {
 		t.Errorf("resolver called for non-allowlisted host: %v", fr.calls)
 	}
@@ -829,14 +742,11 @@ func TestURLDirectM3U8OffBypassesBuffer(t *testing.T) {
 		return nil, nil
 	}
 
-	body := strings.NewReader("url=https%3A%2F%2Fpublic.example%2Flive.m3u8&mode=direct&hls_buffer=off")
-	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
-	}
+	mustQuickCast(t, a, map[string]string{
+		"url":        "https://public.example/live.m3u8",
+		"mode":       "direct",
+		"hls_buffer": "off",
+	})
 	got := a.core.(*fakeCore).snapshot()
 	if got.StreamURL != "https://public.example/live.m3u8" {
 		t.Fatalf("StreamURL = %q, want direct URL", got.StreamURL)
@@ -1171,15 +1081,8 @@ func TestPlay_ModeYtdlp_AlwaysRoutesThroughResolver(t *testing.T) {
 	}
 	a := newAdapterWithResolver(t, fr)
 
-	body := strings.NewReader("url=https%3A%2F%2Fexample.com%2Fpage&mode=ytdlp")
-	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
+	mustQuickCast(t, a, map[string]string{"url": "https://example.com/page", "mode": "ytdlp"})
 
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status = %d", w.Code)
-	}
 	if len(fr.calls) != 1 {
 		t.Fatalf("resolver calls = %d, want 1 (forced)", len(fr.calls))
 	}
@@ -1226,15 +1129,8 @@ func TestPlay_ModeDirect_NeverRoutesThroughResolver(t *testing.T) {
 	fr := &fakeResolver{}
 	a := newAdapterWithResolver(t, fr)
 
-	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fabc&mode=direct")
-	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
+	mustQuickCast(t, a, map[string]string{"url": "https://youtu.be/abc", "mode": "direct"})
 
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status = %d", w.Code)
-	}
 	if len(fr.calls) != 0 {
 		t.Errorf("resolver called in direct mode: %v", fr.calls)
 	}
@@ -1245,14 +1141,9 @@ func TestPlay_ModeYtdlp_WithYtdlpDisabled_Returns400(t *testing.T) {
 	a := newAdapterWithResolver(t, fr)
 	a.cfg.YtdlpEnabled = false
 
-	body := strings.NewReader("url=https%3A%2F%2Fexample.com&mode=ytdlp")
-	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", w.Code)
+	_, err := quickCast(t, a, map[string]string{"url": "https://example.com", "mode": "ytdlp"})
+	if got := quickCastErrStatus(t, err); got != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", got)
 	}
 }
 
@@ -1260,14 +1151,9 @@ func TestPlay_UnknownMode_Returns400(t *testing.T) {
 	fr := &fakeResolver{}
 	a := newAdapterWithResolver(t, fr)
 
-	body := strings.NewReader("url=https%3A%2F%2Fexample.com&mode=bogus")
-	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", w.Code)
+	_, err := quickCast(t, a, map[string]string{"url": "https://example.com", "mode": "bogus"})
+	if got := quickCastErrStatus(t, err); got != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", got)
 	}
 }
 
@@ -1277,16 +1163,9 @@ func TestPlay_ModeAbsent_DefaultsToAuto(t *testing.T) {
 	}
 	a := newAdapterWithResolver(t, fr)
 
-	// Form has no mode field; should default to auto.
-	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fxyz")
-	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
+	// No mode value; should default to auto.
+	mustQuickCast(t, a, map[string]string{"url": "https://youtu.be/xyz"})
 
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status = %d", w.Code)
-	}
 	if len(fr.calls) != 1 {
 		t.Fatalf("auto mode (default) didn't route youtu.be to resolver")
 	}
@@ -1301,15 +1180,8 @@ func TestPlay_SuccessfulResolve_WritesTitleToHistory(t *testing.T) {
 	}
 	a := newAdapterWithResolver(t, fr)
 
-	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fabc&mode=auto")
-	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
+	mustQuickCast(t, a, map[string]string{"url": "https://youtu.be/abc", "mode": "auto"})
 
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
-	}
 	list := a.history.List()
 	if len(list) != 1 {
 		t.Fatalf("history len = %d, want 1", len(list))
@@ -1326,11 +1198,7 @@ func TestPlay_ResolverError_DoesNotWriteTitle(t *testing.T) {
 	fr := &fakeResolver{err: errors.New("ytdlp: dead URL")}
 	a := newAdapterWithResolver(t, fr)
 
-	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fdead&mode=ytdlp")
-	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
+	_, _ = quickCast(t, a, map[string]string{"url": "https://youtu.be/dead", "mode": "ytdlp"})
 
 	list := a.history.List()
 	if len(list) != 1 {
@@ -1346,15 +1214,8 @@ func TestPlay_DirectMode_DoesNotWriteTitle(t *testing.T) {
 	fr := &fakeResolver{}
 	a := newAdapterWithResolver(t, fr)
 
-	body := strings.NewReader("url=https%3A%2F%2Fexample.com%2Fraw.mp4&mode=direct")
-	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
+	mustQuickCast(t, a, map[string]string{"url": "https://example.com/raw.mp4", "mode": "direct"})
 
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202; body = %s", w.Code, w.Body.String())
-	}
 	list := a.history.List()
 	if len(list) != 1 {
 		t.Fatalf("history len = %d, want 1", len(list))
@@ -1368,49 +1229,34 @@ func TestPlay_ResolverError_Returns500(t *testing.T) {
 	fr := &fakeResolver{err: errors.New("ytdlp: This video is unavailable")}
 	a := newAdapterWithResolver(t, fr)
 
-	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fdead&mode=ytdlp")
-	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	// IMPORTANT: do NOT set HX-Request. The body assertion below
-	// relies on the JSON branch of respondError, which echoes the
-	// raw error message verbatim. The HTML fragment branch wraps
-	// in a <p class="err"> with HTMLEscapeString — the literal
-	// "This video is unavailable" still appears, but a future
-	// change to the fragment markup could break this assertion.
-	// Keeping the JSON path explicit here pins the contract.
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", w.Code)
+	_, err := quickCast(t, a, map[string]string{"url": "https://youtu.be/dead", "mode": "ytdlp"})
+	if got := quickCastErrStatus(t, err); got != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", got)
 	}
-	if !strings.Contains(w.Body.String(), "This video is unavailable") {
-		t.Errorf("body missing stderr line: %s", w.Body.String())
+	// The resolver's stderr line must reach the operator verbatim.
+	if !strings.Contains(err.Error(), "This video is unavailable") {
+		t.Errorf("error missing stderr line: %v", err)
 	}
 }
 
-func TestPlay_JSONResponse_IncludesResolvedVia(t *testing.T) {
+// resolved_via is only surfaced on the companion API result (the Quick
+// Cast result carries no dispatch detail), so pin it there.
+func TestCompanionPlay_ReportsResolvedVia(t *testing.T) {
 	fr := &fakeResolver{
 		res: &ytdlp.Resolution{URL: "https://resolved.example/v"},
 	}
 	a := newAdapterWithResolver(t, fr)
 
-	// JSON request, mode=auto, allowlisted host.
-	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play",
-		strings.NewReader(`{"url":"https://youtu.be/abc","mode":"auto"}`))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status = %d", w.Code)
+	// mode=auto, allowlisted host.
+	res, err := a.CompanionPlay(t.Context(), "https://youtu.be/abc", "auto")
+	if err != nil {
+		t.Fatalf("CompanionPlay: %v", err)
 	}
-	var got map[string]string
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatalf("unmarshal: %v; body=%s", err, w.Body.String())
+	if res.ResolvedVia != "ytdlp" {
+		t.Errorf("ResolvedVia = %q, want ytdlp", res.ResolvedVia)
 	}
-	if got["resolved_via"] != "ytdlp" {
-		t.Errorf("resolved_via = %q, want ytdlp", got["resolved_via"])
+	if !strings.HasPrefix(res.AdapterRef, "url:") {
+		t.Errorf("AdapterRef = %q, want url: prefix", res.AdapterRef)
 	}
 }
 
@@ -1425,22 +1271,15 @@ func TestPlay_ModeAuto_StripsPortFromHost(t *testing.T) {
 	}
 	a := newAdapterWithResolver(t, fr)
 
-	body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%3A443%2Fabc&mode=auto")
-	req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
-	}
+	mustQuickCast(t, a, map[string]string{"url": "https://youtu.be:443/abc", "mode": "auto"})
 	if len(fr.calls) != 1 {
 		t.Errorf("explicit-port URL did not route to resolver: calls=%d", len(fr.calls))
 	}
 }
 
 // TestPlay_AcceptsUppercaseMode pins the M2 fix: mode=AUTO/YTDLP/DIRECT
-// from a curl user must be accepted (lowercase + trim normalize before
-// the dispatch switch).
+// must be accepted (lowercase + trim normalize before the dispatch
+// switch). HandleQuickCast owns that normalization now.
 func TestPlay_AcceptsUppercaseMode(t *testing.T) {
 	for _, mode := range []string{"AUTO", "Auto", " auto ", "YTDLP", "ytdlp"} {
 		t.Run(mode, func(t *testing.T) {
@@ -1448,13 +1287,8 @@ func TestPlay_AcceptsUppercaseMode(t *testing.T) {
 				res: &ytdlp.Resolution{URL: "https://resolved.example/v"},
 			}
 			a := newAdapterWithResolver(t, fr)
-			body := strings.NewReader("url=https%3A%2F%2Fyoutu.be%2Fabc&mode=" + mode)
-			req := httptest.NewRequest("POST", "/old_ui/adapter/url/play", body)
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			w := httptest.NewRecorder()
-			a.handlePlay(w, req)
-			if w.Code != http.StatusAccepted {
-				t.Errorf("mode=%q: status = %d, body=%s", mode, w.Code, w.Body.String())
+			if _, err := quickCast(t, a, map[string]string{"url": "https://youtu.be/abc", "mode": mode}); err != nil {
+				t.Errorf("mode=%q: err = %v", mode, err)
 			}
 		})
 	}
@@ -1462,10 +1296,7 @@ func TestPlay_AcceptsUppercaseMode(t *testing.T) {
 
 func TestPlay_HappyPath_RecordsHistory(t *testing.T) {
 	a := newTestAdapter(t, &fakeCore{})
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader("url=https%3A%2F%2Fexample.com%2Fv.mp4"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	a.handlePlay(httptest.NewRecorder(), req)
+	mustQuickCast(t, a, map[string]string{"url": "https://example.com/v.mp4"})
 	if a.history.Len() != 1 {
 		t.Errorf("history.Len = %d, want 1 after happy-path cast", a.history.Len())
 	}
@@ -1473,10 +1304,7 @@ func TestPlay_HappyPath_RecordsHistory(t *testing.T) {
 
 func TestPlay_StartSessionFailure_StillRecordsHistory(t *testing.T) {
 	a := newTestAdapter(t, &fakeCore{startErr: errors.New("probe failed")})
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader("url=https%3A%2F%2Fexample.com%2Fv.mp4"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	a.handlePlay(httptest.NewRecorder(), req)
+	_, _ = quickCast(t, a, map[string]string{"url": "https://example.com/v.mp4"})
 	if a.history.Len() != 1 {
 		t.Errorf("history.Len = %d, want 1 (failed casts must record so operator can retry)", a.history.Len())
 	}
@@ -1484,10 +1312,7 @@ func TestPlay_StartSessionFailure_StillRecordsHistory(t *testing.T) {
 
 func TestPlay_BadURL_DoesNotRecordHistory(t *testing.T) {
 	a := newTestAdapter(t, &fakeCore{})
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader("url=not%20a%20valid%20url"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	a.handlePlay(httptest.NewRecorder(), req)
+	_, _ = quickCast(t, a, map[string]string{"url": "not a valid url"})
 	if a.history.Len() != 0 {
 		t.Errorf("history.Len = %d, want 0 (URLs failing validation must not be recorded)", a.history.Len())
 	}
@@ -1495,15 +1320,13 @@ func TestPlay_BadURL_DoesNotRecordHistory(t *testing.T) {
 
 func TestPlay_RecastSameURL_BumpsNotDuplicates(t *testing.T) {
 	a := newTestAdapter(t, &fakeCore{})
-	post := func(u string) {
-		req := httptest.NewRequest(http.MethodPost, "/play",
-			strings.NewReader("url="+u))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		a.handlePlay(httptest.NewRecorder(), req)
+	cast := func(u string) {
+		t.Helper()
+		mustQuickCast(t, a, map[string]string{"url": u})
 	}
-	post("https%3A%2F%2Fa%2F")
-	post("https%3A%2F%2Fb%2F")
-	post("https%3A%2F%2Fa%2F") // recast a → bump to position 0
+	cast("https://a/")
+	cast("https://b/")
+	cast("https://a/") // recast a → bump to position 0
 	if a.history.Len() != 2 {
 		t.Errorf("Len = %d, want 2", a.history.Len())
 	}
@@ -1545,26 +1368,46 @@ func newTestAdapterOpts(t *testing.T, opts ...testAdapterOption) *Adapter {
 	return a
 }
 
-// postPlay is a convenience wrapper: POST the given url.Values to the
-// adapter's play handler and return the recorded response.
-func postPlay(t *testing.T, a *Adapter, vals neturl.Values) *http.Response {
+// quickCast drives the chassis Cast drawer entry point (HandleQuickCast),
+// the production successor to the deleted legacy POST /play handler.
+// HandleQuickCast gates on IsEnabled (the legacy handler did not), so the
+// adapter is enabled first; disabled-adapter behavior is pinned in
+// playback_provider_test.go.
+func quickCast(t *testing.T, a *Adapter, vals map[string]string) (adapters.QuickCastResult, error) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader(vals.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handlePlay(w, req)
-	return w.Result()
+	a.SetEnabled(true)
+	return a.HandleQuickCast(t.Context(), adapters.QuickCastRequest{TabID: "url", Values: vals})
+}
+
+// mustQuickCast is quickCast that fails the test on any cast error.
+func mustQuickCast(t *testing.T, a *Adapter, vals map[string]string) adapters.QuickCastResult {
+	t.Helper()
+	res, err := quickCast(t, a, vals)
+	if err != nil {
+		t.Fatalf("HandleQuickCast(%v): %v", vals, err)
+	}
+	return res
+}
+
+// quickCastErrStatus returns the HTTP status carried by a HandleQuickCast
+// failure (*adapters.QuickCastError.Status), which the chassis Cast route
+// forwards to the client. Fails the test if err is nil or untyped.
+func quickCastErrStatus(t *testing.T, err error) int {
+	t.Helper()
+	if err == nil {
+		t.Fatal("HandleQuickCast error = nil, want failure")
+	}
+	var qerr *adapters.QuickCastError
+	if !errors.As(err, &qerr) {
+		t.Fatalf("error %v (%T) is not *adapters.QuickCastError", err, err)
+	}
+	return qerr.Status
 }
 
 func TestPlay_EmitsCastRequested(t *testing.T) {
 	log := eventlog.New(16)
 	a := newTestAdapterOpts(t, withEventLog(log))
-	body := neturl.Values{"url": {"https://example.com/test.mp4"}}
-	resp := postPlay(t, a, body)
-	if resp.StatusCode >= 400 {
-		t.Fatalf("status: %d", resp.StatusCode)
-	}
+	mustQuickCast(t, a, map[string]string{"url": "https://example.com/test.mp4"})
 	entries := log.Snapshot()
 	if len(entries) == 0 {
 		t.Fatal("expected cast-requested entry")
@@ -1580,8 +1423,7 @@ func TestPlay_EmitsCastRequested(t *testing.T) {
 func TestPlay_PopulatesTitle(t *testing.T) {
 	core := &fakeCore{}
 	a := newTestAdapterOpts(t, withCore(core))
-	body := neturl.Values{"url": {"https://example.com/clip.mp4"}}
-	postPlay(t, a, body)
+	mustQuickCast(t, a, map[string]string{"url": "https://example.com/clip.mp4"})
 	want := "clip.mp4"
 	if core.lastReq.Title != want {
 		t.Errorf("Title: got %q, want %q", core.lastReq.Title, want)

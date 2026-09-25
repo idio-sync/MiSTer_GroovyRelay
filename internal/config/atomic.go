@@ -15,7 +15,7 @@ import (
 //
 // The tempfile suffix uses a random hex string to prevent collisions
 // when two writes race (though callers should serialize via the
-// per-adapter mutex in internal/ui).
+// shared uiserver save mutex).
 //
 // Directory fsync is delegated to fsyncDir, which has an OS-specific
 // implementation: strict on Unix, no-op on Windows (NTFS provides

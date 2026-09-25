@@ -16,8 +16,14 @@ func TestAdapter_ConformsToValidator(t *testing.T) {
 	var _ adapters.Validator = (*Adapter)(nil)
 }
 
-func TestAdapter_ConformsToRouteProvider(t *testing.T) {
-	var _ adapters.RouteProvider = (*Adapter)(nil)
+// The settings UI reaches the URL adapter through these provider
+// interfaces (Cast drawer + now-playing banner).
+func TestAdapter_ConformsToQuickCastProvider(t *testing.T) {
+	var _ adapters.QuickCastProvider = (*Adapter)(nil)
+}
+
+func TestAdapter_ConformsToPlaybackControlProvider(t *testing.T) {
+	var _ adapters.PlaybackControlProvider = (*Adapter)(nil)
 }
 
 func TestAdapter_Name(t *testing.T) {

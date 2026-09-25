@@ -11,10 +11,9 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
-// linkSnapshot reports the current link state as an adapters.LinkSnapshot,
-// mirroring the state logic in ExtraPanelHTML/handleLinkStatus. Plex
-// persists only a device UUID + auth token (no account identity), so a
-// linked snapshot carries an empty LinkedAs and the UI renders plain
+// linkSnapshot reports the current link state as an adapters.LinkSnapshot.
+// Plex persists only a device UUID + auth token (no account identity), so
+// a linked snapshot carries an empty LinkedAs and the UI renders plain
 // "Linked".
 func (a *Adapter) linkSnapshot() adapters.LinkSnapshot {
 	token := a.snapshotToken()
@@ -43,11 +42,11 @@ func (a *Adapter) linkSnapshot() adapters.LinkSnapshot {
 func (a *Adapter) Snapshot() adapters.LinkSnapshot { return a.linkSnapshot() }
 
 // StartLink implements adapters.LinkController. params is ignored (Plex's
-// PIN flow takes no inputs). It mirrors handleLinkStart: abandon any
-// in-flight flow, request a fresh PIN under linkStartMu, store the
-// pendingLink, and arm the background poller. ctx bounds the RequestPIN
-// round-trip; the poller itself runs to the 15-minute expiry regardless
-// of ctx (it must outlive the originating request).
+// PIN flow takes no inputs). It abandons any in-flight flow, requests a
+// fresh PIN under linkStartMu, stores the pendingLink, and arms the
+// background poller. ctx bounds the RequestPIN round-trip; the poller
+// itself runs to the 15-minute expiry regardless of ctx (it must outlive
+// the originating request).
 func (a *Adapter) StartLink(ctx context.Context, _ map[string]string) (adapters.LinkSnapshot, error) {
 	a.linkStartMu.Lock()
 	defer a.linkStartMu.Unlock()
@@ -100,9 +99,9 @@ func (a *Adapter) PollLink(_ context.Context) (adapters.LinkSnapshot, error) {
 	return a.linkSnapshot(), nil
 }
 
-// Unlink implements adapters.LinkController. Mirrors handleUnlink:
-// best-effort RevokeDevice (ctx-bounded), rotate the token file aside,
-// clear the in-memory token, and cancel the plex.tv registration loop.
+// Unlink implements adapters.LinkController: best-effort RevokeDevice
+// (ctx-bounded), rotate the token file aside, clear the in-memory token,
+// and cancel the plex.tv registration loop.
 func (a *Adapter) Unlink(ctx context.Context) (adapters.LinkSnapshot, error) {
 	a.mu.Lock()
 	uuid := a.cfg.TokenStore.DeviceUUID

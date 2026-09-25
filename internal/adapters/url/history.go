@@ -19,7 +19,7 @@ import (
 // stripped. Used as the history dedupe key so that re-casts with
 // different credentials collapse to one entry. Returns "" if the URL
 // fails to parse — callers should reject this case before calling
-// AddOrBump (handlePlay's upstream validation already does).
+// AddOrBump (castURLWithStarter's upstream validation already does).
 //
 // Why not redactURL()? net/url.URL.Redacted() blanks only the
 // password (xxxxx), leaving the username intact. Two URLs with
@@ -156,7 +156,7 @@ func LoadHistory(path string) *History {
 // with rawURL (latest creds win). Any title carried by the prior
 // entry is preserved across the bump — title is metadata about the
 // content, not the credentials, so a re-cast before yt-dlp re-resolves
-// shouldn't blank the title the panel was showing. Otherwise rawURL is
+// shouldn't blank the title history was showing. Otherwise rawURL is
 // inserted at position 0; older entries shift down; entries beyond the
 // max are evicted. Persists to disk if path is set.
 func (h *History) AddOrBump(rawURL string) {
@@ -271,29 +271,6 @@ func (h *History) Len() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.entries)
-}
-
-// Remove deletes the entry at idx. Returns false on out-of-range.
-// Persists if path is set.
-func (h *History) Remove(idx int) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if idx < 0 || idx >= len(h.entries) {
-		return false
-	}
-	h.entries = append(h.entries[:idx], h.entries[idx+1:]...)
-	h.saveLocked()
-	return true
-}
-
-// Get returns the entry at idx. Returns ok=false on out-of-range.
-func (h *History) Get(idx int) (HistoryEntry, bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if idx < 0 || idx >= len(h.entries) {
-		return HistoryEntry{}, false
-	}
-	return h.entries[idx], true
 }
 
 // GetByID returns the entry with id. Returns ok=false when missing.

@@ -28,11 +28,11 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streams"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/companion"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/launchcore"
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/uiserver"
 )
 
@@ -109,12 +109,11 @@ func TestReceiverEndToEnd(t *testing.T) {
 func TestMount_DoesNotShadowUIRoutes(t *testing.T) {
 	t.Parallel()
 
-	uiSrv, err := ui.New(ui.Config{
+	companionSrv, err := companion.New(companion.Config{
 		Registry: adapters.NewRegistry(),
-		Version:  "integration-test",
 	})
 	if err != nil {
-		t.Fatalf("ui.New: %v", err)
+		t.Fatalf("companion.New: %v", err)
 	}
 	chassisSrv, err := chassis.New(chassis.Config{
 		Bridge:    config.BridgeConfig{UI: config.UIConfig{HTTPPort: 32500}},
@@ -130,7 +129,7 @@ func TestMount_DoesNotShadowUIRoutes(t *testing.T) {
 	defer chassisSrv.Close()
 
 	mux := http.NewServeMux()
-	uiSrv.Mount(mux)
+	companionSrv.Mount(mux)
 	chassisSrv.Mount(mux)
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
@@ -142,16 +141,6 @@ func TestMount_DoesNotShadowUIRoutes(t *testing.T) {
 		notWant           []string
 	}{
 		{
-			path: "/old_ui",
-			want: []string{`class="gr-shell"`},
-		},
-		{
-			path:              "/old_ui/static/app.css",
-			contentTypePrefix: "text/css",
-			want:              []string{".gr-shell {", ".gr-sidebar {"},
-			notWant:           []string{`class="gr-shell"`, `<!-- chassis:shell -->`},
-		},
-		{
 			path: "/ui",
 			want: []string{`<!-- chassis:shell -->`},
 		},
@@ -159,7 +148,7 @@ func TestMount_DoesNotShadowUIRoutes(t *testing.T) {
 			path:              "/ui/static/chassis.css",
 			contentTypePrefix: "text/css",
 			want:              []string{"body.receiver .meter-screen", "body.receiver .transport-strip"},
-			notWant:           []string{`class="gr-shell"`, `<!-- chassis:shell -->`},
+			notWant:           []string{`<!-- chassis:shell -->`},
 		},
 	} {
 		resp, err := http.Get(ts.URL + tc.path)
@@ -907,14 +896,13 @@ mode = "retro_analyzer"
 func TestReceiverEvents_DoesNotShadowUIRoutes(t *testing.T) {
 	mux := http.NewServeMux()
 
-	uiSrv, err := ui.New(ui.Config{
+	companionSrv, err := companion.New(companion.Config{
 		Registry: adapters.NewRegistry(),
-		Version:  "integration-test",
 	})
 	if err != nil {
-		t.Fatalf("ui.New: %v", err)
+		t.Fatalf("companion.New: %v", err)
 	}
-	uiSrv.Mount(mux)
+	companionSrv.Mount(mux)
 
 	chassisSrv, err := chassis.New(chassis.Config{
 		Bridge:    config.BridgeConfig{},
@@ -933,18 +921,21 @@ func TestReceiverEvents_DoesNotShadowUIRoutes(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	// /old_ui/playback/banner (the existing htmx-polled live banner) is
+	// /ui/companion/status (the browser extension's JSON poll) is
 	// independent of /ui/events.
-	uiResp, err := srv.Client().Get(srv.URL + "/old_ui/playback/banner")
+	compReq, _ := http.NewRequest(http.MethodGet, srv.URL+"/ui/companion/status", nil)
+	compReq.Header.Set("Origin", "moz-extension://integration")
+	compReq.Header.Set("X-Bridge-Extension", "1")
+	compResp, err := srv.Client().Do(compReq)
 	if err != nil {
-		t.Fatalf("GET /old_ui/playback/banner: %v", err)
+		t.Fatalf("GET /ui/companion/status: %v", err)
 	}
-	defer uiResp.Body.Close()
-	if uiResp.StatusCode != http.StatusOK {
-		t.Errorf("/old_ui/playback/banner status = %d, want 200", uiResp.StatusCode)
+	defer compResp.Body.Close()
+	if compResp.StatusCode != http.StatusOK {
+		t.Errorf("/ui/companion/status status = %d, want 200", compResp.StatusCode)
 	}
-	if got := uiResp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
-		t.Errorf("/old_ui/playback/banner Content-Type = %q, want text/html prefix", got)
+	if got := compResp.Header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Errorf("/ui/companion/status Content-Type = %q, want application/json prefix", got)
 	}
 
 	// /ui/events is SSE.

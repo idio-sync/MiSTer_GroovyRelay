@@ -187,7 +187,9 @@ func (a *Adapter) HandleQuickCast(ctx context.Context, req adapters.QuickCastReq
 			Message: "url is required",
 		}
 	}
-	mode := strings.TrimSpace(req.Values["mode"])
+	// Case-insensitive (AUTO/Ytdlp/...), matching the companion API's
+	// normalization; decideRoute only accepts lowercase values.
+	mode := strings.ToLower(strings.TrimSpace(req.Values["mode"]))
 	if mode == "" {
 		mode = "auto"
 	}

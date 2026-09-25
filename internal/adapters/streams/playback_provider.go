@@ -81,6 +81,25 @@ func (a *Adapter) HandlePlaybackAction(ctx context.Context, req adapters.Playbac
 	return adapters.PlaybackActionResult{Message: "streams updated"}, nil
 }
 
+// canReplayLocked reports whether the given queue can be replayed from its
+// first item: an ad-hoc (URL-resolved) queue always can, and a
+// catalog-backed queue can only if its channel is still present with
+// playable items. Callers must hold a.mu.
+func (a *Adapter) canReplayLocked(q *ActiveQueue) bool {
+	if q == nil || len(q.Items) == 0 {
+		return false
+	}
+	if q.ChannelID == reservedAdhocID {
+		return true
+	}
+	cat, ok := a.catalogs[q.ProviderID]
+	if !ok {
+		return false
+	}
+	ch := cat.Channel(q.ChannelID)
+	return ch != nil && len(ch.Items) > 0
+}
+
 func (a *Adapter) playbackActionUnavailable(action, ref string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()

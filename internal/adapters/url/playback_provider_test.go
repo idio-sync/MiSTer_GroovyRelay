@@ -226,3 +226,52 @@ func TestHandleQuickCast_PreservesPlainErrorMessage(t *testing.T) {
 		t.Errorf("Error() = %q, want a message mentioning url", got)
 	}
 }
+
+func TestQuickCastTabsOmitsHLSBufferControl(t *testing.T) {
+	a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+	tabs := a.QuickCastTabs()
+	if len(tabs) != 1 {
+		t.Fatalf("QuickCastTabs len = %d, want 1", len(tabs))
+	}
+	for _, field := range tabs[0].Fields {
+		if field.Name == "hls_buffer" {
+			t.Fatalf("QuickCastTabs should not render hls_buffer field; got %+v", field)
+		}
+	}
+}
+
+// The yt-dlp mode radio is offered only when the resolver is both enabled
+// in config and present at runtime (successor to the legacy panel's
+// HidesModeRadio tests).
+func TestQuickCastTabsModeRadioGatedOnYtdlp(t *testing.T) {
+	cases := []struct {
+		name     string
+		enabled  bool
+		probeOK  bool
+		wantMode bool
+	}{
+		{"enabled and present", true, true, true},
+		{"disabled in config", false, true, false},
+		{"binary missing", true, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := New(AdapterConfig{Bridge: config.BridgeConfig{DataDir: t.TempDir()}})
+			a.cfg.YtdlpEnabled = tc.enabled
+			a.ytdlpProbe = ytdlpProbe{OK: tc.probeOK}
+			tabs := a.QuickCastTabs()
+			if len(tabs) != 1 {
+				t.Fatalf("QuickCastTabs len = %d, want 1", len(tabs))
+			}
+			gotMode := false
+			for _, f := range tabs[0].Fields {
+				if f.Name == "mode" {
+					gotMode = true
+				}
+			}
+			if gotMode != tc.wantMode {
+				t.Errorf("mode radio present = %v, want %v", gotMode, tc.wantMode)
+			}
+		})
+	}
+}

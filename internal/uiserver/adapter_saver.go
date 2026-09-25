@@ -113,11 +113,6 @@ func overlayTouched(current map[string]any, touched map[string]string, fields []
 			errs = append(errs, adapters.FieldError{Key: key, Msg: "unknown field"})
 			continue
 		}
-		if fd.Kind == adapters.KindAction {
-			// Action buttons carry no value; skip silently rather than
-			// treating them as an unsupported kind.
-			continue
-		}
 		val, perr := decodeTouchedValue(raw, fd.Kind)
 		if perr != "" {
 			errs = append(errs, adapters.FieldError{Key: key, Msg: perr})
@@ -244,8 +239,8 @@ func setDottedValue(m map[string]any, key string, val any) error {
 // currentValuesOf returns the adapter's current in-memory values as a
 // generic map[string]any, or false if the adapter does not implement
 // the optional CurrentValues() method. This is the same duck-typed
-// interface internal/ui consumes for form prefill — keeping it
-// optional preserves backwards compatibility with adapters that only
+// interface the chassis settings saver in cmd consumes for form
+// prefill — keeping it optional preserves backwards compatibility with adapters that only
 // implement the core adapters.Adapter contract.
 func currentValuesOf(a adapters.Adapter) (map[string]any, bool) {
 	type currentValuer interface {
@@ -292,9 +287,7 @@ func prefixAdapterSubtableHeaders(name string, body []byte) []byte {
 // decodeAdapterSection wraps a bare body snippet (key = value lines,
 // no [adapters.<name>] header) in the appropriate header and decodes
 // it into a toml.Primitive + MetaData handle the adapter's
-// Validate() / ApplyConfig() methods can consume. Mirrors the same
-// pattern internal/ui/adapter.go uses; lives in uiserver so the new
-// SaveTouched method can call it without importing internal/ui.
+// Validate() / ApplyConfig() methods can consume.
 func decodeAdapterSection(body []byte, name string) (toml.Primitive, toml.MetaData, error) {
 	wrapper := fmt.Sprintf("[adapters.%s]\n%s", name, body)
 	var envelope struct {

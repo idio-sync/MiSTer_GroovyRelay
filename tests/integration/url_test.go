@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -16,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -43,7 +46,10 @@ func urlBridgeConfig(t *testing.T) config.BridgeConfig {
 
 // newURLAdapter wires the new AdapterConfig signature for the
 // integration tests — they all need DataDir set (the config helper
-// above provides it via t.TempDir).
+// above provides it via t.TempDir). The adapter is enabled with default
+// config, as production would after DecodeConfig: HandleQuickCast
+// rejects casts on a disabled adapter. Start is not called, so no
+// yt-dlp resolver is wired and mode=auto dispatches direct.
 func newURLAdapter(t *testing.T, mgr *core.Manager) *urladapter.Adapter {
 	t.Helper()
 	a, err := urladapter.New(urladapter.AdapterConfig{
@@ -53,7 +59,33 @@ func newURLAdapter(t *testing.T, mgr *core.Manager) *urladapter.Adapter {
 	if err != nil {
 		t.Fatalf("urladapter.New: %v", err)
 	}
+	cfg := urladapter.DefaultConfig()
+	cfg.Enabled = true
+	a.SetConfigForTesting(cfg)
 	return a
+}
+
+// quickCastURL casts through HandleQuickCast — the production entry
+// point the chassis Cast drawer (POST /ui/cast) uses for the URL tab.
+// It replaced the legacy per-adapter HTML-form play handler.
+func quickCastURL(ctx context.Context, a *urladapter.Adapter, vals map[string]string) error {
+	_, err := a.HandleQuickCast(ctx, adapters.QuickCastRequest{TabID: "url", Values: vals})
+	return err
+}
+
+// quickCastErrStatus returns the HTTP status a HandleQuickCast failure
+// carries (*adapters.QuickCastError.Status), which the chassis Cast route
+// forwards to the client. Fails the test if err is nil or untyped.
+func quickCastErrStatus(t *testing.T, err error) int {
+	t.Helper()
+	if err == nil {
+		t.Fatal("HandleQuickCast error = nil, want failure")
+	}
+	var qerr *adapters.QuickCastError
+	if !errors.As(err, &qerr) {
+		t.Fatalf("error %v (%T) is not *adapters.QuickCastError", err, err)
+	}
+	return qerr.Status
 }
 
 // TestURL_PlayDirectFile spins up an httptest.Server serving the tiny
@@ -86,14 +118,8 @@ func TestURL_PlayDirectFile(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := newURLAdapter(t, mgr)
-	form := url.Values{"url": {srv.URL + "/tiny.mp4"}}
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.UIRoutes()[0].Handler(w, req)
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("/play status = %d, want 202: body=%s", w.Code, w.Body.String())
+	if err := quickCastURL(context.Background(), a, map[string]string{"url": srv.URL + "/tiny.mp4"}); err != nil {
+		t.Fatalf("quick cast: %v", err)
 	}
 
 	// Wait up to 5s for at least one Init + one Switchres on the wire.
@@ -117,21 +143,16 @@ func TestURL_PlayDirectFile(t *testing.T) {
 	_ = mgr.Stop()
 }
 
-// TestURL_RejectsBadScheme: posting a file:// URL yields 400 and never
+// TestURL_RejectsBadScheme: casting a file:// URL yields 400 and never
 // reaches the data plane.
 func TestURL_RejectsBadScheme(t *testing.T) {
 	h := NewHarness(t)
 	mgr := core.NewManager(urlBridgeConfig(t), h.Sender)
 	a := newURLAdapter(t, mgr)
 
-	form := url.Values{"url": {"file:///etc/passwd"}}
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.UIRoutes()[0].Handler(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", w.Code)
+	err := quickCastURL(context.Background(), a, map[string]string{"url": "file:///etc/passwd"})
+	if got := quickCastErrStatus(t, err); got != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", got)
 	}
 	// 100ms is plenty for any spurious wire activity to surface.
 	time.Sleep(100 * time.Millisecond)
@@ -174,32 +195,26 @@ func TestURL_ProbeTimeout(t *testing.T) {
 		srv.Close()
 	})
 
-	form := url.Values{"url": {srv.URL + "/forever.mp4"}}
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-
 	start := time.Now()
-	// Run handler in a goroutine with a context-bounded wait so a bug
-	// that lets the handler hang forever still fails the test.
-	done := make(chan struct{})
+	// Run the cast in a goroutine with a bounded wait so a bug that
+	// lets it hang forever still fails the test.
+	done := make(chan error, 1)
 	go func() {
-		a.UIRoutes()[0].Handler(w, req)
-		close(done)
+		done <- quickCastURL(context.Background(), a, map[string]string{"url": srv.URL + "/forever.mp4"})
 	}()
+	var castErr error
 	select {
-	case <-done:
+	case castErr = <-done:
 	case <-time.After(20 * time.Second):
-		t.Fatal("handler did not return within 20s — probe timeout broken?")
+		t.Fatal("cast did not return within 20s — probe timeout broken?")
 	}
 	elapsed := time.Since(start)
 
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
+	if got := quickCastErrStatus(t, castErr); got != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", got)
 	}
 	if elapsed < 8*time.Second {
-		t.Errorf("handler returned in %v — probe timeout too short?", elapsed)
+		t.Errorf("cast returned in %v — probe timeout too short?", elapsed)
 	}
 	snap := h.Recorder.Snapshot()
 	if snap.Counts[groovy.CmdInit] != 0 {
@@ -214,7 +229,7 @@ func TestURL_ProbeTimeout(t *testing.T) {
 //  2. Starts a "Plex" session by directly calling Manager.StartSession
 //     with a request whose OnStop is the same closure sessionRequestFor
 //     builds (so we exercise the broadcast-on-stop wiring).
-//  3. POSTs a URL to the URL adapter, which preempts.
+//  3. Casts a URL through the URL adapter, which preempts.
 //  4. Asserts the controller received a stopped timeline addressed to
 //     the prior media key during the preempt window.
 func TestURL_PreemptsPlex_TimelineReportsStopped(t *testing.T) {
@@ -289,14 +304,8 @@ func TestURL_PreemptsPlex_TimelineReportsStopped(t *testing.T) {
 
 	// URL preempts.
 	urlAdapter := newURLAdapter(t, mgr)
-	form := url.Values{"url": {srv.URL + "/tiny.mp4"}}
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	urlAdapter.UIRoutes()[0].Handler(w, req)
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("url /play status = %d, want 202: %s", w.Code, w.Body.String())
+	if err := quickCastURL(context.Background(), urlAdapter, map[string]string{"url": srv.URL + "/tiny.mp4"}); err != nil {
+		t.Fatalf("url quick cast: %v", err)
 	}
 
 	// notifySessionStop fires Plex's OnStop in a goroutine
@@ -355,14 +364,8 @@ func TestURL_PauseAndSeekSucceedV15(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := newURLAdapter(t, mgr)
-	form := url.Values{"url": {srv.URL + "/tiny.mp4"}}
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.UIRoutes()[0].Handler(w, req)
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202", w.Code)
+	if err := quickCastURL(context.Background(), a, map[string]string{"url": srv.URL + "/tiny.mp4"}); err != nil {
+		t.Fatalf("quick cast: %v", err)
 	}
 
 	// The URL session is now active. v1.5 caps allow Pause + SeekTo.

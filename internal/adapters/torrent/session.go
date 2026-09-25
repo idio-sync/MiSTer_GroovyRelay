@@ -13,6 +13,11 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
+// maxTorrentUploadBytes bounds a single .torrent file (via multipart
+// upload, URL fetch, or magnet-resolved metadata): quick-cast handlers
+// and the URL fetcher all enforce this ceiling.
+const maxTorrentUploadBytes = 4 * 1024 * 1024
+
 type StartedSession struct {
 	Token      string `json:"token"`
 	AdapterRef string `json:"adapter_ref"`
@@ -200,11 +205,11 @@ func (a *Adapter) startTorrentHandle(ctx context.Context, cfg Config, t TorrentH
 	}
 	a.registerSession(s)
 	req := core.SessionRequest{
-		StreamURL:    a.mediaURL(token),
-		Capabilities: core.Capabilities{CanSeek: true, CanPause: true},
-		AdapterRef:   "torrent:" + sessionID,
-		Source:       "torrent",
-		DirectPlay:   true,
+		StreamURL:       a.mediaURL(token),
+		Capabilities:    core.Capabilities{CanSeek: true, CanPause: true},
+		AdapterRef:      "torrent:" + sessionID,
+		Source:          "torrent",
+		DirectPlay:      true,
 		Title:           s.Title,
 		DisplayMetadata: core.DisplayMetadata{Primary: s.Title},
 		MediaInputPolicy: core.MediaInputPolicy{

@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -18,27 +16,6 @@ func withStatus(s core.SessionStatus) *fakeCore {
 	fc := &fakeCore{}
 	fc.statusFn = func() core.SessionStatus { return s }
 	return fc
-}
-
-func TestURLRoutesDoNotMountLegacyTransportControls(t *testing.T) {
-	a := newTestAdapter(t, &fakeCore{})
-	routes := a.UIRoutes()
-	paths := map[string]bool{}
-	for _, route := range routes {
-		if route.Method == http.MethodPost {
-			paths[route.Path] = true
-		}
-	}
-	for _, forbidden := range []string{"pause", "resume", "stop", "replay", "seek"} {
-		if paths[forbidden] {
-			t.Fatalf("legacy URL transport route %q is still mounted", forbidden)
-		}
-	}
-	for _, want := range []string{"play", "history/play", "history/delete", "cookies"} {
-		if !paths[want] {
-			t.Fatalf("URL route %q should remain mounted", want)
-		}
-	}
 }
 
 func TestCompanionPause_URLSessionCallsPause(t *testing.T) {
@@ -106,18 +83,19 @@ func TestCompanionHistoryDeleteUnknownIDReturns404(t *testing.T) {
 	}
 }
 
-func TestHistoryPlay_ValidIdx_CallsStartSession(t *testing.T) {
+// History replay/delete used to be reachable through the legacy
+// idx-based POST /history/{play,delete} form routes. The surviving entry
+// points are the ID-keyed CompanionHistoryPlay / CompanionHistoryDelete
+// (browser-extension API); these tests pin the same behaviors there.
+
+func TestCompanionHistoryPlay_BumpsReplayedEntry(t *testing.T) {
 	fc := &fakeCore{}
 	a := newTestAdapter(t, fc)
 	a.history.AddOrBump("https://a.example/1")
 	a.history.AddOrBump("https://b.example/2")
-	body := strings.NewReader("idx=1")
-	req := httptest.NewRequest(http.MethodPost, "/history/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handleHistoryPlay(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", w.Code)
+	id := a.history.List()[1].ID // a.example, the older entry
+	if _, err := a.CompanionHistoryPlay(context.Background(), id); err != nil {
+		t.Fatalf("CompanionHistoryPlay error = %v", err)
 	}
 	if fc.lastReq.StreamURL != "https://a.example/1" {
 		t.Errorf("StreamURL = %q, want history[1]", fc.lastReq.StreamURL)
@@ -128,7 +106,7 @@ func TestHistoryPlay_ValidIdx_CallsStartSession(t *testing.T) {
 	}
 }
 
-func TestHistoryPlay_UsesStoredHLSBufferMode(t *testing.T) {
+func TestCompanionHistoryPlay_UsesStoredHLSBufferMode(t *testing.T) {
 	fc := &fakeCore{}
 	a := newTestAdapter(t, fc)
 	enableURLHLSBufferForTest(a)
@@ -138,52 +116,41 @@ func TestHistoryPlay_UsesStoredHLSBufferMode(t *testing.T) {
 		return nil, nil
 	}
 
-	body := strings.NewReader("idx=0")
-	req := httptest.NewRequest(http.MethodPost, "/history/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handleHistoryPlay(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	id := a.history.List()[0].ID
+	if _, err := a.CompanionHistoryPlay(context.Background(), id); err != nil {
+		t.Fatalf("CompanionHistoryPlay error = %v", err)
 	}
 	if fc.lastReq.StreamURL != "https://example.com/live.m3u8" {
 		t.Fatalf("StreamURL = %q, want direct history URL", fc.lastReq.StreamURL)
 	}
 }
 
-func TestHistoryPlay_OutOfRange_400(t *testing.T) {
+func TestCompanionHistoryPlay_UnknownIDReturns404WithoutSideEffects(t *testing.T) {
 	fc := &fakeCore{}
 	a := newTestAdapter(t, fc)
 	a.history.AddOrBump("https://a/")
 	pre := a.history.List()
-	body := strings.NewReader("idx=99")
-	req := httptest.NewRequest(http.MethodPost, "/history/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handleHistoryPlay(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", w.Code)
+	_, err := a.CompanionHistoryPlay(context.Background(), "h_00000000000000000000000000000000")
+	var ce interface{ HTTPStatus() int }
+	if !errors.As(err, &ce) || ce.HTTPStatus() != http.StatusNotFound {
+		t.Fatalf("error = %v, want companion 404", err)
 	}
 	if fc.lastReq.StreamURL != "" {
-		t.Error("StartSession must not be called for out-of-range idx")
+		t.Error("StartSession must not be called for an unknown history id")
 	}
 	post := a.history.List()
 	if len(pre) != len(post) || (len(pre) > 0 && pre[0].URL != post[0].URL) {
-		t.Errorf("history mutated by failed handleHistoryPlay; pre=%v post=%v", pre, post)
+		t.Errorf("history mutated by failed CompanionHistoryPlay; pre=%v post=%v", pre, post)
 	}
 }
 
-func TestHistoryDelete_ValidIdx_RemovesEntry(t *testing.T) {
+func TestCompanionHistoryDelete_RemovesEntry(t *testing.T) {
 	a := newTestAdapter(t, &fakeCore{})
 	a.history.AddOrBump("https://a/")
 	a.history.AddOrBump("https://b/")
-	body := strings.NewReader("idx=0")
-	req := httptest.NewRequest(http.MethodPost, "/history/delete", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handleHistoryDelete(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want 200", w.Code)
+	id := a.history.List()[0].ID // b, the newest entry
+	if err := a.CompanionHistoryDelete(context.Background(), id); err != nil {
+		t.Fatalf("CompanionHistoryDelete error = %v", err)
 	}
 	if a.history.Len() != 1 {
 		t.Errorf("Len = %d, want 1", a.history.Len())
@@ -193,30 +160,13 @@ func TestHistoryDelete_ValidIdx_RemovesEntry(t *testing.T) {
 	}
 }
 
-func TestHistoryDelete_OutOfRange_400(t *testing.T) {
+func TestCompanionHistoryDelete_UnknownIDLeavesHistoryIntact(t *testing.T) {
 	a := newTestAdapter(t, &fakeCore{})
 	a.history.AddOrBump("https://a/")
-	body := strings.NewReader("idx=99")
-	req := httptest.NewRequest(http.MethodPost, "/history/delete", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handleHistoryDelete(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", w.Code)
+	if err := a.CompanionHistoryDelete(context.Background(), "h_00000000000000000000000000000000"); err == nil {
+		t.Fatal("CompanionHistoryDelete(unknown) error = nil, want 404")
 	}
 	if a.history.Len() != 1 {
 		t.Errorf("Len = %d after no-op delete, want 1", a.history.Len())
-	}
-}
-
-func TestHistoryPlay_NonInteger_400(t *testing.T) {
-	a := newTestAdapter(t, &fakeCore{})
-	body := strings.NewReader("idx=abc")
-	req := httptest.NewRequest(http.MethodPost, "/history/play", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	a.handleHistoryPlay(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", w.Code)
 	}
 }

@@ -4,7 +4,7 @@ import "net/http"
 
 // MountPublicRoutes mounts the 13 protocol-side HTTP routes on the
 // shared bridge mux. Called by main.go via the
-// adapters.PublicRouteProvider interface BEFORE the UI server mounts
+// adapters.PublicRouteProvider interface BEFORE the chassis mounts
 // /ui/*; the paths under /dlna/* are deliberately disjoint from the
 // settings UI tree so DLNA control points (which cannot send the
 // origin headers the /ui/* CSRF middleware requires) reach the

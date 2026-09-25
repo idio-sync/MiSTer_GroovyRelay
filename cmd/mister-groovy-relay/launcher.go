@@ -7,15 +7,21 @@ import (
 	"net"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/launchcore"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/misterctl"
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 )
 
-// bridgeMisterLauncher is the closure adapter wiring ui.MisterLauncher
-// to misterctl.LaunchGroovy. Snapshots host/user/password from the
+// bridgeConfigSource is the live bridge config the launcher and prober
+// snapshot at each call. *uiserver.BridgeSaver satisfies it.
+type bridgeConfigSource interface {
+	Current() config.BridgeConfig
+}
+
+// bridgeMisterLauncher is the closure adapter wiring the chassis
+// CoreLauncher and companion MisterLauncher to misterctl.LaunchGroovy. Snapshots host/user/password from the
 // live BridgeSaver at each call so credential edits apply hot — no
 // bridge restart needed.
 //
@@ -24,7 +30,7 @@ import (
 // empty. (LaunchGroovy itself is policy-free; UI-layer "config not
 // set" semantics belong here.)
 type bridgeMisterLauncher struct {
-	bridge  ui.BridgeSaver
+	bridge  bridgeConfigSource
 	timeout time.Duration
 }
 
@@ -41,11 +47,11 @@ func (b bridgeMisterLauncher) Launch(ctx context.Context) error {
 	})
 }
 
-// bridgeMisterProber wires ui.MisterProber to a side-effect-light UDP status
+// bridgeMisterProber wires the chassis prober to a side-effect-light UDP status
 // request. CMD_GET_STATUS is the protocol's ACK-only reachability check; unlike
 // INIT, it does not start or reset a streaming session on the MiSTer.
 type bridgeMisterProber struct {
-	bridge  ui.BridgeSaver
+	bridge  bridgeConfigSource
 	timeout time.Duration
 }
 

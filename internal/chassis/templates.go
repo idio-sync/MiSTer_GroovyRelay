@@ -27,11 +27,7 @@ var chassisTemplatesFS embed.FS
 //go:embed static
 var chassisStaticFS embed.FS
 
-// templateFuncs supplies the helpers the chassis templates need. The
-// first three are duplicated verbatim from internal/ui/server.go:
-// during the parallel-replacement period the chassis package has zero
-// imports of internal/ui, so we accept coupling-by-copy rather than
-// coupling-by-import. The final cutover spec deduplicates.
+// templateFuncs supplies the helpers the chassis templates need.
 //
 // Chassis-specific helpers:
 //   - htmlComment: emits trusted sentinel comments for composition tests.
@@ -232,7 +228,7 @@ func adapterBytesUnit(key string) string {
 // unit ("Catalog Request Timeout Seconds" -> "Catalog request timeout
 // (s)", "Max Cache Bytes" -> "Max cache size"). Acronyms and mixed-case
 // words (URL, HLS, YouTube, SetAVTransportURI, yt-dlp) are kept as-is.
-// Display-only: adapters keep their labels for the legacy UI.
+// Display-only: adapters keep their original FieldDef labels.
 func settingsLabel(label string) string {
 	for _, suf := range []struct{ word, repl string }{
 		{" Seconds", " (s)"},

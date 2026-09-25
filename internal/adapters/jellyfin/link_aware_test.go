@@ -2,8 +2,6 @@ package jellyfin
 
 import (
 	"testing"
-
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
 // newTestAdapter constructs a minimal Adapter suitable for testing
@@ -41,6 +39,3 @@ func TestAdapter_LinkAware_Error(t *testing.T) {
 		t.Errorf("LinkPhase: %q; want error", got)
 	}
 }
-
-// Compile-time assertion.
-var _ adapters.LinkAware = (*Adapter)(nil)
