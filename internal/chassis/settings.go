@@ -304,6 +304,10 @@ var bridgeFieldDecoders = map[string]bridgeFieldDecoder{
 		v, err := decodeAspectMode(s)
 		return v, err
 	},
+	"video_interlace_filter": func(s string) (any, error) {
+		v, err := decodeInterlaceFilter(s)
+		return v, err
+	},
 	"video_lz4_enabled": func(s string) (any, error) {
 		v, err := decodeBool(s)
 		return v, err
@@ -497,6 +501,16 @@ func decodeAspectMode(raw string) (string, error) {
 	return "", fmt.Errorf("must be auto, letterbox, or zoom")
 }
 
+// decodeInterlaceFilter accepts "off", "light", or "full".
+func decodeInterlaceFilter(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	switch s {
+	case "off", "light", "full":
+		return s, nil
+	}
+	return "", fmt.Errorf("must be off, light, or full")
+}
+
 // decodeBool accepts exactly "true" or "false". Used by switch fields.
 // Strict matching catches form-data drift early; the legacy strconv.ParseBool
 // would accept "0"/"1"/"TRUE" which the chassis JS contract does not emit.
@@ -552,6 +566,7 @@ var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
 	"video_modeline":              func(c *config.BridgeConfig, v any) { c.Video.Modeline = v.(string) },
 	"video_interlace_field_order": func(c *config.BridgeConfig, v any) { c.Video.InterlaceFieldOrder = v.(string) },
 	"video_aspect_mode":           func(c *config.BridgeConfig, v any) { c.Video.AspectMode = v.(string) },
+	"video_interlace_filter":      func(c *config.BridgeConfig, v any) { c.Video.InterlaceFilter = v.(string) },
 	"video_lz4_enabled":           func(c *config.BridgeConfig, v any) { c.Video.LZ4Enabled = v.(bool) },
 	"video_delta_lz4_enabled":     func(c *config.BridgeConfig, v any) { c.Video.DeltaLZ4Enabled = v.(bool) },
 	"audio_sample_rate":           func(c *config.BridgeConfig, v any) { c.Audio.SampleRate = v.(int) },
@@ -601,6 +616,7 @@ var bridgeFieldScopes = map[string]adapters.ApplyScope{
 	"video_modeline":               adapters.ScopeRestartCast,
 	"video_interlace_field_order":  adapters.ScopeHotSwap,
 	"video_aspect_mode":            adapters.ScopeRestartCast,
+	"video_interlace_filter":       adapters.ScopeRestartCast,
 	"video_lz4_enabled":            adapters.ScopeRestartCast,
 	"video_delta_lz4_enabled":      adapters.ScopeRestartCast,
 	"audio_sample_rate":            adapters.ScopeRestartCast,

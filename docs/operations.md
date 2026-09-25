@@ -106,6 +106,16 @@ The bridge uses a single FFmpeg process with shared A/V timestamps, so long-term
 
 Flip `interlace_field_order` between `tff` and `bff`. The correct value depends on the MiSTer core and cable path.
 
+**Subtitles, text, or thin horizontal lines flicker on an interlaced mode.**
+
+That is interlace twitter: a detail one line tall exists in only one field, so it flashes at 30 Hz (25 Hz on PAL). `bridge.video.interlace_filter` applies a vertical low-pass before the fields are split so both fields carry the detail. It is set in the Settings UI as **Flicker filter**:
+
+- `light` (default): halves one-line flicker; barely softer than unfiltered.
+- `full`: removes one-line flicker; visibly softer.
+- `off`: full vertical sharpness, maximum flicker.
+
+It applies only to interlaced modes (480i, 576i) and takes effect on the next cast. Film downscaled from HD is already soft vertically, so the difference shows mostly on subtitles, visualizer text, animation, and native 480-line sources.
+
 **Plex says the target is offline moments after casting.**
 
 This is usually a `source_port` problem. If the bridge restarts and binds a different ephemeral port, the MiSTer's session key no longer matches. Set `source_port` to a fixed number in `config.toml` and confirm nothing else on the host is using it.

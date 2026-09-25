@@ -62,6 +62,7 @@ func parseBridgeForm(form url.Values) (config.BridgeConfig, error) {
 	out.Video.Modeline = stripExperimentalSuffix(form.Get("video.modeline"))
 	out.Video.InterlaceFieldOrder = form.Get("video.interlace_field_order")
 	out.Video.AspectMode = form.Get("video.aspect_mode")
+	out.Video.InterlaceFilter = form.Get("video.interlace_filter")
 	out.Video.RGBMode = "rgb888" // v1 locked; not user-editable
 	out.Video.LZ4Enabled = parseBoolField(form, "video.lz4_enabled")
 	out.Video.DeltaLZ4Enabled = parseBoolField(form, "video.delta_lz4_enabled")

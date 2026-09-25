@@ -115,6 +115,7 @@ func Migrate(legacy []byte) ([]byte, error) {
 				RGBMode:             old.RGBMode,
 				LZ4Enabled:          old.LZ4Enabled,
 				DeltaLZ4Enabled:     old.DeltaLZ4Enabled,
+				InterlaceFilter:     DefaultInterlaceFilter,
 			},
 			Audio: AudioConfig{
 				SampleRate:   old.AudioSampleRate,
@@ -291,6 +292,7 @@ func defaultBridge() BridgeConfig {
 			RGBMode:             d.RGBMode,
 			LZ4Enabled:          d.LZ4Enabled,
 			DeltaLZ4Enabled:     d.DeltaLZ4Enabled,
+			InterlaceFilter:     DefaultInterlaceFilter,
 		},
 		Audio: AudioConfig{
 			SampleRate:   d.AudioSampleRate,

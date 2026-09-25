@@ -2155,3 +2155,99 @@ func TestVisualizerTextLines_TitleFirstOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildFilterChain_InterlaceFilterSpreadsOneLineDetailWithFFmpeg: on an
+// interlaced CRT a 1-line horizontal edge lives in a single field and
+// flashes at 30 Hz (interlace twitter). The vertical low-pass spreads it
+// across neighbouring lines so both fields carry it. Source: a 4:3 DVD
+// frame (720x480, SAR 8:9, no vertical scaling) with one white line.
+func TestBuildFilterChain_InterlaceFilterSpreadsOneLineDetailWithFFmpeg(t *testing.T) {
+	ffmpegPath := findFFBinary("ffmpeg")
+	if ffmpegPath == "" {
+		t.Skip("ffmpeg not found; skipping interlace filter test")
+	}
+	cases := []struct {
+		filter                string
+		wantCenter, wantSides int // BGR value on the line and on each neighbour
+	}{
+		{"off", 255, 0},
+		{"light", 191, 32},
+		{"full", 128, 64},
+	}
+	for _, tc := range cases {
+		t.Run(tc.filter, func(t *testing.T) {
+			spec := PipelineSpec{
+				SourceProbe: &ProbeResult{Width: 720, Height: 480, FrameRate: 29.97},
+				OutputWidth: 720, OutputHeight: 480,
+				FieldOrder: "tff", AspectMode: "letterbox",
+				InterlaceFilter: tc.filter,
+			}
+			src := "color=c=black:s=720x480:r=30000/1001,setsar=8/9," +
+				"drawbox=x=0:y=241:w=720:h=1:color=white:t=fill,format=yuv420p"
+			runCtx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+			defer cancel()
+			out, err := exec.CommandContext(runCtx, ffmpegPath,
+				"-hide_banner", "-v", "error",
+				"-f", "lavfi", "-i", src,
+				"-vf", buildFilterChain(spec),
+				"-frames:v", "1",
+				"-pix_fmt", "bgr24", "-f", "rawvideo", "-",
+			).Output()
+			if err != nil {
+				t.Fatalf("ffmpeg failed: %v\nchain=%s", err, buildFilterChain(spec))
+			}
+			px := func(y int) int { return int(out[(y*720+360)*3+1]) } // green channel, centre column
+			const tol = 12
+			if got := px(241); abs(got-tc.wantCenter) > tol {
+				t.Fatalf("line row = %d, want ~%d\nchain=%s", got, tc.wantCenter, buildFilterChain(spec))
+			}
+			for _, y := range []int{240, 242} {
+				if got := px(y); abs(got-tc.wantSides) > tol {
+					t.Fatalf("neighbour row %d = %d, want ~%d\nchain=%s", y, got, tc.wantSides, buildFilterChain(spec))
+				}
+			}
+		})
+	}
+}
+
+// The low-pass runs after subtitles (so burned-in text is filtered too)
+// and before the bgr24 conversion and fps normalizer.
+func TestBuildFilterChain_InterlaceFilterPlacement(t *testing.T) {
+	spec := PipelineSpec{
+		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
+		OutputWidth: 720, OutputHeight: 480,
+		FieldOrder: "tff", AspectMode: "letterbox",
+		SubtitlePath: "/tmp/x.srt", InterlaceFilter: "light",
+	}
+	chain := buildFilterChain(spec)
+	sub := strings.Index(chain, "subtitles=")
+	conv := strings.Index(chain, "convolution=")
+	format := strings.Index(chain, "format=bgr24")
+	if sub < 0 || conv < 0 || format < 0 || !(sub < conv && conv < format) {
+		t.Fatalf("want subtitles < convolution < format=bgr24: %s", chain)
+	}
+	for _, off := range []string{"", "off"} {
+		spec.InterlaceFilter = off
+		if chain := buildFilterChain(spec); strings.Contains(chain, "convolution") {
+			t.Fatalf("InterlaceFilter=%q must not filter: %s", off, chain)
+		}
+	}
+}
+
+// Visualizer graphics are all hard synthetic edges: filter them too.
+func TestBuildVisualizerFilterChain_AppliesInterlaceFilter(t *testing.T) {
+	spec := PipelineSpec{
+		OutputWidth: 720, OutputHeight: 480, OutputFpsExpr: "60000/1001",
+		InterlaceFilter: "full",
+		Visualizer: VisualizerSpec{Enabled: true, Mode: VisualizerModeRetroAnalyzer, RequiredFiltersAvailable: true},
+	}
+	graph, err := buildVisualizerFilterChain(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv := strings.Index(graph, "convolution=")
+	format := strings.LastIndex(graph, "format=bgr24[visualizer_video]")
+	if conv < 0 || format < 0 || conv > format {
+		t.Fatalf("visualizer output must be low-passed before bgr24: %s", graph)
+	}
+}

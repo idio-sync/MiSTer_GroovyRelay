@@ -732,6 +732,31 @@ func TestDecodeAspectMode(t *testing.T) {
 	}
 }
 
+func TestDecodeInterlaceFilter(t *testing.T) {
+	t.Parallel()
+	for _, ok := range []string{"off", "light", "full"} {
+		if v, err := decodeInterlaceFilter(ok); err != nil || v != ok {
+			t.Errorf("decodeInterlaceFilter(%q) = (%q, %v)", ok, v, err)
+		}
+	}
+	if _, err := decodeInterlaceFilter("heavy"); err == nil ||
+		!strings.Contains(err.Error(), "must be off, light, or full") {
+		t.Errorf("decodeInterlaceFilter(heavy) err = %v, want substring", err)
+	}
+}
+
+func TestBridgeFieldInterlaceFilter_RecastScopeAndOverlay(t *testing.T) {
+	t.Parallel()
+	if got := bridgeFieldScopes["video_interlace_filter"]; got != adapters.ScopeRestartCast {
+		t.Fatalf("video_interlace_filter scope = %v, want ScopeRestartCast", got)
+	}
+	cfg := config.BridgeConfig{}
+	bridgeFieldOverlays["video_interlace_filter"](&cfg, "full")
+	if cfg.Video.InterlaceFilter != "full" {
+		t.Fatalf("overlay wrote %q, want full", cfg.Video.InterlaceFilter)
+	}
+}
+
 func TestDecodeBool(t *testing.T) {
 	t.Parallel()
 	for _, in := range []string{"true", "false"} {

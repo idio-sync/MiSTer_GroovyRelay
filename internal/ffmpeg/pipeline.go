@@ -81,7 +81,11 @@ type PipelineSpec struct {
 	OutputFpsExpr string
 	AspectMode    string // "letterbox" | "zoom" | "auto"
 	CropRect      *CropRect
-	Visualizer    VisualizerSpec
+	// InterlaceFilter is the vertical low-pass against interlace twitter:
+	// "light", "full", or ""/"off" for none. The control plane sets it
+	// only for interlaced modelines. See interlaceFilter.
+	InterlaceFilter string
+	Visualizer      VisualizerSpec
 
 	SubtitleURL   string // deprecated; libass cannot fetch URLs. Use SubtitlePath.
 	SubtitlePath  string // local filesystem path the filter graph passes to libass
@@ -258,6 +262,12 @@ func buildFilterChain(s PipelineSpec) string {
 			fmt.Sprintf("subtitles=filename='%s':si=%d", escapeSubtitlePath(s.SubtitlePath), s.SubtitleIndex))
 	}
 
+	// 4b. Interlace anti-twitter low-pass, after subtitles so burned-in
+	//     text is filtered too.
+	if f := interlaceFilter(s.InterlaceFilter); f != "" {
+		filters = append(filters, f)
+	}
+
 	// 5. Convert to the wire pixel format at source rate, then normalize to
 	//    the modeline's field cadence. The data plane treats each output
 	//    frame as the source for one field tick. NTSC presets emit
@@ -282,6 +292,30 @@ func buildFilterChain(s PipelineSpec) string {
 func displayAspectFitScale(w, h int, bound string) string {
 	return fmt.Sprintf("scale=w='%s(%d,2*round(%d*dar/2))':h='%s(%d,2*round(%d/dar/2))'",
 		bound, w, h, bound, h, w)
+}
+
+// interlaceFilter returns the vertical low-pass for an interlaced CRT, or ""
+// for none. A 1-line horizontal edge lives in one field and flashes at half
+// the field rate ("twitter"): burned-in subtitles, visualizer text, thin
+// lines in animation, native 480-line sources that are never scaled. The
+// classic fix (console "deflicker", TV encoders) spreads each line into
+// its neighbours so both fields carry it:
+//
+//	light: 1-6-1 — halves 1-line flicker, barely softer
+//	full:  1-2-1 — removes 1-line flicker, visibly softer
+//
+// convolution normalizes by the kernel sum when rdiv is unset.
+func interlaceFilter(mode string) string {
+	var k string
+	switch mode {
+	case "light":
+		k = "0 1 0 0 6 0 0 1 0"
+	case "full":
+		k = "0 1 0 0 2 0 0 1 0"
+	default:
+		return ""
+	}
+	return fmt.Sprintf("convolution=0m='%[1]s':1m='%[1]s':2m='%[1]s'", k)
 }
 
 func escapeSubtitlePath(p string) string {
@@ -687,8 +721,12 @@ func buildVisualizerFilterChain(s PipelineSpec) (string, error) {
 			label = next
 		}
 	}
-	parts = append(parts, fmt.Sprintf("[%s]fps=%s,scale=w=%d:h=%d,format=bgr24[visualizer_video]",
-		label, fpsExpr, s.OutputWidth, s.OutputHeight))
+	lowpass := ""
+	if f := interlaceFilter(s.InterlaceFilter); f != "" {
+		lowpass = f + ","
+	}
+	parts = append(parts, fmt.Sprintf("[%s]fps=%s,scale=w=%d:h=%d,%sformat=bgr24[visualizer_video]",
+		label, fpsExpr, s.OutputWidth, s.OutputHeight, lowpass))
 	return strings.Join(parts, ";"), nil
 }
 

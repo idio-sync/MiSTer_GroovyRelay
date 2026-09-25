@@ -34,6 +34,16 @@
         (dict "Value" "zoom" "Label" "Zoom (fill 4:3)"))
       "Error" (errOf .Errors "video_aspect_mode")) }}
     {{ field (dict
+      "Name" "video_interlace_filter" "Type" "select" "Label" "Flicker filter"
+      "Help" "Softens one-line horizontal detail (subtitles, text, thin lines) so it doesn't flicker on interlaced modes. Light is barely softer; Full removes the flicker entirely."
+      "Value" .Bridge.Video.EffectiveInterlaceFilter
+      "Scope" "recast"
+      "Options" (options
+        (dict "Value" "light" "Label" "Light (recommended)")
+        (dict "Value" "full" "Label" "Full")
+        (dict "Value" "off" "Label" "Off"))
+      "Error" (errOf .Errors "video_interlace_filter")) }}
+    {{ field (dict
       "Name" "video_lz4_enabled" "Type" "switch" "Label" "LZ4 compression"
       "Help" "Compresses each frame sent to the MiSTer. Strongly recommended."
       "Value" (boolStr .Bridge.Video.LZ4Enabled)

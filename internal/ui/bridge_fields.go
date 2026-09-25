@@ -107,6 +107,16 @@ func bridgeFields() []adapters.FieldDef {
 			Section:    "Video",
 		},
 		{
+			Key:        "video.interlace_filter",
+			Label:      "Flicker Filter",
+			Help:       "Softens one-line horizontal detail so it doesn't flicker on interlaced modes. Light is barely softer; full removes the flicker.",
+			Kind:       adapters.KindEnum,
+			Enum:       []string{"light", "full", "off"},
+			Default:    config.DefaultInterlaceFilter,
+			ApplyScope: adapters.ScopeRestartCast,
+			Section:    "Video",
+		},
+		{
 			Key:        "video.lz4_enabled",
 			Label:      "LZ4 Compression",
 			Help:       "Compress BLIT payloads. Strongly recommended.",
