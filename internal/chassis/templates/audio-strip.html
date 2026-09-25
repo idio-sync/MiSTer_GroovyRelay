@@ -56,9 +56,13 @@
         {{ template "volume-control" . }}
       </div>
       {{- /* Narrow chassis only (CSS): tone/EQ/memory fold behind this key so
-             the phone faceplate leads with volume, like a remote's TONE key. */}}
-      <button class="hw-btn tone-toggle" type="button" data-tone-toggle
-              aria-expanded="false" aria-controls="dsp-tone dsp-eq dsp-memory">Tone</button>
+             the phone faceplate leads with volume, like a remote's TONE key.
+             A latching key in MUTING's family: cap + LED, legend below. */}}
+      <div class="tone-control">
+        <button class="tone-toggle" type="button" data-tone-toggle aria-label="Tone and EQ"
+                aria-expanded="false" aria-controls="dsp-tone dsp-eq dsp-memory"></button>
+        <span class="tone-label" aria-hidden="true">Tone</span>
+      </div>
     </div>
 
   </div>

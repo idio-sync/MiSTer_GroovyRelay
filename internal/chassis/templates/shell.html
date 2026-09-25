@@ -13,6 +13,7 @@
   <script defer src="/ui/static/vfd-live.js?v={{.Version}}"></script>
   <script defer src="/ui/static/vfd-dimmer.js?v={{.Version}}"></script>
   <script defer src="/ui/static/meter-display.js?v={{.Version}}"></script>
+  <script defer src="/ui/static/remote.js?v={{.Version}}"></script>
   <script defer src="/ui/static/source-cluster.js?v={{.Version}}"></script>
   <script defer src="/ui/static/transport.js?v={{.Version}}"></script>
   <script defer src="/ui/static/volume-knob.js?v={{.Version}}"></script>
@@ -36,7 +37,8 @@
   <!-- Pre-paint cold start: mark the first load in a tab before anything
        paints so the lit faceplate never flashes; power-on.js runs the relay
        close. Mirrors power-on.js firstLoadThisSession (key chassis.poweredOn). -->
-  <script>try{if(!matchMedia('(prefers-reduced-motion: reduce)').matches&&!sessionStorage.getItem('chassis.poweredOn')){sessionStorage.setItem('chassis.poweredOn','1');document.body.classList.add('powering-up');}}catch(e){}</script>
+  <script>try{if(!matchMedia('(prefers-reduced-motion: reduce)').matches&&!sessionStorage.getItem('chassis.poweredOn')){sessionStorage.setItem('chassis.poweredOn','1');document.body.classList.add('powering-up');}}catch(e){}
+  try{if(localStorage.getItem('chassis.phoneView')==='panel'){document.body.setAttribute('data-phone-view','panel');}}catch(e){}</script>
   {{htmlComment "chassis:shell"}}
   <div class="receiver">
     {{if .SetupMode}}{{template "setup-banner.html" .}}{{end}}
@@ -52,6 +54,7 @@
       </div>
       <div class="zone zone--control">
         {{template "transport" .Transport}}
+        {{template "remote-pad" .Presets}}
         {{template "settings-drawer" .Settings}}
         {{template "audio-strip" .AudioStrip}}
         {{template "visualizer-bank" .Visualizer}}
