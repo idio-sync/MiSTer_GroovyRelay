@@ -30,6 +30,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/jellyfin"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/localfiles"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/plex"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/spotify"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streams"
 	torrentadapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/torrent"
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
@@ -88,6 +89,11 @@ func (a *audioDSPSaverAdapter) CurrentAudioDSP() config.AudioDSP {
 }
 
 func main() {
+	// librespot runs this binary as its --onevent program; forward the
+	// event and exit before any flag parsing or config loading.
+	if len(os.Args) > 1 && os.Args[1] == spotify.HookFlag {
+		os.Exit(spotify.RunEventHook(os.Getenv, os.Stderr))
+	}
 	startedAt := time.Now()
 	defaultCfg := defaultConfigForRuntime()
 	cfgPath := flag.String("config", defaultCfg, "path to config.toml")
@@ -321,6 +327,22 @@ func main() {
 	}
 	if err := reg.Register(dlnaAdapter); err != nil {
 		dieFriendly("registry register dlna", err)
+	}
+
+	// Spotify Connect receiver: supervised librespot feeding the
+	// visualizer. Its loopback PCM/event routes mount via
+	// PublicRouteProvider below.
+	// Spec: docs/superpowers/specs/2026-09-24-live-audio-receivers-design.md.
+	spotifyAdapter, err := spotify.New(spotify.AdapterConfig{
+		Core:     coreMgr,
+		HTTPPort: sec.Bridge.UI.HTTPPort,
+		DataDir:  sec.Bridge.DataDir,
+	})
+	if err != nil {
+		dieFriendly("spotify adapter init", err)
+	}
+	if err := reg.Register(spotifyAdapter); err != nil {
+		dieFriendly("registry register spotify", err)
 	}
 
 	for _, a := range reg.List() {
