@@ -21,13 +21,42 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
+// fakeArgsEnv names a file the fake librespot appends its command line to.
+const fakeArgsEnv = "SPOTIFY_TEST_FAKE_ARGS_FILE"
+
 // TestMain doubles as a fake librespot: launched with librespot's
-// --backend flag, the test binary just idles until it is killed.
+// --backend flag, the test binary records its arguments and idles until
+// it is killed.
 func TestMain(m *testing.M) {
 	if slices.Contains(os.Args[1:], "--backend") {
-		select {}
+		if path := os.Getenv(fakeArgsEnv); path != "" {
+			if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+				_, _ = f.WriteString(strings.Join(os.Args[1:], " ") + "\n")
+				_ = f.Close()
+			}
+		}
+		idleForever()
 	}
 	os.Exit(m.Run())
+}
+
+// idleForever blocks the fake librespot until it is killed. Not
+// `select {}`: with no other goroutines the runtime declares a deadlock
+// and exits the helper moments after it starts.
+func idleForever() {
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+
+// fakeLaunches returns the command lines the fake librespot started with.
+func fakeLaunches(t *testing.T, path string) []string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return strings.FieldsFunc(string(b), func(r rune) bool { return r == '\n' })
 }
 
 func decode(t *testing.T, doc string) (toml.Primitive, toml.MetaData) {
@@ -335,6 +364,8 @@ func TestEventsDriveSessionThroughRunningAdapter(t *testing.T) {
 }
 
 func TestApplyConfigRestartsHelperOnlyForCommandLineChanges(t *testing.T) {
+	launches := filepath.Join(t.TempDir(), "launches")
+	t.Setenv(fakeArgsEnv, launches)
 	exe := testExe(t)
 	a := newTestAdapter(t, &fakeCore{}, exe)
 	a.cfg.Enabled = true
@@ -342,15 +373,16 @@ func TestApplyConfigRestartsHelperOnlyForCommandLineChanges(t *testing.T) {
 	if err := a.Start(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	firstSup := a.sup
+	waitUntil(t, "first launch", func() bool { return len(fakeLaunches(t, launches)) == 1 })
 
 	prim, meta := decode(t, "[spotify]\nenabled = true\nbinary_path = '"+exe+"'\npause_grace_seconds = 5\n")
 	scope, err := a.ApplyConfig(prim, meta)
 	if err != nil || scope != adapters.ScopeHotSwap {
 		t.Fatalf("grace change: scope %v err %v, want hot-swap", scope, err)
 	}
-	if a.sup != firstSup {
-		t.Fatal("hot-swap change restarted the helper")
+	time.Sleep(100 * time.Millisecond)
+	if n := len(fakeLaunches(t, launches)); n != 1 {
+		t.Fatalf("hot-swap change relaunched librespot (%d launches)", n)
 	}
 
 	prim, meta = decode(t, "[spotify]\nenabled = true\nbinary_path = '"+exe+"'\nname = \"Renamed\"\n")
@@ -358,8 +390,9 @@ func TestApplyConfigRestartsHelperOnlyForCommandLineChanges(t *testing.T) {
 	if err != nil || scope != adapters.ScopeRestartCast {
 		t.Fatalf("rename: scope %v err %v, want restart-cast", scope, err)
 	}
-	if a.sup == firstSup || a.sup == nil {
-		t.Fatal("rename did not restart the helper")
+	waitUntil(t, "relaunch", func() bool { return len(fakeLaunches(t, launches)) == 2 })
+	if got := fakeLaunches(t, launches)[1]; !strings.Contains(got, "--name Renamed") {
+		t.Fatalf("relaunch args = %q, want the new name", got)
 	}
 	if st := a.Status(); st.State != adapters.StateRunning {
 		t.Fatalf("status after helper restart = %+v", st)

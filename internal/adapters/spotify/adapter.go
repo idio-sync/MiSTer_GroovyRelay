@@ -40,24 +40,19 @@ type AdapterConfig struct {
 }
 
 type Adapter struct {
-	core       liveaudio.Core
 	httpPort   int
 	dataDir    string
 	executable func() (string, error)
 	relay      *liveaudio.Relay
+	receiver   *liveaudio.Receiver
 	eventToken string
 
 	// opMu serializes lifecycle transitions (Start, Stop, helper restarts
 	// from ApplyConfig).
 	opMu sync.Mutex
 
-	mu       sync.Mutex
-	cfg      Config
-	running  bool
-	startErr string
-	since    time.Time
-	session  *liveaudio.Session
-	sup      *liveaudio.Supervisor
+	mu  sync.Mutex
+	cfg Config
 }
 
 func New(cfg AdapterConfig) (*Adapter, error) {
@@ -76,14 +71,21 @@ func New(cfg AdapterConfig) (*Adapter, error) {
 		cfg.Executable = os.Executable
 	}
 	return &Adapter{
-		core:       cfg.Core,
 		httpPort:   cfg.HTTPPort,
 		dataDir:    cfg.DataDir,
 		executable: cfg.Executable,
 		relay:      relay,
+		receiver: liveaudio.NewReceiver(liveaudio.ReceiverConfig{
+			Source:     sourceName,
+			Label:      "SPOTIFY",
+			HelperName: "librespot",
+			Core:       cfg.Core,
+			Relay:      relay,
+			HTTPPort:   cfg.HTTPPort,
+			DataDir:    cfg.DataDir,
+		}),
 		eventToken: token,
 		cfg:        DefaultConfig(),
-		since:      time.Now(),
 	}, nil
 }
 
@@ -166,104 +168,31 @@ func (a *Adapter) Start(context.Context) error {
 	defer a.opMu.Unlock()
 	a.mu.Lock()
 	cfg := a.cfg
-	running := a.running
 	a.mu.Unlock()
-	if running || !cfg.Enabled {
+	if !cfg.Enabled || a.receiver.Running() {
 		return nil
 	}
 	return a.startLocked(cfg)
 }
 
-// startLocked brings the session and helper up. Caller holds opMu.
+// startLocked brings librespot and the session up. Caller holds opMu.
 func (a *Adapter) startLocked(cfg Config) error {
 	spec, err := a.helperSpec(cfg)
 	if err != nil {
-		a.setStartErr(err)
+		a.receiver.SetStartError(err)
 		return err
 	}
-	var sup *liveaudio.Supervisor
-	session := liveaudio.NewSession(liveaudio.SessionConfig{
-		Source:   sourceName,
-		Label:    "SPOTIFY",
-		Core:     a.core,
-		Relay:    a.relay,
-		HTTPPort: a.httpPort,
-		DataDir:  a.dataDir,
-		// The CRT stopped showing the stream without the phone asking:
-		// drop librespot's connection so the phone notices.
-		OnExternalStop: func(string) { sup.Restart() },
-	}, sessionOptions(cfg))
-	sup = liveaudio.NewSupervisor(liveaudio.SupervisorConfig{
-		Name:   "librespot",
-		Stdout: a.relay,
-		// Whatever the reason, the phone's connection went with the helper.
-		OnExit: func(error, bool) { session.Handle(liveaudio.Event{Kind: liveaudio.EventStop}) },
-	})
-	if err := sup.Start(spec); err != nil {
-		session.Close()
-		a.setStartErr(err)
-		return err
-	}
-	a.mu.Lock()
-	a.session, a.sup = session, sup
-	a.running = true
-	a.startErr = ""
-	a.since = time.Now()
-	a.mu.Unlock()
-	return nil
+	return a.receiver.Start(spec, sessionOptions(cfg))
 }
 
 func (a *Adapter) Stop() error {
 	a.opMu.Lock()
 	defer a.opMu.Unlock()
-	a.stopLocked()
-	a.mu.Lock()
-	a.startErr = ""
-	a.mu.Unlock()
+	a.receiver.Stop()
 	return nil
 }
 
-// stopLocked tears the helper and session down. Caller holds opMu.
-func (a *Adapter) stopLocked() {
-	a.mu.Lock()
-	session, sup := a.session, a.sup
-	a.session, a.sup = nil, nil
-	wasRunning := a.running
-	a.running = false
-	a.mu.Unlock()
-	if sup != nil {
-		sup.Stop()
-	}
-	if session != nil {
-		session.Close()
-	}
-	a.relay.Reset()
-	if wasRunning {
-		a.mu.Lock()
-		a.since = time.Now()
-		a.mu.Unlock()
-	}
-}
-
-func (a *Adapter) Status() adapters.Status {
-	a.mu.Lock()
-	running, startErr, since := a.running, a.startErr, a.since
-	session, sup := a.session, a.sup
-	a.mu.Unlock()
-	switch {
-	case startErr != "":
-		return adapters.Status{State: adapters.StateError, LastError: startErr, Since: since}
-	case !running:
-		return adapters.Status{State: adapters.StateStopped, Since: since}
-	}
-	if h := sup.Health(); h.Err != "" {
-		return adapters.Status{State: adapters.StateError, LastError: "librespot: " + h.Err, Since: since}
-	}
-	if msg := session.LastError(); msg != "" {
-		return adapters.Status{State: adapters.StateError, LastError: msg, Since: since}
-	}
-	return adapters.Status{State: adapters.StateRunning, Since: since}
-}
+func (a *Adapter) Status() adapters.Status { return a.receiver.Status() }
 
 func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.ApplyScope, error) {
 	next, err := decodeConfig(raw, meta)
@@ -278,18 +207,14 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 	a.mu.Lock()
 	prev := a.cfg
 	a.cfg = next
-	session := a.session
-	running := a.running
 	a.mu.Unlock()
 
 	scope := scopeForChange(prev, next)
-	if session != nil {
-		session.SetOptions(sessionOptions(next))
-	}
+	a.receiver.SetOptions(sessionOptions(next))
 	// Enable/disable is handled by the caller's lifecycle hook; a running
 	// adapter whose command line changed restarts its helper in place.
-	if running && next.Enabled && prev.helperSettings() != next.helperSettings() {
-		a.stopLocked()
+	if a.receiver.Running() && next.Enabled && prev.helperSettings() != next.helperSettings() {
+		a.receiver.Stop()
 		if err := a.startLocked(next); err != nil {
 			return scope, err
 		}
@@ -317,13 +242,6 @@ func sessionOptions(cfg Config) liveaudio.Options {
 		AudioOutput: output,
 		PauseGrace:  time.Duration(cfg.PauseGraceSeconds) * time.Second,
 	}
-}
-
-func (a *Adapter) setStartErr(err error) {
-	a.mu.Lock()
-	a.startErr = err.Error()
-	a.since = time.Now()
-	a.mu.Unlock()
 }
 
 // helperSpec builds the librespot invocation for cfg.
@@ -377,11 +295,8 @@ func (a *Adapter) handleEvent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad event", http.StatusBadRequest)
 		return
 	}
-	a.mu.Lock()
-	session := a.session
-	a.mu.Unlock()
-	if ev, ok := eventFromForm(r.PostForm); ok && session != nil {
-		session.Handle(ev)
+	if ev, ok := eventFromForm(r.PostForm); ok {
+		a.receiver.Handle(ev)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
