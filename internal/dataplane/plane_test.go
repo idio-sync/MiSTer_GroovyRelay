@@ -608,9 +608,12 @@ func TestSendField_FieldDiagnosticsLogsDeltaComparisonWhenEnabled(t *testing.T) 
 		BytesPerPixel: 3,
 	})
 	// Force sendField's budget warning path without depending on wall-clock
-	// jitter in the test runner.
-	p.periodMsNumer = 1
-	p.periodMsDenom = int64(time.Millisecond)
+	// jitter or clock resolution: Windows' monotonic clock advances in
+	// ~0.5 ms steps, so a fast send can measure exactly 0 and never exceed
+	// a zero threshold. A negative field period makes the 84% threshold
+	// negative, so every send exceeds it.
+	p.periodMsNumer = -1000
+	p.periodMsDenom = 1
 
 	first := bytes.Repeat([]byte{0x11}, 720*240*3)
 	second := append([]byte(nil), first...)
