@@ -297,8 +297,10 @@ func TestProbeInputCaptureUsesStructuredArgs(t *testing.T) {
 			ProbeSize:       32768,
 		},
 	})
+	// ffprobe rejects -thread_queue_size ("Option not found"), which would
+	// fail every capture probe.
+	assertArgsDoNotContainSubsequence(t, cmd.Args, []string{"-thread_queue_size"})
 	assertArgsContainSubsequence(t, cmd.Args, []string{
-		"-thread_queue_size", "64",
 		"-f", "dshow",
 		"-sample_rate", "48000",
 		"-channels", "2",

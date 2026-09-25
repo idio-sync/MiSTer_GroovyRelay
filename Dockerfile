@@ -24,6 +24,40 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/mister-groovy-relay ./cmd/mister-groovy-relay
 
+# librespot: the Spotify Connect receiver the spotify adapter supervises.
+# Pure-Rust TLS (rustls + ring) and mDNS (libmdns) with no default audio
+# backend make it a static musl binary with no runtime libraries; the pipe
+# backend (PCM to stdout) is always compiled in. Pinned because librespot
+# tracks Spotify's protocol: bump deliberately. cmake/perl only cover a
+# crypto crate that falls back to building C sources.
+# Spec: docs/superpowers/specs/2026-09-24-live-audio-receivers-design.md.
+FROM rust:1-alpine AS librespot
+ARG LIBRESPOT_VERSION=0.8.0
+RUN apk add --no-cache musl-dev cmake make perl
+RUN cargo install librespot --version "${LIBRESPOT_VERSION}" --locked \
+      --no-default-features --features rustls-tls-webpki-roots,with-libmdns \
+      --root /out \
+    && /out/bin/librespot --version
+
+# shairport-sync: the AirPlay (classic) receiver the airplay adapter
+# supervises, built for exactly what the adapter uses: stdout output,
+# metadata over a UDP socket, built-in mDNS (tinysvcmdns: no avahi or dbus
+# daemons in the container), and OpenSSL for AirPlay 1's RSA handshake.
+# Built on the runtime's Alpine release so its shared libraries match.
+FROM alpine:3.20 AS shairport
+ARG SHAIRPORT_SYNC_VERSION=5.5.2
+RUN apk add --no-cache build-base autoconf automake libtool pkgconf git \
+      popt-dev libconfig-dev openssl-dev
+RUN git clone --depth 1 --branch "${SHAIRPORT_SYNC_VERSION}" \
+      https://github.com/mikebrady/shairport-sync.git /src \
+    && cd /src \
+    && autoreconf -fi \
+    && ./configure --with-stdout --with-metadata --with-metadata-multicast \
+         --with-tinysvcmdns --with-ssl=openssl --sysconfdir=/etc \
+    && make -j"$(nproc)" \
+    && install -D -m 0755 shairport-sync /out/shairport-sync \
+    && /out/shairport-sync -V
+
 FROM alpine:3.20
 # nodejs: required by yt-dlp's EJS (Embedded JavaScript Solver) to evaluate
 # YouTube's signature/n-challenge functions. Without a JS runtime on PATH,
@@ -34,7 +68,9 @@ FROM alpine:3.20
 # +~30 MiB image growth.
 # fontconfig + DejaVu provide a real Sans-family font for ffmpeg drawtext,
 # which the audio visualizer uses for now-playing metadata overlays.
-RUN apk add --no-cache ffmpeg ca-certificates tzdata curl nodejs fontconfig ttf-dejavu
+# popt, libconfig, libssl3/libcrypto3: shared libraries shairport-sync links.
+RUN apk add --no-cache ffmpeg ca-certificates tzdata curl nodejs fontconfig ttf-dejavu \
+      popt libconfig libssl3 libcrypto3
 # Install the yt-dlp_linux static binary. Bundles its own Python via
 # zipapp + standalone interpreter — no python3/py3-pip apk packages
 # needed. Native `yt-dlp -U` works for in-place self-update (used by
@@ -63,6 +99,8 @@ RUN case "$TARGETARCH" in \
     && chmod +x /usr/local/bin/yt-dlp \
     && /usr/local/bin/yt-dlp --version
 COPY --from=build /out/mister-groovy-relay /usr/local/bin/mister-groovy-relay
+COPY --from=librespot /out/bin/librespot /usr/local/bin/librespot
+COPY --from=shairport /out/shairport-sync /usr/local/bin/shairport-sync
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 ENV MISTER_GROOVY_CONFIG=/config/config.toml

@@ -1,0 +1,14 @@
+{{- define "settings-adapter-spotify" -}}
+<section class="settings-section source-card" data-adapter-section="spotify">
+  {{ template "source-card-head" (dict "Title" "Spotify Connect" "Pane" .) }}
+  <div class="source-body" id="source-spotify-body" hidden>
+    {{ range .Fields }}{{ if ne .Key "enabled" }}
+    {{ template "adapter-field-row" (dict
+      "Adapter" "spotify"
+      "Field" .
+      "Values" $.Values
+    ) }}
+    {{ end }}{{ end }}
+  </div>
+</section>
+{{- end -}}

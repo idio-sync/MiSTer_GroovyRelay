@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -401,6 +402,9 @@ func validateVisualizerRequest(req SessionRequest) error {
 	default:
 		return fmt.Errorf("unsupported visualizer mode %q", req.Visualizer.Mode)
 	}
+	if dir := req.Visualizer.LiveTextDir; dir != "" && !filepath.IsAbs(dir) {
+		return fmt.Errorf("visualizer live text dir must be absolute, got %q", dir)
+	}
 	return nil
 }
 
@@ -576,6 +580,7 @@ func ffmpegVisualizerSpec(artworkRoot string, v VisualizerRequest) ffmpeg.Visual
 			Duration:    v.Metadata.Duration,
 			ArtworkPath: artworkPath,
 		},
+		LiveTextDir: v.LiveTextDir,
 	}
 }
 
@@ -1502,6 +1507,22 @@ func (m *Manager) StopIfSession(ref string, generation uint64) (bool, error) {
 		return true, err
 	}
 	return true, nil
+}
+
+// UpdateNowPlayingIfSession replaces the active session's Title and
+// DisplayMetadata (the VFD rows) when both AdapterRef and Generation still
+// match, so a live source can follow track changes without restarting
+// the session. The overlay text itself lives in the adapter's
+// Visualizer.LiveTextDir. Reports whether the session matched.
+func (m *Manager) UpdateNowPlayingIfSession(ref string, generation uint64, title string, display DisplayMetadata) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.sessionMatchesLocked(ref, generation) {
+		return false
+	}
+	m.active.req.Title = title
+	m.active.req.DisplayMetadata = display
+	return true
 }
 
 func (m *Manager) stopLocked(guard sessionGuard) error {

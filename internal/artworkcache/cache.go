@@ -176,6 +176,20 @@ func FetchToCache(ctx context.Context, opt FetchOptions) (string, error) {
 	if len(body) > MaxBytes {
 		return "", fmt.Errorf("fetch artwork: response exceeds %d bytes", MaxBytes)
 	}
+	return StoreToCache(opt.DataDir, body)
+}
+
+// StoreToCache validates encoded image bytes (GIF, JPEG, or PNG) under the
+// same size and dimension limits as FetchToCache and writes them to the
+// cache as PNG, returning the cached path. For sources that deliver the
+// artwork inline rather than by URL.
+func StoreToCache(dataDir string, body []byte) (string, error) {
+	if strings.TrimSpace(dataDir) == "" {
+		return "", fmt.Errorf("artwork cache data dir is required")
+	}
+	if len(body) > MaxBytes {
+		return "", fmt.Errorf("artwork exceeds %d bytes", MaxBytes)
+	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("decode artwork config: %w", err)
@@ -191,7 +205,7 @@ func FetchToCache(ctx context.Context, opt FetchOptions) (string, error) {
 	if bounds.Dx() > MaxDimension || bounds.Dy() > MaxDimension {
 		return "", fmt.Errorf("decode artwork: dimensions %dx%d exceed %d", bounds.Dx(), bounds.Dy(), MaxDimension)
 	}
-	root, err := EnsureRoot(opt.DataDir)
+	root, err := EnsureRoot(dataDir)
 	if err != nil {
 		return "", err
 	}

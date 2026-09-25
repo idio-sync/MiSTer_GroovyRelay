@@ -1,0 +1,14 @@
+{{- define "settings-adapter-airplay" -}}
+<section class="settings-section source-card" data-adapter-section="airplay">
+  {{ template "source-card-head" (dict "Title" "AirPlay" "Pane" .) }}
+  <div class="source-body" id="source-airplay-body" hidden>
+    {{ range .Fields }}{{ if ne .Key "enabled" }}
+    {{ template "adapter-field-row" (dict
+      "Adapter" "airplay"
+      "Field" .
+      "Values" $.Values
+    ) }}
+    {{ end }}{{ end }}
+  </div>
+</section>
+{{- end -}}

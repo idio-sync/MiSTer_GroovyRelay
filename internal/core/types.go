@@ -76,6 +76,14 @@ type VisualizerRequest struct {
 	Enabled  bool
 	Mode     VisualizerMode
 	Metadata VisualizerMetadata
+
+	// LiveTextDir, when set, is an absolute directory of overlay text
+	// files the adapter owns and rewrites mid-session with
+	// ffmpeg.WriteVisualizerText (see ffmpeg.VisualizerSpec.LiveTextDir).
+	// Metadata's text fields are then ignored by the overlay. The adapter
+	// writes the files before starting the session and keeps them until
+	// the session ends.
+	LiveTextDir string
 }
 
 type AudioCaptureInput struct {

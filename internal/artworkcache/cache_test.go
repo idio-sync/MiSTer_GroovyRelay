@@ -301,6 +301,26 @@ func TestFetchToCacheWritesValidPathUnderArtworkRoot(t *testing.T) {
 	}
 }
 
+func TestStoreToCacheWritesPNGAndRejectsBadInput(t *testing.T) {
+	dataDir := t.TempDir()
+	path, err := StoreToCache(dataDir, tinyPNG(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ValidatePath(Root(dataDir), path); !ok || !isGeneratedCachePath(path) {
+		t.Fatalf("stored path %q is not a generated cache path under %q", path, Root(dataDir))
+	}
+	if _, err := StoreToCache(dataDir, []byte("not an image")); err == nil {
+		t.Fatal("StoreToCache accepted a corrupt image")
+	}
+	if _, err := StoreToCache(dataDir, pngHeaderOnly(t, MaxDimension+1, 1)); err == nil {
+		t.Fatal("StoreToCache accepted oversized dimensions")
+	}
+	if _, err := StoreToCache("", tinyPNG(t)); err == nil {
+		t.Fatal("StoreToCache accepted an empty data dir")
+	}
+}
+
 func TestWithCleanupInvokesOriginalAndRemoves(t *testing.T) {
 	path := writeGeneratedCacheFile(t)
 	called := ""

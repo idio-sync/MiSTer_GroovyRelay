@@ -37,6 +37,8 @@ func TestParseAdapterRefSource_KnownPrefixes(t *testing.T) {
 		{"plex:server/key/123", "plex"},
 		{"jellyfin:item/abc", "jellyfin"},
 		{"dlna:urn:xyz", "dlna"},
+		{"spotify:3", "spotify"},
+		{"airplay:1", "airplay"},
 		{"weird-no-prefix", ""},
 		{"unknown:source:x", ""},
 	}
@@ -786,6 +788,10 @@ func TestSettingsData_CastHint_EnabledState(t *testing.T) {
 		{"plex", false, "CAST · DISABLED"},
 		{"jellyfin", true, "CAST · LISTENING"},
 		{"jellyfin", false, "CAST · DISABLED"},
+		{"spotify", true, "CAST · LISTENING"},
+		{"spotify", false, "CAST · DISABLED"},
+		{"airplay", true, "CAST · LISTENING"},
+		{"airplay", false, "CAST · DISABLED"},
 	}
 	for _, tc := range cases {
 		tc := tc
