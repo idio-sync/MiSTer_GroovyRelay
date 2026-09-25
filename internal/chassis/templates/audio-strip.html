@@ -94,12 +94,11 @@
 {{end}}
 
 {{define "mute-control"}}
+{{- /* MUTING latching key; its indicator is the button's ::before LED and
+       the VFD MUTING annunciator (vfd.html, data-volume-mute-lamp). */}}
 <div class="mute-control">
-  <span class="mute-label">Mute</span>
   <button class="mute-button{{if .OutputMuted}} on{{end}}" type="button" data-volume-mute
-          aria-pressed="{{if .OutputMuted}}true{{else}}false{{end}}" aria-label="Mute output">
-    <span class="mute-button-face" aria-hidden="true"></span>
-  </button>
-  <span class="mute-lamp{{if .OutputMuted}} on{{end}}" data-volume-mute-lamp aria-hidden="true"></span>
+          aria-pressed="{{if .OutputMuted}}true{{else}}false{{end}}" aria-label="Mute output"></button>
+  <span class="mute-label" aria-hidden="true">Muting</span>
 </div>
 {{end}}

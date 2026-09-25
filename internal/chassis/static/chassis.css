@@ -89,6 +89,18 @@
   --lamp-red: oklch(0.62 0.21 28);
   --lamp-red-glow: oklch(0.62 0.21 28 / 0.85);
   --lock-amber-glow: oklch(0.82 0.18 75 / 0.9);
+  /* One light source, top-left: raised parts catch it on their top edge
+     and cast their shadow downward. Knob highlights sit up and to the
+     left, on a layer that does not turn with the knob. */
+  --edge-hi: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  --edge-lo: inset 0 -1px 0 rgba(0, 0, 0, 0.5);
+  --cast-key: 0 2px 0 #0a0a0b, 0 3px 4px rgba(0, 0, 0, 0.45);
+  /* Silkscreen: one ink, two tracking steps (section captions and key
+     legends) plus a tighter one for numerals. */
+  --silk: #a4a4aa;
+  --silk-track-caption: 0.2em;
+  --silk-track-legend: 0.12em;
+  --silk-track-numeral: 0.06em;
   /* Editable values are *typed*, not *displayed*: DSEG can't render
      lowercase, dots-in-context, or "[ _ ]", so paths/URLs/format strings
      became unverifiable. Inter's disambiguation set (ss02: I/l/1, 0/O)
@@ -217,9 +229,16 @@ body.receiver .receiver::before {
   position: absolute;
   inset: 0;
   border-radius: 4px;
+  /* Black anodised faceplate, brushed side to side like an ES front panel.
+     Three overlapping stripe periods (3/5/7px) plus broad, faint bands
+     along the length keep the grain irregular so it never reads as CRT
+     scanlines. Pure gradients: no image, no noise filter to repaint. */
   background:
     linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.3) 100%),
-    repeating-linear-gradient(90deg, transparent 0 1px, rgba(255, 255, 255, 0.015) 1px 2px);
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0) 0 37px, rgba(255, 255, 255, 0.012) 37px 61px, rgba(255, 255, 255, 0) 61px 97px),
+    repeating-linear-gradient(180deg, transparent 0 2px, rgba(255, 255, 255, 0.022) 2px 3px),
+    repeating-linear-gradient(180deg, transparent 0 4px, rgba(0, 0, 0, 0.035) 4px 5px),
+    repeating-linear-gradient(180deg, transparent 0 6px, rgba(255, 255, 255, 0.016) 6px 7px);
   pointer-events: none;
   z-index: 0;
 }
@@ -461,11 +480,9 @@ body.receiver .led.on.aqua .light::before {
 /* Legends are silkscreen: printed at full contrast whether or not the
    lamp behind them is lit (the lamp carries state, not the legend). */
 body.receiver .led .lbl {
-  color: #a4a4aa;
+  color: var(--silk);
   font: 600 9px 'Inter', sans-serif;
-  /* Match the source-cluster nameplate tracking (0.12em) so both
-     silkscreen legends on the faceplate agree. */
-  letter-spacing: 0.12em;
+  letter-spacing: var(--silk-track-legend);
   text-transform: uppercase;
 }
 
@@ -790,12 +807,12 @@ body.receiver .panel-key {
   background: linear-gradient(180deg, #3a3a3e 0%, #1a1a1c 100%);
   border: 1px solid #0a0a0b;
   border-radius: 2px;
-  color: #a4a4aa;
+  color: var(--silk);
   font: 700 9px 'Inter', sans-serif;
-  letter-spacing: 0.16em;
+  letter-spacing: var(--silk-track-legend);
   text-transform: uppercase;
   cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), inset 0 -1px 0 rgba(0,0,0,0.4);
+  box-shadow: var(--edge-hi), var(--edge-lo);
 }
 
 body.receiver .panel-key:active {
@@ -2251,9 +2268,9 @@ body.receiver .trn-key {
 }
 
 body.receiver .trn-legend {
-  color: #a4a4aa;
+  color: var(--silk);
   font: 600 9px/1 'Inter', sans-serif;
-  letter-spacing: 0.12em;
+  letter-spacing: var(--silk-track-legend);
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -2530,11 +2547,32 @@ body.receiver .volume-label {
   left: 50%;
   bottom: 0;
   transform: translateX(-50%);
-  color: #8a8a8e;
-  font: 700 8px 'Inter', sans-serif;
-  letter-spacing: 0.18em;
+  color: var(--silk);
+  font: 700 9px 'Inter', sans-serif;
+  letter-spacing: var(--silk-track-legend);
   text-transform: uppercase;
   white-space: nowrap;
+}
+
+/* Fixed light layer over every knob: the highlight stays up-left and the
+   shadow falls down while the dial turns underneath it. */
+body.receiver .volume-control::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--volume-dial-size);
+  height: var(--volume-dial-size);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255,255,255,0.55) 0 8%, transparent 9%),
+    linear-gradient(160deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0) 45%, rgba(0,0,0,0.22) 100%);
+  box-shadow:
+    inset 0 2px 3px rgba(255,255,255,0.28),
+    inset 0 -5px 8px rgba(0,0,0,0.55),
+    0 4px 10px rgba(0,0,0,0.65);
 }
 
 body.receiver .volume-tick-ring {
@@ -2591,13 +2629,11 @@ body.receiver .volume-dial {
   height: var(--volume-dial-size);
   border: 1px solid #050506;
   border-radius: 50%;
+  /* The dial turns (--volume-angle), so it only carries shading that looks
+     the same at any angle; the light-dependent highlight and shadows live
+     on .volume-control::after, which does not rotate. */
   background:
-    radial-gradient(circle at 32% 28%, rgba(255,255,255,0.55) 0 8%, transparent 9%),
-    radial-gradient(circle at 50% 54%, #c8c8cc 0%, #85858c 44%, #3a3a3e 70%, #111113 100%);
-  box-shadow:
-    inset 0 2px 3px rgba(255,255,255,0.28),
-    inset 0 -5px 8px rgba(0,0,0,0.55),
-    0 4px 10px rgba(0,0,0,0.65);
+    radial-gradient(circle at 50% 50%, #c8c8cc 0%, #85858c 44%, #3a3a3e 70%, #111113 100%);
   transform: rotate(var(--volume-angle));
   transition: transform 120ms cubic-bezier(0.22,1,0.36,1), filter 120ms ease;
 }
@@ -2612,7 +2648,6 @@ body.receiver [data-volume-knob] {
 
 body.receiver [data-volume-knob] .volume-label {
   bottom: 3px;
-  color: #a0a0a6;
 }
 
 body.receiver .level-controls {
@@ -2622,98 +2657,111 @@ body.receiver .level-controls {
   gap: 16px;
 }
 
+/* MUTING: the same latching-key family as LOUD/MONO (the cap sinks when
+   latched, an indicator LED above it lights amber, "not sounding"). The
+   control stretches to the master volume's height so the MUTING and
+   VOLUME legends share one baseline; the display's MUTING annunciator
+   (vfd.html, data-volume-mute-lamp) lights with it. */
 body.receiver .mute-control {
   position: relative;
+  align-self: stretch;
   width: 58px;
-  height: 82px;
   display: grid;
   place-items: center;
-  padding-top: 10px;
 }
 
 body.receiver .mute-label {
   position: absolute;
   left: 50%;
-  bottom: 0;
+  bottom: 3px;
   transform: translateX(-50%);
-  color: #8a8a8e;
-  font: 700 8px 'Inter', sans-serif;
-  letter-spacing: 0.18em;
+  color: var(--silk);
+  font: 700 9px 'Inter', sans-serif;
+  letter-spacing: var(--silk-track-legend);
   text-transform: uppercase;
   white-space: nowrap;
 }
 
 body.receiver .mute-button {
   position: relative;
-  width: 36px;
-  height: 34px;
+  width: 44px;
+  height: 22px;
   padding: 0;
   border: 1px solid #050506;
-  border-radius: 3px;
-  cursor: pointer;
-  background: linear-gradient(180deg, #050506 0%, #171719 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.12),
-    inset 0 -2px 4px rgba(0,0,0,0.72),
-    0 2px 6px rgba(0,0,0,0.68);
-}
-
-body.receiver .mute-button-face {
-  position: absolute;
-  inset: 5px;
   border-radius: 2px;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0) 36%),
-    linear-gradient(180deg, #3a3a3e 0%, #171719 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.20),
-    inset 0 -2px 3px rgba(0,0,0,0.64);
-  transition: transform 120ms cubic-bezier(0.22,1,0.36,1), filter 120ms ease;
+  cursor: pointer;
+  background: linear-gradient(180deg, #4a4a50 0%, #2a2a2e 55%, #1c1c20 100%);
+  box-shadow: var(--edge-hi), var(--edge-lo), var(--cast-key);
+  transition: transform 60ms ease-out, box-shadow 60ms ease-out;
 }
 
-body.receiver .mute-button:hover .mute-button-face,
-body.receiver .mute-button:focus-visible .mute-button-face {
-  filter: brightness(1.12);
+body.receiver .mute-button::before {
+  content: "";
+  position: absolute;
+  top: -11px;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  margin-left: -3px;
+  border-radius: 50%;
+  background: #1d1d22;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.7);
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+body.receiver .mute-button:hover {
+  filter: brightness(1.1);
 }
 
 body.receiver .mute-button:focus-visible {
-  outline: none;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.12),
-    inset 0 -2px 4px rgba(0,0,0,0.72),
-    0 0 0 2px var(--vfd-glow-soft),
-    0 0 12px var(--vfd-glow-soft);
+  outline: 2px solid var(--vfd);
+  outline-offset: 2px;
 }
 
-body.receiver .mute-button.on .mute-button-face {
-  transform: translateY(2px);
-  filter: brightness(0.84);
+body.receiver .mute-button.on {
+  transform: translateY(1px);
+  background: linear-gradient(180deg, #3e3e44 0%, #242428 55%, #18181c 100%);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.55), 0 1px 0 #0a0a0b;
 }
 
-body.receiver .mute-lamp {
-  position: absolute;
-  right: -2px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 8px;
-  height: 18px;
-  border-radius: 5px;
-  border: 1px solid #050506;
-  background:
-    radial-gradient(circle at 50% 20%, rgba(255,255,255,0.28), transparent 28%),
-    linear-gradient(180deg, #2a1b05, #120d05);
-  box-shadow: inset 0 1px 2px rgba(255,255,255,0.12), 0 1px 3px rgba(0,0,0,0.62);
+body.receiver .mute-button.on::before {
+  background: var(--lock-amber);
+  box-shadow: 0 0 6px var(--lock-amber-glow), inset 0 0 1px rgba(255, 255, 255, 0.5);
 }
 
-body.receiver .mute-lamp.on {
-  background:
-    radial-gradient(circle at 50% 22%, rgba(255,255,255,0.70), transparent 24%),
-    repeating-linear-gradient(90deg, rgba(0,0,0,0.28) 0 1px, rgba(0,0,0,0) 1px 2px),
-    linear-gradient(180deg, var(--lock-amber) 0%, oklch(0.64 0.18 63) 100%);
-  box-shadow:
-    0 0 7px var(--lock-amber-glow),
-    0 0 15px oklch(0.82 0.18 75 / 0.38),
-    inset 0 1px 2px rgba(255,255,255,0.42);
+/* MUTING annunciator in the VFD: printed faintly like an unlit segment,
+   blinking bright while muted, as on the real display. */
+body.receiver .vfd .right-panel .vfd-annunciator {
+  grid-row: 1;
+  grid-column: 1;
+  justify-self: start;
+  color: var(--vfd-ghost);
+  font: 600 9px 'Inter', sans-serif;
+  letter-spacing: 0.24em;
+  text-shadow: none;
+  text-transform: uppercase;
+}
+
+body.receiver .vfd .right-panel .lbl {
+  grid-row: 1;
+  grid-column: 1;
+}
+
+body.receiver .vfd .right-panel .vfd-annunciator.on {
+  color: var(--vfd-bright);
+  text-shadow: 0 0 6px var(--vfd-glow);
+  animation: vfd-annunciator-blink 1.2s steps(1, end) infinite;
+}
+
+@keyframes vfd-annunciator-blink {
+  0%, 60% { opacity: 1; }
+  61%, 100% { opacity: 0.25; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.receiver .vfd .right-panel .vfd-annunciator.on {
+    animation: none;
+  }
 }
 
 body.receiver [data-volume-knob] .volume-tick {
@@ -2730,16 +2778,24 @@ body.receiver [data-volume-knob] .volume-tick:nth-child(5n + 1) {
   opacity: 0.95;
 }
 
+/* Master volume: spun (concentric) aluminium cap, the ES/Technics
+   signature. Rings and body are rotation-invariant; the directional
+   highlight and shadows are on the fixed [data-volume-knob]::after. */
 body.receiver [data-volume-knob] .volume-dial {
   border: 2px solid #050506;
   background:
+    repeating-radial-gradient(circle at 50% 50%, rgba(255,255,255,0.05) 0 1px, rgba(255,255,255,0) 1px 3px),
+    radial-gradient(circle at 50% 50%, #4a4a50 0 7%, #242428 32%, #111113 64%, #050506 100%);
+  box-shadow: inset 0 0 0 7px rgba(255,255,255,0.035);
+}
+
+body.receiver [data-volume-knob]::after {
+  background:
     linear-gradient(135deg, rgba(255,255,255,0.22), rgba(255,255,255,0) 30%),
-    radial-gradient(circle at 30% 23%, rgba(255,255,255,0.18) 0 7%, transparent 8%),
-    radial-gradient(circle at 50% 52%, #4a4a50 0 7%, #242428 32%, #111113 64%, #050506 100%);
+    radial-gradient(circle at 30% 23%, rgba(255,255,255,0.18) 0 7%, transparent 8%);
   box-shadow:
     inset 0 2px 3px rgba(255,255,255,0.16),
     inset 0 -7px 10px rgba(0,0,0,0.72),
-    inset 0 0 0 7px rgba(255,255,255,0.035),
     0 2px 8px rgba(0,0,0,0.78);
 }
 
@@ -2763,13 +2819,13 @@ body.receiver [data-volume-knob] .volume-dial::after {
 body.receiver [data-volume-knob] .volume-dial::before {
   inset: 8px;
   border: 1px solid rgba(255,255,255,0.08);
-  box-shadow: inset 0 2px 3px rgba(0,0,0,0.55);
+  box-shadow: inset 0 0 3px rgba(0,0,0,0.55);
 }
 
 body.receiver [data-volume-knob] .volume-dial::after {
   inset: 19px;
   border: 1px solid rgba(0,0,0,0.74);
-  box-shadow: inset 0 1px 1px rgba(255,255,255,0.06);
+  box-shadow: inset 0 0 1px rgba(255,255,255,0.06);
 }
 
 body.receiver .volume-notch {
@@ -3157,9 +3213,9 @@ body.receiver .section-strip {
 
 body.receiver .strip-label {
   font: 600 10px 'Inter', sans-serif;
-  letter-spacing: 0.22em;
+  letter-spacing: var(--silk-track-caption);
   text-transform: uppercase;
-  color: #a4a4aa;
+  color: var(--silk);
   padding: 6px 14px 6px 0;
   border-right: 1px solid #0a0a0b;
   box-shadow: 1px 0 0 rgba(255, 255, 255, 0.04);
@@ -6933,7 +6989,7 @@ body.receiver .audio-deck {
 }
 body.receiver .audio-deck .deck-sect { display: flex; flex-direction: column; gap: 12px; justify-content: center; }
 body.receiver .audio-deck .deck-cap {
-  color: #a4a4aa; font: 700 9px 'Inter', sans-serif; letter-spacing: 0.2em;
+  color: var(--silk); font: 700 9px 'Inter', sans-serif; letter-spacing: var(--silk-track-caption);
   text-transform: uppercase; text-align: center; margin-bottom: 2px;
 }
 body.receiver .audio-deck .deck-div { width: 1px; background: #0a0a0b; box-shadow: 1px 0 0 rgba(255,255,255,0.04); }
@@ -6957,10 +7013,10 @@ body.receiver .audio-deck .tone-toggle {
   border-radius: 2px;
   color: #c0c0c4;
   font: 700 10px 'Inter', sans-serif;
-  letter-spacing: 0.18em;
+  letter-spacing: var(--silk-track-legend);
   text-transform: uppercase;
   cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.12), inset 0 -1px 0 rgba(0,0,0,0.4);
+  box-shadow: var(--edge-hi), var(--edge-lo);
 }
 body.receiver .audio-strip.tone-open .tone-toggle {
   color: var(--vfd-bright);
@@ -7039,8 +7095,8 @@ body.receiver .eq-range:focus::-webkit-slider-thumb {
     0 0 10px var(--vfd-glow-soft);
 }
 body.receiver .eq-band .eq-hz {
-  color: #a4a4aa; font: 700 9px 'Inter', sans-serif;
-  letter-spacing: 0.08em;
+  color: var(--silk); font: 700 9px 'Inter', sans-serif;
+  letter-spacing: var(--silk-track-numeral);
 }
 body.receiver .audio-deck .btn-row { display: flex; gap: 5px; }
 body.receiver .audio-deck .memory-row { justify-content: center; }
@@ -7061,11 +7117,7 @@ body.receiver .audio-strip .sw-cell .switch {
   border: 1px solid #050506;
   border-radius: 2px;
   background: linear-gradient(180deg, #4a4a50 0%, #2a2a2e 55%, #1c1c20 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.5),
-    0 2px 0 #0a0a0b,
-    0 3px 4px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--edge-hi), var(--edge-lo), var(--cast-key);
   transition: transform 60ms ease-out, box-shadow 60ms ease-out;
 }
 body.receiver .audio-strip .sw-cell .switch::before {
@@ -7092,7 +7144,7 @@ body.receiver .audio-strip .sw-cell .switch.on::before {
   background: var(--lamp-green);
   box-shadow: 0 0 5px color-mix(in oklch, var(--lamp-green) 80%, transparent), inset 0 0 1px rgba(255, 255, 255, 0.5);
 }
-body.receiver .sw-cell .sw-lbl { color: #a4a4aa; font: 700 9px 'Inter', sans-serif; letter-spacing: 0.14em; text-transform: uppercase; }
+body.receiver .sw-cell .sw-lbl { color: var(--silk); font: 700 9px 'Inter', sans-serif; letter-spacing: var(--silk-track-legend); text-transform: uppercase; }
 @container chassis (max-width: 900px) {
   body.receiver .audio-deck {
     gap: 14px;

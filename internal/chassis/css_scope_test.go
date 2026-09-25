@@ -1024,15 +1024,32 @@ func TestChassisCSS_MasterVolumeUsesLargeSonyStyleIndicatorKnob(t *testing.T) {
 		}
 	}
 
+	// The dial rotates with the value, so it carries only rotation-invariant
+	// finish (spun rings + centred body); the directional highlight and
+	// shadows sit on the fixed [data-volume-knob]::after so the light does
+	// not swing around the knob as it turns.
 	dialRule := cssRuleBlock(t, text, "body.receiver [data-volume-knob] .volume-dial")
 	for _, want := range []string{
 		"border: 2px solid #050506;",
-		"linear-gradient(135deg, rgba(255,255,255,0.22), rgba(255,255,255,0) 30%)",
-		"radial-gradient(circle at 50% 52%, #4a4a50 0 7%, #242428 32%, #111113 64%, #050506 100%)",
-		"0 2px 8px rgba(0,0,0,0.78)",
+		"repeating-radial-gradient(circle at 50% 50%",
+		"radial-gradient(circle at 50% 50%, #4a4a50 0 7%, #242428 32%, #111113 64%, #050506 100%)",
 	} {
 		if !strings.Contains(dialRule, want) {
-			t.Fatalf("master volume dial should read as a heavy Sony-style hardware knob, missing %q: %s", want, dialRule)
+			t.Fatalf("master volume dial should be a spun, rotation-invariant cap, missing %q: %s", want, dialRule)
+		}
+	}
+	for _, banned := range []string{"linear-gradient(135deg", "0 2px 8px"} {
+		if strings.Contains(dialRule, banned) {
+			t.Fatalf("directional light %q must not rotate with the dial: %s", banned, dialRule)
+		}
+	}
+	lightRule := cssRuleBlock(t, text, "body.receiver [data-volume-knob]::after")
+	for _, want := range []string{
+		"linear-gradient(135deg, rgba(255,255,255,0.22), rgba(255,255,255,0) 30%)",
+		"0 2px 8px rgba(0,0,0,0.78)",
+	} {
+		if !strings.Contains(lightRule, want) {
+			t.Fatalf("master volume's fixed light layer missing %q: %s", want, lightRule)
 		}
 	}
 
@@ -1087,13 +1104,68 @@ func TestChassisCSS_LevelSectionCentersMasterVolumeKnob(t *testing.T) {
 			t.Fatalf("level controls should center the mute button and master volume knob, missing %q: %s", want, controlsRule)
 		}
 	}
-	lampRule := cssRuleBlock(t, text, "body.receiver .mute-lamp")
-	for _, want := range []string{
-		"top: 50%;",
-		"transform: translateY(-50%);",
-	} {
-		if !strings.Contains(lampRule, want) {
-			t.Fatalf("mute lamp should be vertically centered, missing %q: %s", want, lampRule)
+	// MUTING is a latching key in the LOUD/MONO family: it stretches to the
+	// master volume's height so both legends share a baseline, its LED sits
+	// above the cap, and the VFD MUTING annunciator carries the lamp hook.
+	muteRule := cssRuleBlock(t, text, "body.receiver .mute-control")
+	if !strings.Contains(muteRule, "align-self: stretch;") {
+		t.Fatalf("mute control should stretch to the volume knob's height: %s", muteRule)
+	}
+	if !strings.Contains(cssRuleBlock(t, text, "body.receiver .mute-button.on::before"), "var(--lock-amber)") {
+		t.Fatal("latched MUTING key should light its LED amber")
+	}
+	if !strings.Contains(cssRuleBlock(t, text, "body.receiver .vfd .right-panel .vfd-annunciator.on"), "animation: vfd-annunciator-blink") {
+		t.Fatal("VFD MUTING annunciator should blink while muted")
+	}
+	vfd, err := chassisTemplatesFS.ReadFile("templates/vfd.html")
+	if err != nil {
+		t.Fatalf("ReadFile(vfd.html): %v", err)
+	}
+	if !strings.Contains(string(vfd), `class="vfd-annunciator" data-volume-mute-lamp`) {
+		t.Fatal("vfd.html must carry the MUTING annunciator as the mute lamp")
+	}
+}
+
+// Faceplate finish: the black anodised panel is brushed horizontally (ES
+// front panels), never vertically, and not as a single even stripe that
+// would read as CRT scanlines.
+func TestChassisCSS_FaceplateGrainIsHorizontal(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	rule := cssRuleBlock(t, string(src), "body.receiver .receiver::before")
+	if strings.Contains(rule, "repeating-linear-gradient(90deg, transparent 0 1px") {
+		t.Fatalf("faceplate grain must not be vertical hairlines: %s", rule)
+	}
+	if n := strings.Count(rule, "repeating-linear-gradient(180deg"); n < 3 {
+		t.Fatalf("faceplate grain needs >=3 overlapping horizontal periods (got %d) so it is irregular: %s", n, rule)
+	}
+}
+
+// Every knob's highlight is fixed: the turning dial carries no
+// directional light; .volume-control::after supplies it.
+func TestChassisCSS_KnobLightDoesNotRotate(t *testing.T) {
+	t.Parallel()
+	src, err := chassisStaticFS.ReadFile("static/chassis.css")
+	if err != nil {
+		t.Fatalf("ReadFile(static/chassis.css): %v", err)
+	}
+	text := string(src)
+	dial := cssRuleBlock(t, text, "body.receiver .volume-dial")
+	if !strings.Contains(dial, "transform: rotate(var(--volume-angle));") {
+		t.Fatalf("expected the dial to be the rotating layer: %s", dial)
+	}
+	for _, banned := range []string{"circle at 32% 28%", "box-shadow"} {
+		if strings.Contains(dial, banned) {
+			t.Fatalf("rotating dial must not carry directional light %q: %s", banned, dial)
+		}
+	}
+	light := cssRuleBlock(t, text, "body.receiver .volume-control::after")
+	for _, want := range []string{"circle at 32% 28%", "pointer-events: none;", "width: var(--volume-dial-size);"} {
+		if !strings.Contains(light, want) {
+			t.Fatalf("fixed knob light layer missing %q: %s", want, light)
 		}
 	}
 }
