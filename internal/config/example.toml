@@ -115,6 +115,17 @@ bitrate = 320                      # 96, 160, or 320
 zeroconf_port = 0                  # discovery TCP port; 0 = random
 binary_path = ""                   # empty = librespot on PATH
 
+[adapters.airplay]
+# AirPlay speaker (classic AirPlay): iPhones, iPads, and Macs cast music
+# straight to the CRT visualizer. Needs shairport-sync (bundled in the
+# Docker image); not available on Windows.
+enabled = false
+name = "MiSTer CRT"                # speaker name in the AirPlay picker
+audio_output = "monitor"           # "monitor" (play through the MiSTer) or "visual_only"
+pause_grace_seconds = 30           # a paused cast keeps the CRT this long
+port = 5000                        # RTSP port; change if another AirPlay receiver uses 5000
+binary_path = ""                   # empty = shairport-sync on PATH
+
 [adapters.torrent]
 enabled = false
 traffic_acknowledged = false

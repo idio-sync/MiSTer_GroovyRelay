@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/airplay"
 	aux "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/auxadapter"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/dlna"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/jellyfin"
@@ -343,6 +344,20 @@ func main() {
 	}
 	if err := reg.Register(spotifyAdapter); err != nil {
 		dieFriendly("registry register spotify", err)
+	}
+
+	// AirPlay (classic) receiver: supervised shairport-sync feeding the
+	// visualizer; same spec as Spotify above.
+	airplayAdapter, err := airplay.New(airplay.AdapterConfig{
+		Core:     coreMgr,
+		HTTPPort: sec.Bridge.UI.HTTPPort,
+		DataDir:  sec.Bridge.DataDir,
+	})
+	if err != nil {
+		dieFriendly("airplay adapter init", err)
+	}
+	if err := reg.Register(airplayAdapter); err != nil {
+		dieFriendly("registry register airplay", err)
 	}
 
 	for _, a := range reg.List() {
