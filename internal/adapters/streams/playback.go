@@ -403,6 +403,7 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 			Source:           a.Name(),
 			Title:            title,
 			DisplayMetadata:  streamsDisplayMetadata(q.ProviderName, q.ChannelName, streamSessionTitle(item, "")),
+			ChannelLabel:     osdChannelLabel(a.Presets(), q.ProviderID, q.ChannelID, q.ChannelName),
 		}
 		if audioClass == adapters.AudioOnly {
 			var duration time.Duration
@@ -546,6 +547,7 @@ func (a *Adapter) playCurrentWithStarter(ctx context.Context, guard queueVersion
 		Source:            a.Name(),
 		Title:             title,
 		DisplayMetadata:   streamsDisplayMetadata(q.ProviderName, q.ChannelName, streamSessionTitle(item, resolved.Title)),
+		ChannelLabel:      osdChannelLabel(a.Presets(), q.ProviderID, q.ChannelID, q.ChannelName),
 	}
 	audioClass, audioProbe := a.classifyResolvedStreamMedia(resolveCtx, resolved, req.MediaInputPolicy)
 	cancel()

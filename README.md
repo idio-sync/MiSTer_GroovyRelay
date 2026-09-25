@@ -72,7 +72,7 @@ Set `audio_output = "visual_only"` to drive the CRT visualizer without sending P
 
 ## On-screen display
 
-While a cast is playing, the bridge draws an old-TV-style OSD into the picture: a green volume bar (or red `MUTING`) when you turn the knob, a green channel banner when a cast starts, and `PLAY ▶` / `FF ▶▶` / `REW ◀◀` on start, resume and seek. Each element fades after a few seconds and stays inside the title-safe area of a consumer CRT.
+While a cast is playing, the bridge draws an old-TV-style OSD into the picture: a green volume bar (or red `MUTING`) when you turn the knob, a green channel banner when a cast starts (`CH 07` for a streams channel in the preset bank, otherwise the channel or source name, such as `PLEX`), and `PLAY ▶` / `FF ▶▶` / `REW ◀◀` on start, resume and seek. Each element fades after a few seconds and stays inside the title-safe area of a consumer CRT.
 
 Configure it under `[bridge.osd]`; every setting applies live, mid-cast:
 
