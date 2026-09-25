@@ -32,8 +32,10 @@ func appendCaptureInputArgs(args []string, c CaptureInputSpec) []string {
 	return appendCaptureInputArgsWithoutQueue(args, c)
 }
 
+// appendProbeCaptureInputArgs omits -thread_queue_size: it is an ffmpeg
+// (fftools) input option that ffprobe rejects outright.
 func appendProbeCaptureInputArgs(args []string, c CaptureInputSpec) []string {
-	return appendCaptureInputArgs(args, c)
+	return appendCaptureInputArgsWithoutQueue(args, c)
 }
 
 // rawPCMFormat matches FFmpeg's raw PCM demuxer names: s16le, f32be, u8, …

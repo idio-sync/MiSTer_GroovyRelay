@@ -56,7 +56,8 @@ func TestAppendCaptureInputArgsRawPCMUsesChannelLayout(t *testing.T) {
 }
 
 // TestProbeRawPCMCaptureReportsStereoWithFFprobe pins the argv against a real
-// ffprobe: with -channels, FFmpeg 7+ probes raw PCM as mono (or refuses it).
+// ffprobe: with -channels, FFmpeg 7+ probes raw PCM as mono (or refuses it),
+// and a thread queue size must not reach ffprobe at all.
 func TestProbeRawPCMCaptureReportsStereoWithFFprobe(t *testing.T) {
 	ffprobePath := findFFBinary("ffprobe")
 	if ffprobePath == "" {
@@ -69,7 +70,7 @@ func TestProbeRawPCMCaptureReportsStereoWithFFprobe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	res, err := ProbeInput(ctx, ffprobePath, ProbeInputSpec{Capture: CaptureInputSpec{
-		Enabled: true, Format: "s16le", Device: path, SampleRate: 44100, Channels: 2,
+		Enabled: true, Format: "s16le", Device: path, SampleRate: 44100, Channels: 2, ThreadQueueSize: 64,
 	}})
 	if err != nil {
 		t.Fatalf("ProbeInput: %v", err)
