@@ -1149,7 +1149,10 @@ body.receiver .vfd .right-panel .uptime-label {
 body.receiver .source-cluster {
   display: grid;
   width: clamp(480px, 38vw, 600px);
-  grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
+  /* One row of equal keys however many sources there are; the medium and
+     narrowest layouts below switch to balanced rows. */
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   grid-template-rows: 1fr;
   gap: 0;
   align-items: stretch;
@@ -1255,10 +1258,16 @@ body.receiver.idle .source-cluster .hw-btn.active {
     grid-template-columns: minmax(0, 1fr) minmax(270px, 34%);
   }
 
+  /* Two balanced rows beside the VFD: 3 + 3, or 4 + 3 with seven keys. */
   body.receiver .vfd-source-row .source-cluster {
     width: 100%;
-    grid-template-columns: repeat(3, minmax(82px, 1fr));
+    grid-auto-flow: row;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     grid-template-rows: 1fr 1fr;
+  }
+
+  body.receiver .vfd-source-row .source-cluster:has(> .lamp:nth-child(7)) {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   body.receiver .vfd-source-row .source-cluster .hw-btn {
@@ -1271,8 +1280,10 @@ body.receiver.idle .source-cluster .hw-btn.active {
     grid-template-columns: 1fr;
   }
 
+  /* Stacked under the VFD: back to one full-width row. */
   body.receiver .vfd-source-row .source-cluster {
-    grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
+    grid-auto-flow: column;
+    grid-template-columns: none;
     grid-template-rows: 1fr;
   }
 
@@ -1285,7 +1296,6 @@ body.receiver.idle .source-cluster .hw-btn.active {
 @container chassis (max-width: 600px) {
   body.receiver .vfd-source-row .source-cluster {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(70px, 1fr));
     justify-content: stretch;
   }
 
@@ -1294,6 +1304,14 @@ body.receiver.idle .source-cluster .hw-btn.active {
     min-height: 46px;
     padding: 7px 6px 7px 18px;
     font-size: 9px;
+  }
+}
+
+/* Too narrow for one row of keys: four across. */
+@container chassis (max-width: 480px) {
+  body.receiver .vfd-source-row .source-cluster {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
@@ -5009,6 +5027,17 @@ body.receiver .source-cluster .lamp .name {
   font-size: 11px;
   letter-spacing: 0.12em;
   transition: none;
+}
+
+/* Six or more keys: a tighter legend so the longest names (STREAMS,
+   JELLYFIN) still fit one row at the strip's narrowest width. */
+body.receiver .source-cluster:has(> .lamp:nth-child(6)) .lamp {
+  padding-inline: 4px;
+}
+
+body.receiver .source-cluster:has(> .lamp:nth-child(6)) .lamp .name {
+  font-size: 10px;
+  letter-spacing: 0.06em;
 }
 
 body.receiver .source-cluster .lamp .led-well {

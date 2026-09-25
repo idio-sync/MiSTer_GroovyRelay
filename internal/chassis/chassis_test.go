@@ -220,6 +220,7 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 				{Label: "PLEX"},
 				{Label: "JELLYFIN"},
 				{Label: "DLNA"},
+				{Label: "SPOTIFY"},
 				{Label: "AUX", Active: false, Lit: false, Action: SourceActionAUXStart},
 			},
 		},
@@ -1078,7 +1079,7 @@ func TestIdleSnapshotRendersFiveSourceButtonsIncludingAUX(t *testing.T) {
 	for _, button := range got.Source.Buttons {
 		labels = append(labels, button.Label)
 	}
-	want := []string{"STREAMS", "PLEX", "JELLYFIN", "DLNA", "AUX"}
+	want := []string{"STREAMS", "PLEX", "JELLYFIN", "DLNA", "SPOTIFY", "AUX"}
 	if !reflect.DeepEqual(labels, want) {
 		t.Fatalf("source labels = %#v, want %#v", labels, want)
 	}
@@ -4808,6 +4809,41 @@ func TestSettingsAdaptersTemplate_RendersSixSections(t *testing.T) {
 	for _, gone := range []string{"Spec 4E", "Spec 4F"} {
 		if strings.Contains(s, gone) {
 			t.Errorf("%q stub still present in rendered adapters pane", gone)
+		}
+	}
+}
+
+func TestSettingsAdapterSpotifyTemplate_RendersFields(t *testing.T) {
+	t.Parallel()
+	data := SettingsData{
+		Errors: map[string]string{},
+		Adapters: []AdapterPaneData{
+			{Name: "spotify", Hint: "CAST · LISTENING", Fields: []adapters.FieldDef{
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeRestartCast},
+				{Key: "name", Kind: adapters.KindText, Label: "Device Name", ApplyScope: adapters.ScopeRestartCast},
+				{Key: "audio_output", Kind: adapters.KindEnum, Label: "Audio Output", Enum: []string{"monitor", "visual_only"}, ApplyScope: adapters.ScopeNextCast},
+				{Key: "pause_grace_seconds", Kind: adapters.KindInt, Label: "Pause Grace (s)", ApplyScope: adapters.ScopeHotSwap},
+			}, Values: map[string]any{
+				"enabled":             true,
+				"name":                "MiSTer CRT",
+				"audio_output":        "monitor",
+				"pause_grace_seconds": 30,
+			}},
+		},
+	}
+	s := renderDrawer(t, data)
+	for _, want := range []string{
+		`data-adapter-section="spotify"`,
+		`class="source-name">Spotify Connect<`,
+		`id="source-spotify-body"`,
+		`name="name"`,
+		`name="audio_output"`,
+		`name="pause_grace_seconds"`,
+		`data-adapter="spotify"`,
+		"CAST · LISTENING",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in rendered Spotify pane", want)
 		}
 	}
 }

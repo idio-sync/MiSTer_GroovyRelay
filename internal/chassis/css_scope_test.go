@@ -414,13 +414,20 @@ func TestChassisCSS_Task24ResponsiveContainerContracts(t *testing.T) {
 			want:     []string{"display: none;"},
 		},
 		{
-			name:     "1180 source cluster becomes a stable 3x2 footprint",
+			name:     "1180 source cluster becomes two balanced rows",
 			atRule:   "@container chassis (max-width: 1180px)",
 			selector: "body.receiver .vfd-source-row .source-cluster",
 			want: []string{
-				"grid-template-columns: repeat(3, minmax(82px, 1fr));",
+				"grid-auto-flow: row;",
+				"grid-template-columns: repeat(3, minmax(0, 1fr));",
 				"grid-template-rows: 1fr 1fr;",
 			},
+		},
+		{
+			name:     "1180 seven sources go four across",
+			atRule:   "@container chassis (max-width: 1180px)",
+			selector: "body.receiver .vfd-source-row .source-cluster:has(> .lamp:nth-child(7))",
+			want:     []string{"grid-template-columns: repeat(4, minmax(0, 1fr));"},
 		},
 		{
 			name:     "900 hides the goniometer",
@@ -435,10 +442,16 @@ func TestChassisCSS_Task24ResponsiveContainerContracts(t *testing.T) {
 			want:     []string{"grid-template-columns: 1fr;"},
 		},
 		{
-			name:     "900 keeps source cluster with auto-fit columns",
+			name:     "900 returns the stacked source cluster to one row",
 			atRule:   "@container chassis (max-width: 900px)",
 			selector: "body.receiver .vfd-source-row .source-cluster",
-			want:     []string{"grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));"},
+			want:     []string{"grid-auto-flow: column;", "grid-template-rows: 1fr;"},
+		},
+		{
+			name:     "480 source cluster goes four across",
+			atRule:   "@container chassis (max-width: 480px)",
+			selector: "body.receiver .vfd-source-row .source-cluster",
+			want:     []string{"grid-auto-flow: row;", "grid-template-columns: repeat(4, minmax(0, 1fr));"},
 		},
 		{
 			name:     "900 tightens the chassis chrome",
@@ -647,7 +660,12 @@ func TestReceiverLocalFilesButtonUsesUploadButtonStyle(t *testing.T) {
 	}
 }
 
-func TestSourceClusterResponsiveSixCapableLayout(t *testing.T) {
+// TestSourceClusterResponsiveSevenCapableLayout pins the layout that keeps
+// seven source keys (streams, plex, jellyfin, dlna, spotify, airplay, aux)
+// from wrapping into ragged rows: one equal-width row wide and stacked,
+// balanced rows beside the VFD and at the narrowest widths, and a tighter
+// legend once there are six or more keys.
+func TestSourceClusterResponsiveSevenCapableLayout(t *testing.T) {
 	t.Parallel()
 	src, err := chassisStaticFS.ReadFile("static/chassis.css")
 	if err != nil {
@@ -655,31 +673,46 @@ func TestSourceClusterResponsiveSixCapableLayout(t *testing.T) {
 	}
 	text := string(src)
 
+	clusterStart := strings.Index(text, "body.receiver .source-cluster {\n  display: grid;")
+	if clusterStart == -1 {
+		t.Fatal("missing primary source cluster rule")
+	}
+	base := cssRuleBlock(t, text[clusterStart:], "body.receiver .source-cluster")
 	for _, want := range []string{
-		"body.receiver .source-cluster {\n  display: grid;",
 		"width: clamp(480px, 38vw, 600px);",
-		"grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));",
+		"grid-auto-flow: column;",
+		"grid-auto-columns: minmax(0, 1fr);",
 		"grid-template-rows: 1fr;",
 	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("base source cluster six-capable layout missing %q", want)
+		if !strings.Contains(base, want) {
+			t.Fatalf("base source cluster one-row layout missing %q: %s", want, base)
+		}
+	}
+	if strings.Contains(base, "auto-fit") {
+		t.Fatalf("base source cluster must not auto-fit (wraps into ragged rows): %s", base)
+	}
+
+	compactName := cssRuleBlock(t, text, "body.receiver .source-cluster:has(> .lamp:nth-child(6)) .lamp .name")
+	for _, want := range []string{"font-size: 10px;", "letter-spacing: 0.06em;"} {
+		if !strings.Contains(compactName, want) {
+			t.Fatalf("six-plus key legend missing %q: %s", want, compactName)
 		}
 	}
 
 	wideCompact := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 1180px)", "body.receiver .vfd-source-row .source-cluster")
 	for _, want := range []string{
 		"width: 100%;",
-		"grid-template-columns: repeat(3, minmax(82px, 1fr));",
+		"grid-template-columns: repeat(3, minmax(0, 1fr));",
 		"grid-template-rows: 1fr 1fr;",
 	} {
 		if !strings.Contains(wideCompact, want) {
-			t.Fatalf("1180 source cluster six-capable layout missing %q: %s", want, wideCompact)
+			t.Fatalf("1180 source cluster layout missing %q: %s", want, wideCompact)
 		}
 	}
 
 	narrowRule := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 900px)", "body.receiver .vfd-source-row .source-cluster")
-	if !strings.Contains(narrowRule, "grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));") {
-		t.Fatalf("900 source cluster six-capable layout missing auto-fit columns: %s", narrowRule)
+	if !strings.Contains(narrowRule, "grid-auto-flow: column;") {
+		t.Fatalf("900 source cluster must return to one row: %s", narrowRule)
 	}
 
 	narrowButtonRule := cssRuleBlockInAtRules(t, text, "@container chassis (max-width: 900px)", "body.receiver .vfd-source-row .source-cluster .hw-btn")
