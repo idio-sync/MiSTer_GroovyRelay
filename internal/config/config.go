@@ -165,6 +165,7 @@ type BridgeConfig struct {
 	Video       VideoConfig      `toml:"video"`
 	Audio       AudioConfig      `toml:"audio"`
 	Visualizer  VisualizerConfig `toml:"visualizer"`
+	OSD         OSDConfig        `toml:"osd"`
 	MiSTer      MisterConfig     `toml:"mister"`
 	UI          UIConfig         `toml:"ui"`
 	HLSBuffer   HLSBufferConfig  `toml:"hls_buffer"`
@@ -241,6 +242,21 @@ func (a AudioDSP) Engaged() bool {
 
 type VisualizerConfig struct {
 	Mode string `toml:"mode"`
+}
+
+// OSDConfig controls the on-screen display drawn into the picture: volume
+// bar, channel banner, transport labels and an optional clock.
+type OSDConfig struct {
+	Enabled  bool `toml:"enabled"`
+	Clock    bool `toml:"clock"`     // show local time under the channel banner
+	Clock24h bool `toml:"clock_24h"` // 21:41 instead of 9:41 PM
+}
+
+// defaultOSDConfig turns the OSD on and leaves the clock off: containers
+// often run in UTC until TZ is set, and a clock is the element most likely
+// to annoy.
+func defaultOSDConfig() OSDConfig {
+	return OSDConfig{Enabled: true}
 }
 
 type MisterConfig struct {

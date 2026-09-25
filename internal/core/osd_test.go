@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/osd"
@@ -33,8 +34,11 @@ func newOSDTestManager(t *testing.T, pos time.Duration) (*Manager, *osd.Display,
 		return &positionPlane{contextDonePlane: &contextDonePlane{done: make(chan struct{})}, pos: pos}
 	}
 
-	display := osd.NewDisplay(osd.Options{Enabled: true})
+	display := osd.NewDisplay(osd.Options{})
 	m := newTestManager(t, WithOSD(display))
+	b := m.bridge
+	b.OSD = config.OSDConfig{Enabled: true}
+	m.UpdateBridge(b)
 	m.now = func() time.Time { return osdTestNow }
 	return m, display, &configs
 }
@@ -208,6 +212,26 @@ func TestManager_SeekShowsDirection(t *testing.T) {
 				t.Fatalf("Transport = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestManager_OSDOptionsFollowBridgeConfig(t *testing.T) {
+	display := osd.NewDisplay(osd.Options{Enabled: true})
+	m := newTestManager(t, WithOSD(display)) // test bridge has the OSD off
+	m.now = func() time.Time { return osdTestNow }
+
+	if err := m.SetOutputVolume(30); err != nil {
+		t.Fatalf("SetOutputVolume: %v", err)
+	}
+	if got := display.Showing(osdTestNow); got != (osd.Showing{}) {
+		t.Fatalf("Showing with bridge.osd.enabled=false = %+v, want zero", got)
+	}
+
+	b := m.bridge
+	b.OSD = config.OSDConfig{Enabled: true}
+	m.UpdateBridge(b)
+	if got := display.Showing(osdTestNow); !got.VolumeVisible {
+		t.Fatalf("Showing after UpdateBridge enabled the OSD = %+v, want the volume bar", got)
 	}
 }
 

@@ -35,6 +35,11 @@ eq = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # 10-band ISO-octave ga
 [bridge.visualizer]
 mode = "retro_analyzer"           # retro_analyzer, oscilloscope_wave, stereo_scope, vu_cabinet, spectrum_waterfall, raster_pulse, cover_vu, cover_spectrum
 
+[bridge.osd]
+enabled = true                    # Draw volume, channel and PLAY/FF/REW overlays into the picture
+clock = false                     # Show local time under the channel banner (set TZ in Docker)
+clock_24h = false                 # 21:41 instead of 9:41 PM
+
 [bridge.mister]
 host = "192.168.1.50"             # MiSTer IP or hostname (required)
 port = 32100                      # Groovy UDP port on the MiSTer (default 32100)

@@ -159,6 +159,7 @@ func WithEventLog(log *eventlog.Log) ManagerOption {
 
 // WithOSD wires the on-screen display. The Manager hands it to every plane
 // it builds and announces volume, mute, cast start, resume and seek on it.
+// Its options always follow bridge.osd (NewManager, UpdateBridge).
 func WithOSD(d *osd.Display) ManagerOption {
 	return func(m *Manager) {
 		m.osd = d
@@ -271,7 +272,12 @@ func NewManager(bridge config.BridgeConfig, sender *groovynet.Sender, opts ...Ma
 	for _, opt := range opts {
 		opt(m)
 	}
+	m.osd.SetOptions(osdOptions(bridge.OSD))
 	return m
+}
+
+func osdOptions(c config.OSDConfig) osd.Options {
+	return osd.Options{Enabled: c.Enabled, Clock: c.Clock, Clock24h: c.Clock24h}
 }
 
 func resolveBinary(r BinaryResolver, fallback string) (string, error) {
@@ -1453,6 +1459,9 @@ func (m *Manager) UpdateBridge(b config.BridgeConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.bridge = b
+	// The display re-reads its options every field, so OSD settings are
+	// hot-swap with no plane involvement.
+	m.osd.SetOptions(osdOptions(b.OSD))
 }
 
 // VisualizerMode returns the live bridge's visualizer mode under
