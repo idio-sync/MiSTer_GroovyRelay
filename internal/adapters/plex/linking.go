@@ -177,8 +177,8 @@ func RegisterDevice(uuid, token, hostIP string, httpPort int, deviceName, versio
 // RevokeDevice DELETEs the bridge's device record at plex.tv, which both
 // removes the row from the user's authorized-devices list and invalidates
 // the auth token server-side. Called on Unlink so a previously-leaked token
-// can't be reused. Best-effort from the caller's perspective: handleUnlink
-// logs and proceeds with local cleanup regardless.
+// can't be reused. Best-effort from the caller's perspective: Unlink logs
+// and proceeds with local cleanup regardless.
 //
 // Uses the legacy /devices/{uuid}.xml path with X-Plex-Token as a query
 // parameter — same wire convention as RegisterDevice in this file and as

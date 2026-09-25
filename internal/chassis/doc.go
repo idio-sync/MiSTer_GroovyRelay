@@ -1,12 +1,12 @@
 // Package chassis serves the receiver-chassis-styled UI under /ui/.
 //
-// Phase 0 of a 9-spec rollout replaces the existing legacy UI surface, which
-// moved to /old_ui/* at cutover. The chassis now serves as the canonical UI
-// at /ui/*.
+// The chassis is the bridge's only web UI: it owns /ui/* (plus the bare
+// "/" redirect) except /ui/companion/*, which internal/companion serves for
+// the browser extension.
 //
-// Design isolation: this package has zero imports of internal/ui or
-// internal/uiserver, and those packages have zero imports of this one. The
-// composition root is cmd/mister-groovy-relay/main.go, which wires both
+// Design isolation: this package has zero imports of internal/uiserver or
+// internal/companion, and those packages have zero imports of this one. The
+// composition root is cmd/mister-groovy-relay/main.go, which wires the
 // servers onto the same http.ServeMux.
 //
 // Phase 0 shipped the idle-only chassis preview. Phase 1 / Spec 2 wires the

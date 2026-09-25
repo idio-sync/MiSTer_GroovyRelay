@@ -57,7 +57,7 @@ type Resolution struct {
 	AudioURL     string            // empty in single-stream case
 	AudioHeaders map[string]string // empty in single-stream case
 	IsLive       bool              // true for live streams (YouTube Live, Twitch)
-	Title        string            // surfaced in the URL adapter's history panel + slog
+	Title        string            // surfaced in the URL adapter's history + slog
 	Channel      string            // yt-dlp channel/uploader — VFD secondary
 	UploadDate   string            // yt-dlp upload_date, raw "YYYYMMDD" — formatted by the caller
 	VCodec       string            // top-level yt-dlp vcodec in single-stream case

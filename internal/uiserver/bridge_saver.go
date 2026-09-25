@@ -1,4 +1,4 @@
-// Package uiserver wires the production ui.BridgeSaver / ui.AdapterSaver
+// Package uiserver wires the production BridgeSaver / AdapterSaver
 // implementations used by cmd/mister-groovy-relay and exercised directly
 // by integration tests. Keeping these types in a dedicated package (not
 // the cmd binary) lets tests drive the same save path the operator hits,
@@ -52,7 +52,7 @@ type ToolResolvers struct {
 	YTDLP   OverrideUpdater
 }
 
-// BridgeSaver implements ui.BridgeSaver + ui.FirstRunAware with real
+// BridgeSaver implements the chassis BridgeSaver + first-run contract with real
 // per-field scope dispatch (design §9). Current() returns the live
 // in-memory bridge for prefill; Save() diffs old vs new, runs pre-flight
 // probes for bindable restart-bridge fields, persists to disk via a
@@ -100,7 +100,7 @@ func (r *BridgeSaver) Current() config.BridgeConfig {
 	return r.sec.Bridge
 }
 
-// IsFirstRun implements ui.FirstRunAware: true until DismissFirstRun
+// IsFirstRun reports first-run state: true until DismissFirstRun
 // runs once. Re-reads the sentinel every call so container restarts or
 // external tooling that touches the marker file are picked up.
 func (r *BridgeSaver) IsFirstRun() bool {
@@ -110,7 +110,7 @@ func (r *BridgeSaver) IsFirstRun() bool {
 	return os.IsNotExist(err)
 }
 
-// DismissFirstRun implements ui.FirstRunAware: writes the sentinel
+// DismissFirstRun ends first-run: writes the sentinel
 // file so subsequent page loads skip the quick-start banner.
 func (r *BridgeSaver) DismissFirstRun() error {
 	r.mu.Lock()

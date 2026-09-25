@@ -141,12 +141,6 @@ const (
 	KindBool
 	KindEnum
 	KindSecret
-	// KindAction renders as a button rather than an input. Key is
-	// the relative POST endpoint suffix (e.g. "mister/launch" mounts
-	// at /ui/bridge/mister/launch); Label is the button text.
-	// ApplyScope and Default are ignored. KindAction rows are skipped
-	// by all TOML serialization paths. See spec §8.1.
-	KindAction
 )
 
 // ---- Validation errors ----
@@ -188,14 +182,6 @@ func (fe FieldErrors) Err() error {
 
 // ---- Optional extension interfaces ----
 
-// RouteProvider is an optional interface an adapter implements when
-// it needs additional HTTP routes beyond the standard
-// save/toggle/status set. The UI server checks for this via type
-// assertion at mount time. Example: Plex's link/unlink routes.
-type RouteProvider interface {
-	UIRoutes() []Route
-}
-
 // Validator is an optional interface an adapter implements to allow
 // pure validation of a candidate TOML section without mutating its
 // runtime config. The save path uses it to enforce "validate before
@@ -205,32 +191,6 @@ type RouteProvider interface {
 // validator and applier.
 type Validator interface {
 	Validate(raw toml.Primitive, meta toml.MetaData) error
-}
-
-// LinkAware is an optional Adapter capability for adapters that need
-// user-driven authentication (PIN, password, OAuth, etc.). Adapters
-// without a link concept (URL-input, future DLNA) don't implement it.
-//
-// Adapters implementing LinkAware mount their own link routes under
-// /old_ui/adapter/<name>/link/* and render their own state-machine HTML —
-// different adapters have meaningfully different link semantics, so
-// the shared UI layer doesn't try to model them.
-//
-// See docs/specs/2026-04-26-ui-redesign-design.md §8.2 and the PR2 delta
-// spec §S8 (Plex derivation rules).
-type LinkAware interface {
-	// LinkPhase returns a stable lowercase string for UI rendering.
-	// Adapter-defined values; common ones include "idle", "linking",
-	// "pin-issued", "linked", "error". The shared UI does NOT branch
-	// on this value — it's emitted as a CSS class hook and exposed
-	// for diagnostics.
-	LinkPhase() string
-
-	// IsLinked reports whether the adapter has completed authentication
-	// and is ready to be enabled. The wizard's Continue button is
-	// disabled until IsLinked() returns true; the adapter-page form
-	// renders read-only until IsLinked() returns true.
-	IsLinked() bool
 }
 
 // VideoConfigSubscriber is an optional interface for adapters that mirror
@@ -244,7 +204,7 @@ type VideoConfigSubscriber interface {
 // middleware — e.g. UPnP/DLNA control points that cannot send the
 // origin headers the /ui/* paths require. cmd/mister-groovy-relay
 // walks the registry for this interface at startup and calls
-// MountPublicRoutes BEFORE the UI server mounts /ui/*.
+// MountPublicRoutes BEFORE the chassis mounts /ui/*.
 //
 // Adapters must register only paths that are disjoint from /ui/* and
 // any other adapter's public routes (e.g. Plex's /resources, /player/*).
@@ -252,17 +212,4 @@ type VideoConfigSubscriber interface {
 // does not de-duplicate.
 type PublicRouteProvider interface {
 	MountPublicRoutes(*http.ServeMux)
-}
-
-// Handler is the handler signature adapter routes register with. An
-// alias for http.HandlerFunc's underlying type so adapters don't need
-// to import net/http types just to satisfy the Route struct.
-type Handler = func(http.ResponseWriter, *http.Request)
-
-// Route is a single HTTP route owned by an adapter. Path is relative
-// to the adapter's mount point under /old_ui/adapter/<name>/.
-type Route struct {
-	Method  string // "GET", "POST", "PUT", "PATCH", or "DELETE"
-	Path    string // relative, e.g., "link/start"
-	Handler Handler
 }

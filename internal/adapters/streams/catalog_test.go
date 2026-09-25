@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/streamhandoff"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 )
 
@@ -171,6 +172,29 @@ func TestCastChannel_ValidForwardsToFakeCore(t *testing.T) {
 	}
 	if !strings.HasPrefix(core.lastReq.AdapterRef, "streams:cartoon-rewind:heman:") {
 		t.Errorf("lastReq.AdapterRef = %q, want prefix streams:cartoon-rewind:heman:", core.lastReq.AdapterRef)
+	}
+}
+
+// TestValidatePlayRequest_RejectsMalformedRequests covers the
+// validatePlayRequest branches shared by CastPreset and CastChannel.
+func TestValidatePlayRequest_RejectsMalformedRequests(t *testing.T) {
+	t.Parallel()
+	a := newTestAdapterWithCatalog(t)
+	cases := []struct {
+		name string
+		res  streamhandoff.Resolution
+	}{
+		{name: "both channel and item", res: streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "metal", ItemID: "dQw4w9WgXcQ"}},
+		{name: "bad item", res: streamhandoff.Resolution{ProviderID: "mtv-rewind", ItemID: "bad"}},
+		{name: "unknown provider", res: streamhandoff.Resolution{ProviderID: "missing", ChannelID: "metal"}},
+		{name: "unknown channel", res: streamhandoff.Resolution{ProviderID: "mtv-rewind", ChannelID: "missing"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := a.validatePlayRequest(tc.res); err == nil {
+				t.Fatalf("validatePlayRequest(%+v) = nil, want error", tc.res)
+			}
+		})
 	}
 }
 

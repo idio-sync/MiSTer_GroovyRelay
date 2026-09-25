@@ -19,6 +19,12 @@ func init() {
 	mime.AddExtensionType(".woff", "font/woff")
 }
 
+// handleRootRedirect sends the bare host URL to the chassis. Not
+// first-run gated: the chassis owns setup mode at /ui.
+func handleRootRedirect(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/ui/", http.StatusFound)
+}
+
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data := snapshotFromSession(s.cfg, s.session, s.visualizerViewer, s.volumeViewer, s.transportViewer, s.aux, time.Now())
 	data.Version = s.assetVer

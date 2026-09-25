@@ -2,7 +2,6 @@ package adapters
 
 import (
 	"context"
-	"net/http"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -79,12 +78,6 @@ func TestState_String(t *testing.T) {
 	}
 }
 
-// Ensure Handler type is compatible with http.HandlerFunc.
-func TestHandler_Compat(t *testing.T) {
-	var h Handler = func(w http.ResponseWriter, r *http.Request) {}
-	_ = h
-}
-
 func TestFieldDef_SectionOrderZeroValue(t *testing.T) {
 	fd := FieldDef{Section: "Network"}
 	if fd.SectionOrder != 0 {
@@ -92,8 +85,7 @@ func TestFieldDef_SectionOrderZeroValue(t *testing.T) {
 	}
 }
 
-func TestKindAction_Const(t *testing.T) {
-	// KindAction must follow KindSecret in the iota sequence.
+func TestFieldKind_Const(t *testing.T) {
 	// Existing kinds must keep their values.
 	if KindText != 0 {
 		t.Errorf("KindText: got %d, want 0", KindText)
@@ -109,30 +101,5 @@ func TestKindAction_Const(t *testing.T) {
 	}
 	if KindSecret != 4 {
 		t.Errorf("KindSecret: got %d, want 4", KindSecret)
-	}
-	if KindAction != 5 {
-		t.Errorf("KindAction: got %d, want 5", KindAction)
-	}
-}
-
-// fakeLinkAware verifies the LinkAware interface compiles. The actual
-// linkability semantics are tested in each adapter package.
-type fakeLinkAware struct {
-	phase  string
-	linked bool
-}
-
-func (f *fakeLinkAware) LinkPhase() string { return f.phase }
-func (f *fakeLinkAware) IsLinked() bool    { return f.linked }
-
-func TestLinkAware_InterfaceCompiles(t *testing.T) {
-	var _ LinkAware = (*fakeLinkAware)(nil)
-
-	la := &fakeLinkAware{phase: "linked", linked: true}
-	if got := la.LinkPhase(); got != "linked" {
-		t.Errorf("LinkPhase: got %q, want %q", got, "linked")
-	}
-	if !la.IsLinked() {
-		t.Error("IsLinked: got false, want true")
 	}
 }

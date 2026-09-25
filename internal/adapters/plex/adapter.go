@@ -85,9 +85,9 @@ type Adapter struct {
 	// loop from it (startRegistrationLocked).
 	runCtx context.Context
 
-	// linkStartMu serializes handleLinkStart so two rapid clicks can't
+	// linkStartMu serializes StartLink so two rapid clicks can't
 	// interleave RequestPIN calls. Separate from mu because RequestPIN
-	// is a network RTT and we don't want to block sidebar polls.
+	// is a network RTT and we don't want to block status reads.
 	linkStartMu sync.Mutex
 
 	// finalizeOnce guards lazy construction of companion + timeline.
@@ -456,15 +456,14 @@ func (a *Adapter) IsEnabled() bool {
 	return a.plexCfg.Enabled
 }
 
-// IsLinked implements adapters.LinkAware. True when an auth token is
-// persisted; the wizard's Continue button gates on this. See PR2 spec §S8.
+// IsLinked reports whether the adapter is linked. True when an auth token is
+// persisted. See PR2 spec §S8.
 func (a *Adapter) IsLinked() bool {
 	return a.snapshotToken() != ""
 }
 
-// LinkPhase implements adapters.LinkAware. Derived from the (token,
-// pending) tuple. Adapter-defined string; the shared UI emits it as a
-// CSS class hook only. See PR2 spec §S8.
+// LinkPhase returns a stable lowercase link phase. Derived from the (token,
+// pending) tuple. See PR2 spec §S8.
 func (a *Adapter) LinkPhase() string {
 	if a.snapshotToken() != "" {
 		return "linked"
@@ -547,7 +546,7 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 	}
 
 	// Side effects outside the lock: DropActiveCast can block on
-	// session teardown, and we don't want sidebar polls waiting on it.
+	// session teardown, and we don't want status reads waiting on it.
 	if scope == adapters.ScopeRestartCast && a.cfg.Core != nil {
 		_ = a.cfg.Core.DropActiveCast("plex config change")
 	}
@@ -610,8 +609,9 @@ func scopeForPlexField(key string) adapters.ApplyScope {
 	}
 }
 
-// SetEnabled mutates the plexCfg.Enabled flag. Called by the UI
-// toggle endpoint via the EnableSetter optional interface.
+// SetEnabled mutates the plexCfg.Enabled flag. The chassis toggles
+// adapters through ApplyConfig; this setter remains for tests and
+// programmatic callers.
 func (a *Adapter) SetEnabled(v bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -619,7 +619,7 @@ func (a *Adapter) SetEnabled(v bool) {
 }
 
 // CurrentValues exposes the current plexCfg values to the UI for
-// form prefill. Implements ui.ValueProvider via duck-typing.
+// form prefill.
 func (a *Adapter) CurrentValues() map[string]any {
 	cfg := a.snapshotCfg()
 	return map[string]any{

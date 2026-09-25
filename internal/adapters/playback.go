@@ -31,15 +31,13 @@ const (
 // ErrActiveSessionChanged is the typed sentinel form of
 // ErrActiveSessionChangedMessage. Providers return or wrap this when the
 // caller's adapter_ref + generation no longer matches the active session;
-// the playback dispatcher maps it to HTTP 409 for the chassis and to the
-// existing inline-error banner message for /ui.
+// the playback dispatcher maps it to HTTP 409 for the chassis.
 var ErrActiveSessionChanged = errors.New(ErrActiveSessionChangedMessage)
 
 // ErrPlaybackActionUnsupported is returned by the dispatcher when the
 // active adapter does not implement PlaybackControlProvider, and by
 // providers that recognize the action verb but don't support it on the
-// active session. Maps to HTTP 422 on the chassis; /ui surfaces the
-// provider's existing inline message.
+// active session. Maps to HTTP 422 on the chassis.
 var ErrPlaybackActionUnsupported = errors.New("active adapter does not expose playback controls")
 
 type playbackActionUnsupportedError struct {
@@ -60,7 +58,7 @@ func (e playbackActionUnsupportedError) Unwrap() error {
 // UnsupportedPlaybackActionError returns an error whose visible message
 // is exactly the supplied provider message, while errors.Is still matches
 // ErrPlaybackActionUnsupported. Providers use this instead of fmt.Errorf
-// with %w so /ui's legacy banner text stays byte-for-byte compatible.
+// with %w so the provider's message reaches the operator verbatim.
 func UnsupportedPlaybackActionError(message string) error {
 	return playbackActionUnsupportedError{message: message}
 }
@@ -167,14 +165,13 @@ type QuickCastFile struct {
 }
 
 // MaxQuickCastBytes caps multipart payloads accepted by QuickCastProvider
-// implementations. Shared between /old_ui/playback/quick-cast and the chassis
-// /ui/cast route so the limit moves in lockstep.
+// implementations. The chassis /ui/cast route enforces it before handing
+// the upload to the provider.
 const MaxQuickCastBytes = 4*1024*1024 + 64*1024
 
 // QuickCastError is the typed error returned by QuickCastProvider
 // implementations when a quick-cast attempt fails for a known reason.
-// The chassis JSON route extracts Status/Chip via errors.As; the
-// existing /ui route uses Error() for inline-banner rendering.
+// The chassis JSON route extracts Status/Chip via errors.As.
 //
 // Adapter implementations set Status to the HTTP status the chassis
 // should emit and Chip to the short uppercase text the chassis chip

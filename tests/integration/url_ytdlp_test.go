@@ -7,20 +7,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 )
 
 // stubResolver records calls and returns canned Resolutions.
@@ -32,18 +28,6 @@ type stubResolver struct {
 func (s *stubResolver) Resolve(ctx context.Context, pageURL, format, cookiesPath string) (*ytdlp.Resolution, error) {
 	s.callsOK++
 	return s.res, nil
-}
-
-// urlPlayHandler returns the POST /play handler for a given adapter.
-func urlPlayHandler(t *testing.T, a *urladapter.Adapter) http.HandlerFunc {
-	t.Helper()
-	for _, r := range a.UIRoutes() {
-		if r.Method == "POST" && r.Path == "play" {
-			return r.Handler
-		}
-	}
-	t.Fatalf("POST play route not found in %d routes; got: %+v", len(a.UIRoutes()), a.UIRoutes())
-	return nil
 }
 
 // newURLAdapterWithDefaults wires an adapter the way production main.go
@@ -72,15 +56,11 @@ func newURLAdapterWithDefaults(t *testing.T, mgr *core.Manager, stub urladapter.
 	return a
 }
 
-func postPlay(t *testing.T, h http.HandlerFunc, mediaURL, mode string) *httptest.ResponseRecorder {
+// castVia casts mediaURL with the given dispatch mode through the
+// production Quick Cast entry point (see quickCastURL in url_test.go).
+func castVia(t *testing.T, a *urladapter.Adapter, mediaURL, mode string) error {
 	t.Helper()
-	form := url.Values{"url": {mediaURL}, "mode": {mode}}
-	req := httptest.NewRequest(http.MethodPost, "/play",
-		strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	w := httptest.NewRecorder()
-	h(w, req)
-	return w
+	return quickCastURL(context.Background(), a, map[string]string{"url": mediaURL, "mode": mode})
 }
 
 // waitForInit polls h.Recorder for at least one Init+Switchres within
@@ -129,9 +109,8 @@ func TestURL_YtdlpResolve_DirectionMatrix(t *testing.T) {
 		stub := &stubResolver{res: &ytdlp.Resolution{URL: mediaSrv.URL + "/x.mp4"}}
 		a := newURLAdapterWithDefaults(t, mgr, stub)
 
-		w := postPlay(t, urlPlayHandler(t, a), mediaSrv.URL+"/direct.mp4", "direct")
-		if w.Code != http.StatusAccepted {
-			t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+		if err := castVia(t, a, mediaSrv.URL+"/direct.mp4", "direct"); err != nil {
+			t.Fatalf("cast: %v", err)
 		}
 		if stub.callsOK != 0 {
 			t.Errorf("direct mode: resolver called %d times, want 0", stub.callsOK)
@@ -148,9 +127,8 @@ func TestURL_YtdlpResolve_DirectionMatrix(t *testing.T) {
 		stub := &stubResolver{res: &ytdlp.Resolution{URL: mediaSrv.URL + "/resolved.mp4"}}
 		a := newURLAdapterWithDefaults(t, mgr, stub)
 
-		w := postPlay(t, urlPlayHandler(t, a), "https://example.com/page", "ytdlp")
-		if w.Code != http.StatusAccepted {
-			t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+		if err := castVia(t, a, "https://example.com/page", "ytdlp"); err != nil {
+			t.Fatalf("cast: %v", err)
 		}
 		// Assert resolver was hit BEFORE waiting for the cast — failures
 		// here mean the dispatch logic is wrong, not the data plane.
@@ -175,9 +153,8 @@ func TestURL_YtdlpResolve_DirectionMatrix(t *testing.T) {
 		// allowlist (DefaultHosts is youtube.com / twitch.tv / vimeo.com /
 		// archive.org / etc.). decideRoute(auto, 127.0.0.1, ...) →
 		// ytdlp.Match(...) returns false → direct mode.
-		w := postPlay(t, urlPlayHandler(t, a), mediaSrv.URL+"/auto.mp4", "auto")
-		if w.Code != http.StatusAccepted {
-			t.Fatalf("status = %d", w.Code)
+		if err := castVia(t, a, mediaSrv.URL+"/auto.mp4", "auto"); err != nil {
+			t.Fatalf("cast: %v", err)
 		}
 		if stub.callsOK != 0 {
 			t.Errorf("auto+non-allowlist: resolver wrongly invoked")
@@ -225,91 +202,11 @@ func TestURL_YtdlpResolve_RealBinary(t *testing.T) {
 
 	// A short, stable Internet Archive item. Replace if it disappears.
 	const archiveURL = "https://archive.org/details/BigBuckBunny_124"
-	w := postPlay(t, urlPlayHandler(t, a), archiveURL, "ytdlp")
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	if err := castVia(t, a, archiveURL, "ytdlp"); err != nil {
+		t.Fatalf("cast: %v", err)
 	}
 
 	// Allow ample time: yt-dlp resolve (~3-15s on cold extractor) +
 	// ffmpeg startup + several Init+Switchres on the wire.
 	waitForInit(t, h, 30*time.Second)
-}
-
-// TestURL_Cookies_RoundTrip exercises POST + DELETE /cookies through
-// the real ui.Server mux. If anyone reverts the route mounter to
-// GET/POST-only, the DELETE leg returns 404 and this test fails
-// (review fix C2 regression guard).
-//
-// CSRF: every non-GET request sets Sec-Fetch-Site: same-origin to
-// satisfy internal/ui/csrf.go's check.
-func TestURL_Cookies_RoundTrip(t *testing.T) {
-	bridgeCfg := urlBridgeConfig(t)
-	a, err := urladapter.New(urladapter.AdapterConfig{
-		Bridge: bridgeCfg,
-		Core:   nil, // not exercised in this test
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	if err := a.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	reg := adapters.NewRegistry()
-	if err := reg.Register(a); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	uiSrv, err := ui.New(ui.Config{Registry: reg})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	mux := http.NewServeMux()
-	uiSrv.Mount(mux)
-	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
-
-	cookies := "# Netscape HTTP Cookie File\n" +
-		".youtube.com\tTRUE\t/\tTRUE\t1893456000\tFOO\tbar\n"
-
-	// POST cookies.
-	form := "cookies=" + url.QueryEscape(cookies)
-	req, _ := http.NewRequest(http.MethodPost,
-		ts.URL+"/old_ui/adapter/url/cookies", strings.NewReader(form))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Sec-Fetch-Site", "same-origin") // satisfy csrfMiddleware
-	resp, err := ts.Client().Do(req)
-	if err != nil {
-		t.Fatalf("POST: %v", err)
-	}
-	if resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		t.Fatalf("POST status = %d, want 202; body=%s", resp.StatusCode, body)
-	}
-	resp.Body.Close()
-
-	if _, err := os.Stat(filepath.Join(bridgeCfg.DataDir, "url_cookies.txt")); err != nil {
-		t.Fatalf("cookies file not written: %v", err)
-	}
-
-	// DELETE cookies.
-	req, _ = http.NewRequest(http.MethodDelete,
-		ts.URL+"/old_ui/adapter/url/cookies", nil)
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	resp, err = ts.Client().Do(req)
-	if err != nil {
-		t.Fatalf("DELETE: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		// 404 here would mean the route mounter regressed (review fix C2).
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		t.Fatalf("DELETE status = %d, want 200 (route mounter regression?); body=%s",
-			resp.StatusCode, body)
-	}
-	resp.Body.Close()
-
-	if _, err := os.Stat(filepath.Join(bridgeCfg.DataDir, "url_cookies.txt")); !os.IsNotExist(err) {
-		t.Errorf("cookies file still exists after DELETE: %v", err)
-	}
 }

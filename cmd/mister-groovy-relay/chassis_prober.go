@@ -24,7 +24,7 @@ type underlyingProber interface {
 // or any cmd-package types — this wrapper is the bridge.
 //
 // The underlying prober reads bridge.mister.{host,port,source_port=0}
-// internally from its captured ui.BridgeSaver and returns only an error.
+// internally from its captured bridge config source and returns only an error.
 // This wrapper measures latency itself and normalizes net.Error timeouts
 // to context.DeadlineExceeded so the chassis handler's timeout branch
 // (errors.Is(err, context.DeadlineExceeded)) fires.
@@ -39,9 +39,9 @@ func newChassisProber(inner underlyingProber) *chassisProber {
 // ProbeMister implements chassis.Prober.
 //
 // The bridge argument supplies Host/Port for the response only — the
-// underlying prober uses its captured ui.BridgeSaver.Current(). In
-// production the chassis BridgeSettingsSaver and the underlying
-// prober's ui.BridgeSaver are the same instance, so the values match.
+// underlying prober uses its captured bridge.Current(). In production
+// the chassis BridgeSettingsSaver and the underlying prober's bridge
+// config source are the same *uiserver.BridgeSaver, so the values match.
 func (p *chassisProber) ProbeMister(ctx context.Context, bridge config.BridgeConfig) (chassis.ProbeResult, error) {
 	start := time.Now()
 	err := p.inner.Probe(ctx)

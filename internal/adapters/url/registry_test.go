@@ -2,9 +2,6 @@ package url
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
@@ -14,9 +11,9 @@ import (
 // TestRegistry_AcceptsAdapterWithNoBackgroundWork is the spec's primary
 // abstraction probe (spec §"Boundary-validation tests"). The URL
 // adapter's Start returns nil and spawns no goroutines; this test
-// verifies adapters.Registry, the lifecycle dance, and the UIRoutes
-// mounting path all tolerate that — proving the abstraction does not
-// secretly assume every adapter has background work.
+// verifies adapters.Registry and the lifecycle dance tolerate that —
+// proving the abstraction does not secretly assume every adapter has
+// background work.
 func TestRegistry_AcceptsAdapterWithNoBackgroundWork(t *testing.T) {
 	reg := adapters.NewRegistry()
 	a, err := New(AdapterConfig{
@@ -37,44 +34,6 @@ func TestRegistry_AcceptsAdapterWithNoBackgroundWork(t *testing.T) {
 	}
 	if got := a.Status().State; got != adapters.StateRunning {
 		t.Errorf("post-Start State = %v, want StateRunning", got)
-	}
-
-	// UIRoutes wired via the same loop the UI server uses (server.go:
-	// "for _, a := range Registry.List(); rp, ok := a.(RouteProvider)").
-	mounted := 0
-	mux := http.NewServeMux()
-	for _, listed := range reg.List() {
-		rp, ok := listed.(adapters.RouteProvider)
-		if !ok {
-			continue
-		}
-		for _, r := range rp.UIRoutes() {
-			pattern := "/old_ui/adapter/" + listed.Name() + "/" + r.Path
-			switch r.Method {
-			case "GET":
-				mux.HandleFunc("GET "+pattern, r.Handler)
-			case "POST":
-				mux.HandleFunc("POST "+pattern, r.Handler)
-			case "DELETE":
-				mux.HandleFunc("DELETE "+pattern, r.Handler)
-			}
-			mounted++
-		}
-	}
-	if mounted != 6 {
-		t.Errorf("mounted %d url routes, want 6", mounted)
-	}
-
-	// Sanity-check the GET /panel route is reachable via the mux.
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	resp, err := http.Get(srv.URL + "/old_ui/adapter/url/panel")
-	if err != nil {
-		t.Fatalf("GET /panel: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("/panel status = %d, want 200", resp.StatusCode)
 	}
 
 	if err := a.Stop(); err != nil {
@@ -111,16 +70,21 @@ func TestRegistry_AcceptsAdapterWithExternalProcessDep(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Adapter should be Running, resolver should be nil, panel should
-	// render the "yt-dlp not found" line.
+	// Adapter should be Running, resolver should be nil, and the Quick
+	// Cast tab should degrade to direct-only (no yt-dlp mode radio).
 	if a.Status().State != adapters.StateRunning {
 		t.Errorf("State = %v, want Running", a.Status().State)
 	}
 	if a.resolver != nil {
 		t.Error("resolver should be nil when probe failed")
 	}
-	html := a.renderPanel()
-	if !strings.Contains(html, "yt-dlp not found") {
-		t.Error("panel should show 'yt-dlp not found'")
+	tabs := a.QuickCastTabs()
+	if len(tabs) != 1 {
+		t.Fatalf("QuickCastTabs len = %d, want 1", len(tabs))
+	}
+	for _, f := range tabs[0].Fields {
+		if f.Name == "mode" {
+			t.Errorf("mode radio offered even though yt-dlp probe failed: %+v", f)
+		}
 	}
 }

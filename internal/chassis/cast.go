@@ -229,7 +229,7 @@ func (s *Server) handleCastPost(w http.ResponseWriter, r *http.Request) {
 }
 
 // quickCastProviderForTab finds the QuickCastProvider that advertises
-// the given tab ID. Mirror of internal/ui/playback.go:338. Returns
+// the given tab ID. Returns
 // (provider, tab, ok).
 func (s *Server) quickCastProviderForTab(tabID string) (adapters.QuickCastProvider, adapters.QuickCastTab, bool) {
 	if s.cfg.Registry == nil {

@@ -12,7 +12,7 @@ import (
 // is the single funnel into Status().LastError (UI lamps, SSE, logs),
 // so it must strip the token.
 func TestSetState_RedactsTokenFromErrorMessage(t *testing.T) {
-	a := newLinkTestAdapter(t, "0.1.0")
+	a := newSnapshotTestAdapter(t, "")
 	a.setState(adapters.StateError,
 		`jellyfin: probe: Get "http://jf:8096/System/Info?api_key=SECRET123": dial tcp: connection refused`)
 

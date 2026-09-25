@@ -1,31 +1,31 @@
 package integration
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/uiserver"
 )
 
 // TestIntegration_Save_InterlaceFlip_LiveApply exercises the Phase-7
 // hero path through the real HTTP stack AND the real save code path:
-// load sectioned config, stand up a core.Manager + UI server wired to
-// uiserver.BridgeSaver (the same type cmd/mister-groovy-relay uses),
-// POST a bridge save that flips interlace_field_order, and verify
-// both the in-memory manager state and the on-disk config moved.
+// load sectioned config, stand up a core.Manager + chassis server wired
+// to uiserver.BridgeSaver (the same type cmd/mister-groovy-relay uses),
+// POST a chassis bridge-settings save that flips interlace_field_order,
+// and verify both the in-memory manager state and the on-disk config
+// moved.
 //
 // Reusing uiserver.NewBridgeSaver here (rather than a test-local
 // reimplementation) closes the review C3 gap: any regression in the
@@ -63,17 +63,27 @@ func TestIntegration_Save_InterlaceFlip_LiveApply(t *testing.T) {
 	reg := adapters.NewRegistry()
 
 	saver := uiserver.NewBridgeSaver(cfgPath, sec, coreMgr, reg)
-	// This test exercises the post-first-run hot-swap path, not the wizard;
-	// dismiss the first-run flag so firstRunGuard doesn't 409 the save POST.
+	// This test exercises the post-first-run hot-swap path, not setup
+	// mode; dismiss the first-run flag so the chassis is fully live.
 	if err := saver.DismissFirstRun(); err != nil {
 		t.Fatalf("DismissFirstRun: %v", err)
 	}
-	uiSrv, err := ui.New(ui.Config{Registry: reg, BridgeSaver: saver})
+	chassisSrv, err := chassis.New(chassis.Config{
+		Bridge:      sec.Bridge,
+		Manager:     coreMgr,
+		Registry:    reg,
+		Version:     "integration-test",
+		StartedAt:   time.Now(),
+		HostIP:      "127.0.0.1",
+		Session:     coreMgr,
+		BridgeSaver: saver,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer chassisSrv.Close()
 	mux := http.NewServeMux()
-	uiSrv.Mount(mux)
+	chassisSrv.Mount(mux)
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
@@ -81,8 +91,8 @@ func TestIntegration_Save_InterlaceFlip_LiveApply(t *testing.T) {
 		t.Fatalf("initial interlace = %q, want tff", coreMgr.CurrentInterlaceOrder())
 	}
 
-	form := testBridgeFormBody("bff", dataDir)
-	req, _ := http.NewRequest("POST", ts.URL+"/old_ui/bridge/save", bytes.NewBufferString(form))
+	req, _ := http.NewRequest("POST", ts.URL+"/ui/settings/bridge",
+		strings.NewReader("video_interlace_field_order=bff"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	resp, err := http.DefaultClient.Do(req)
@@ -95,8 +105,8 @@ func TestIntegration_Save_InterlaceFlip_LiveApply(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), "applied live") {
-		t.Errorf("expected hot-swap toast, body: %s", body)
+	if !strings.Contains(string(body), `"scope":"hot"`) {
+		t.Errorf("expected hot-swap scope, body: %s", body)
 	}
 
 	if coreMgr.CurrentInterlaceOrder() != "bff" {
@@ -149,21 +159,3 @@ enabled = false
 device_name = "TestBridge"
 profile_name = "Plex Home Theater"
 `
-
-func testBridgeFormBody(interlaceOrder, dataDir string) string {
-	return fmt.Sprintf(
-		"mister.host=127.0.0.1"+
-			"&mister.port=32100"+
-			"&mister.source_port=32101"+
-			"&host_ip="+
-			"&video.modeline=NTSC_480i"+
-			"&video.interlace_field_order=%s"+
-			"&video.aspect_mode=auto"+
-			"&video.lz4_enabled=true"+
-			"&video.delta_lz4_enabled=true"+
-			"&audio.sample_rate=48000"+
-			"&audio.channels=2"+
-			"&ui.http_port=32500"+
-			"&data_dir=%s",
-		interlaceOrder, url.QueryEscape(dataDir))
-}

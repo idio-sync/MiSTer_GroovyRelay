@@ -1,10 +1,13 @@
 package torrent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -302,6 +305,81 @@ func TestHandleQuickCast_WrapsByTorrentErrorKind(t *testing.T) {
 				t.Errorf("Cause = %v, want raw TorrentError", got.Cause)
 			}
 		})
+	}
+}
+
+func multipartFileHeader(t *testing.T, fieldName, fileName string, body []byte) *multipart.FileHeader {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile(fieldName, fileName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	if err := req.ParseMultipartForm(int64(len(body)) + maxTorrentUploadBytes); err != nil {
+		t.Fatal(err)
+	}
+	files := req.MultipartForm.File[fieldName]
+	if len(files) != 1 {
+		t.Fatalf("multipart files for %q = %d, want 1", fieldName, len(files))
+	}
+	return files[0]
+}
+
+func TestTorrentQuickCastFileRejectsMissingFile(t *testing.T) {
+	a := &Adapter{cfg: Config{Enabled: true, TrafficAcknowledged: true}}
+	_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{TabID: "torrent-file"})
+	var terr *TorrentError
+	if !errors.As(err, &terr) || terr.Kind != ErrBadInput {
+		t.Fatalf("HandleQuickCast missing file err = %v, want ErrBadInput", err)
+	}
+}
+
+func TestTorrentQuickCastFileRejectsOversizedTorrent(t *testing.T) {
+	fh := multipartFileHeader(t, "torrent_file", "too-large.torrent", bytes.Repeat([]byte("x"), maxTorrentUploadBytes+1))
+	a := &Adapter{cfg: Config{Enabled: true, TrafficAcknowledged: true}}
+	_, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
+		TabID: "torrent-file",
+		File:  &adapters.QuickCastFile{FieldName: "torrent_file", Header: fh},
+	})
+	var terr *TorrentError
+	if !errors.As(err, &terr) || terr.Kind != ErrUploadTooLarge {
+		t.Fatalf("HandleQuickCast oversized file err = %v, want ErrUploadTooLarge", err)
+	}
+}
+
+func TestTorrentQuickCastFileStartsTorrent(t *testing.T) {
+	rec := &recordingCore{}
+	client := &fakeTorrentClient{
+		metaTorrent: &fakeTorrent{
+			hash:  "dddddddddddddddddddddddddddddddddddddddd",
+			name:  "movie",
+			files: []FileCandidate{{DisplayPath: "movie.mkv", Length: 10, Index: 0}},
+		},
+	}
+	a := newStartedTestAdapter(t, startedTorrentConfig(), client, rec)
+	fh := multipartFileHeader(t, "torrent_file", "movie.torrent", []byte("metainfo"))
+
+	result, err := a.HandleQuickCast(context.Background(), adapters.QuickCastRequest{
+		TabID: "torrent-file",
+		File:  &adapters.QuickCastFile{FieldName: "torrent_file", Header: fh},
+	})
+	if err != nil {
+		t.Fatalf("HandleQuickCast torrent-file: %v", err)
+	}
+	if result.Message != "torrent started" {
+		t.Fatalf("Message = %q, want torrent started", result.Message)
+	}
+	if len(rec.reqs) != 1 {
+		t.Fatalf("core requests = %d, want 1", len(rec.reqs))
 	}
 }
 

@@ -111,13 +111,13 @@ func TestHistory_Eviction(t *testing.T) {
 	}
 }
 
-func TestHistory_Remove(t *testing.T) {
+func TestHistory_RemoveByID(t *testing.T) {
 	h := LoadHistory("")
 	h.AddOrBump("https://a/")
 	h.AddOrBump("https://b/")
-	h.AddOrBump("https://c/") // list = [c, b, a]
-	if !h.Remove(1) {         // remove "b"
-		t.Fatal("Remove(1) returned false")
+	h.AddOrBump("https://c/")          // list = [c, b, a]
+	if !h.RemoveByID(h.List()[1].ID) { // remove "b"
+		t.Fatal("RemoveByID(b) returned false")
 	}
 	list := h.List()
 	if len(list) != 2 {
@@ -128,30 +128,27 @@ func TestHistory_Remove(t *testing.T) {
 	}
 }
 
-func TestHistory_Remove_OutOfRange(t *testing.T) {
+func TestHistory_RemoveByID_Unknown(t *testing.T) {
 	h := LoadHistory("")
 	h.AddOrBump("https://a/")
-	if h.Remove(5) {
-		t.Error("Remove(5) returned true on len-1 history")
-	}
-	if h.Remove(-1) {
-		t.Error("Remove(-1) returned true")
+	if h.RemoveByID("h_00000000000000000000000000000000") {
+		t.Error("RemoveByID(unknown) returned true")
 	}
 	if h.Len() != 1 {
-		t.Errorf("history mutated by out-of-range Remove: len = %d", h.Len())
+		t.Errorf("history mutated by unknown-id RemoveByID: len = %d", h.Len())
 	}
 }
 
-func TestHistory_Get(t *testing.T) {
+func TestHistory_GetByID(t *testing.T) {
 	h := LoadHistory("")
 	h.AddOrBump("https://a/")
 	h.AddOrBump("https://b/") // list = [b, a]
-	e, ok := h.Get(0)
+	e, ok := h.GetByID(h.List()[0].ID)
 	if !ok || e.URL != "https://b/" {
-		t.Errorf("Get(0) = %+v, %v; want b, true", e, ok)
+		t.Errorf("GetByID(b) = %+v, %v; want b, true", e, ok)
 	}
-	if _, ok := h.Get(99); ok {
-		t.Error("Get(99) returned ok=true on small history")
+	if _, ok := h.GetByID("h_00000000000000000000000000000000"); ok {
+		t.Error("GetByID(unknown) returned ok=true")
 	}
 }
 

@@ -35,6 +35,7 @@ import (
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/artworkcache"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/companion"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
@@ -43,7 +44,6 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/logging"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/playback"
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/uiserver"
 )
 
@@ -330,11 +330,11 @@ func main() {
 		}
 	}
 
-	// Shared HTTP mux: Plex Companion handlers, Settings UI, and chassis
-	// routes. One listener, one port (bridge.ui.http_port),
-	// disjoint path prefixes (design §7.1). Plex adapter mounts
-	// /resources + /player/*; ui.Server mounts /old_ui/* + /ui/companion/* +
-	// root redirect; chassis.Server mounts /ui/*.
+	// Shared HTTP mux: Plex Companion handlers, the browser-extension
+	// companion API, and chassis routes. One listener, one port
+	// (bridge.ui.http_port), disjoint path prefixes (design §7.1). Plex
+	// adapter mounts /resources + /player/*; companion.Server mounts
+	// /ui/companion/*; chassis.Server mounts /ui/* + the root redirect.
 	mux := http.NewServeMux()
 	plexAdapter.MountRoutes(mux)
 
@@ -369,27 +369,19 @@ func main() {
 
 	volumeBridge := &volumeSaverAdapter{bs: saver}
 
-	uiSrv, err := ui.New(ui.Config{
-		Registry:              reg,
-		BridgeSaver:           saver,
-		AdapterSaver:          adapterSaver,
-		MisterLauncher:        misterLauncher,
-		CompanionSession:      coreMgr,
-		CompanionURL:          urlAdapter,
-		CompanionDisplay:      urlAdapter,
-		CompanionVolumeViewer: coreMgr,
-		CompanionVolumeSaver:  volumeBridge,
-		StatusViewer:          coreMgr, // *core.Manager satisfies StatusViewer via StatusHomeView()
-		Playback:              playbackDispatcher,
-		EventLog:              elog,    // in-memory ring buffer constructed above
-		Version:               version, // build-time ldflags variable
-		MisterProber:          misterProber,
-		StartedAt:             startedAt,
+	companionSrv, err := companion.New(companion.Config{
+		Registry:     reg,
+		Session:      coreMgr,
+		URL:          urlAdapter,
+		Display:      urlAdapter,
+		VolumeViewer: coreMgr,
+		VolumeSaver:  volumeBridge,
+		Launcher:     misterLauncher,
 	})
 	if err != nil {
-		dieFriendly("ui init", err)
+		dieFriendly("companion init", err)
 	}
-	uiSrv.Mount(mux)
+	companionSrv.Mount(mux)
 
 	var presetViewer adapters.PresetViewer
 	var presetCaster adapters.PresetCaster
@@ -525,7 +517,7 @@ func main() {
 		SourceAvailabilityViewers: sourceViewers,
 		BridgeSaver:               saver,                          // existing *uiserver.BridgeSaver
 		Prober:                    newChassisProber(misterProber), // wraps existing bridgeMisterProber
-		CoreLauncher:              misterLauncher,                 // same instance as ui.Config.MisterLauncher
+		CoreLauncher:              misterLauncher,                 // same instance as companion.Config.Launcher
 		CatalogManager:            cm,
 		ConfigReset:               cr,
 		AdapterSettingsSaver:      adapterSaverWrapper,

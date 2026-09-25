@@ -13,7 +13,6 @@ import (
 func TestAdapter_ImplementsContract(t *testing.T) {
 	var _ adapters.Adapter = (*Adapter)(nil)
 	var _ adapters.Validator = (*Adapter)(nil)
-	var _ adapters.RouteProvider = (*Adapter)(nil)
 }
 
 func TestAdapter_NameAndDisplay(t *testing.T) {

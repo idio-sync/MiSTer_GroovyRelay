@@ -178,8 +178,7 @@ Native builds use real OS paths. Linux and macOS paths look like `/home/me/Video
 
 Open `http://<host>:32500/` after the bridge starts. The UI lets you:
 
-> **Settings UI:** The chassis UI is the primary interface at `/ui`.
-> The legacy settings UI remains accessible at `/old_ui` during the transition.
+> **Settings UI:** The UI lives at `/ui`; `/` redirects there.
 > License attributions for the bundled fonts: `/ui/static/fonts/LICENSE`.
 
 - Link Plex and Jellyfin accounts.

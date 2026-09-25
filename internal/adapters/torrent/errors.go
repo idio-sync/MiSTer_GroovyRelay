@@ -111,9 +111,7 @@ func isHex(s string) bool {
 }
 
 // torrentChipForKind maps each TorrentError.Kind to the chassis chip
-// text. Statuses come from torrentErrorStatus (preserved from existing
-// /ui behavior). The chassis route extracts both Status and Chip via
-// errors.As.
+// text. The chassis route extracts both Status and Chip via errors.As.
 var torrentChipForKind = map[TorrentErrorKind]string{
 	ErrDisabled:               "BLOCKED",
 	ErrTrafficNotAcknowledged: "BLOCKED",

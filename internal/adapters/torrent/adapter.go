@@ -3,7 +3,6 @@ package torrent
 import (
 	"context"
 	"fmt"
-	"html/template"
 	"strings"
 	"sync"
 	"time"
@@ -277,10 +276,6 @@ func (a *Adapter) CurrentValues() map[string]any {
 		"max_download_rate_kbps":   a.cfg.MaxDownloadRateKbps,
 		"listen_port":              a.cfg.ListenPort,
 	}
-}
-
-func (a *Adapter) ExtraPanelHTML() template.HTML {
-	return template.HTML(a.renderPanel())
 }
 
 func (a *Adapter) setState(s adapters.State, errMsg string) {

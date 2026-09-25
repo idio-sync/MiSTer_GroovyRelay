@@ -12,15 +12,13 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url/ytdlp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
 )
 
 func TestAdapterInterfaces(t *testing.T) {
 	var _ adapters.Adapter = (*Adapter)(nil)
 	var _ adapters.Validator = (*Adapter)(nil)
-	var _ adapters.RouteProvider = (*Adapter)(nil)
-	var _ ui.ValueProvider = (*Adapter)(nil)
-	var _ ui.ExtraHTMLProvider = (*Adapter)(nil)
+	// CurrentValues is duck-typed by the chassis settings saver in cmd.
+	var _ interface{ CurrentValues() map[string]any } = (*Adapter)(nil)
 }
 
 func TestDecodeConfigDefaults(t *testing.T) {

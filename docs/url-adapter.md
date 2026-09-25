@@ -1,6 +1,6 @@
 # URL Adapter
 
-The URL adapter lets the bridge play direct media URLs and page URLs from sites that `yt-dlp` can resolve. Paste an `http://` or `https://` URL into the **URL** panel in the settings UI and click **Play**.
+The URL adapter lets the bridge play direct media URLs and page URLs from sites that `yt-dlp` can resolve. Paste an `http://` or `https://` URL into the **Input** field in the web UI and click **CAST**.
 
 Sessions run until EOF or until another cast starts. Basic pause and seek controls are available in the web UI.
 
@@ -14,22 +14,13 @@ Sessions run until EOF or until another cast starts. Basic pause and seek contro
 
 Owncast sites can be pasted as their homepage URL. The adapter detects Owncast through the same-origin `/api/status` endpoint and plays `/hls/stream.m3u8`.
 
-The curated auto-resolve list lives in the URL panel. More `yt-dlp` sites can be added as the bridge grows.
+The curated auto-resolve list lives under **Settings → URL → yt-dlp hosts**. More `yt-dlp` sites can be added there.
 
 ## Live HLS buffering
 
 Direct public HTTP(S) URLs whose path ends in `.m3u8` use the shared live HLS buffer by default. The adapter fetches the playlist and media segments into `<bridge.data_dir>/url/hls`, starts a few segments behind the live edge, and hands FFmpeg a local playlist with a local-only media policy. That adds a small live delay, but helps absorb uneven remote playlist reloads and segment downloads.
 
-Use the **HLS buffer** selector in the URL panel to choose `off` for one cast. History replay preserves the stored mode, so a stream that was cast with buffering off will replay that way until it is cast again with `auto`.
-
-Scripted callers can send `hls_buffer=off` in form posts, or `"hls_buffer":"off"` in JSON:
-
-```bash
-curl -X POST \
-  -H "Origin: http://<bridge-host>:32500" \
-  -d 'url=https://public.example/live.m3u8&mode=direct&hls_buffer=off' \
-  http://<bridge-host>:32500/ui/adapter/url/play
-```
+History replay preserves the HLS buffer mode stored with each entry.
 
 Set `GROOVY_HLS_BUFFER=0` on the bridge process to bypass the buffer globally for diagnostics or rollback. Unsupported HLS features fail clearly rather than silently falling back through FFmpeg.
 
@@ -37,41 +28,31 @@ The CRT `BUFFERING...` slate is not part of this v1 path yet; the current behavi
 
 ## Cookies for auth-walled content
 
-Age-gated YouTube videos, members-only Twitch VODs, and similar content require login cookies. The URL panel has a collapsed **Cookies** section that accepts a Netscape-format `cookies.txt`.
+Age-gated YouTube videos, members-only Twitch VODs, and similar content require login cookies. The URL adapter settings have a **Cookies** field that accepts a Netscape-format `cookies.txt`.
 
 1. Install a cookies export extension such as [Get cookies.txt LOCALLY](https://github.com/kairi003/Get-cookies.txt-LOCALLY) for Chrome/Edge or [cookies.txt](https://addons.mozilla.org/firefox/addon/cookies-txt/) for Firefox.
 2. Log in to the site you want to cast from.
 3. Export the cookies file.
-4. Open the URL panel, expand **Cookies**, paste the file contents, and click **Save Cookies**.
+4. Open **Settings → URL**, paste the file contents into **Cookies**, and click **Save cookies**.
 
 Cookies are saved to `<bridge.data_dir>/url_cookies.txt` with mode `0600` on POSIX systems and survive container restarts through the existing `data_dir` volume mount. Click **Clear** to remove them.
 
-Saved cookies are never echoed back into the textarea. The form also sets `autocomplete="off"` so password managers do not offer to save them.
+Saved cookies are never echoed back into the textarea. The field also sets `autocomplete="off"` so password managers do not offer to save them.
 
 ## Scripted playback
 
-Scripts can POST to the same endpoint the UI uses.
+Scripts can POST to the same cast endpoint the web UI uses. The bridge picks the resolver automatically (`auto` mode).
 
 ```bash
-# htmx form-style
 curl -X POST \
   -H "Origin: http://<bridge-host>:32500" \
-  -d 'url=https://youtu.be/dQw4w9WgXcQ&mode=auto' \
-  http://<bridge-host>:32500/ui/adapter/url/play
-
-# JSON
-curl -X POST \
-  -H "Origin: http://<bridge-host>:32500" \
-  -H "Content-Type: application/json" \
-  -d '{"url":"https://youtu.be/dQw4w9WgXcQ","mode":"ytdlp","hls_buffer":"auto"}' \
-  http://<bridge-host>:32500/ui/adapter/url/play
+  --data-urlencode 'payload=https://youtu.be/dQw4w9WgXcQ' \
+  http://<bridge-host>:32500/ui/cast
 ```
 
-The `Origin` header is required because this endpoint runs through the bridge's CSRF middleware. Browsers set the expected fetch headers automatically; `curl` and other scripted clients must send an `Origin` matching the bridge host and port. Without it, the bridge returns `403`.
+The `Origin` header is required: cast requests must come from the bridge's own origin. Browsers set the expected fetch headers automatically; `curl` and other scripted clients must send an `Origin` matching the bridge host and port (or `Sec-Fetch-Site: same-origin`). Without it, the bridge returns `403`. Responses are JSON.
 
-htmx callers receive an HTML fragment. Other callers receive JSON.
-
-Credentials in URLs such as `https://user:pass@host/path` are redacted in the panel display, success response body, and logs. JSON responses echo the submitted URL because the API caller already provided it.
+Credentials in URLs such as `https://user:pass@host/path` are redacted in the UI display and logs.
 
 ## yt-dlp self-update
 

@@ -68,12 +68,11 @@ Useful controls:
 
 - Set `enabled = false` under `[bridge.hls_buffer]` to disable the shared buffer through config.
 - Set `GROOVY_HLS_BUFFER=0` on the bridge process for a quick diagnostic or rollback bypass.
-- Use the URL panel **HLS buffer** selector or scripted `hls_buffer=off` for one URL cast.
 - For bundled Streams, provider/channel `hls_buffer_disabled` settings can opt out a direct stream without disabling the whole catalog.
 
 Cache roots live under `<bridge.data_dir>/streams/hls` and `<bridge.data_dir>/url/hls`. Startup reaps stale session directories older than `stale_cache_reap_hours`, while active sessions keep a lock marker so they are left alone.
 
-Unsupported HLS features such as encrypted streams, byte ranges, discontinuities, alternate audio renditions, low-latency parts, fragmented MP4 init maps, and audio-only HLS fail clearly. Use the per-cast or global bypass if you need to fall back to the old direct-FFmpeg path for a specific stream.
+Unsupported HLS features such as encrypted streams, byte ranges, discontinuities, alternate audio renditions, low-latency parts, fragmented MP4 init maps, and audio-only HLS fail clearly. Use the global bypass if you need to fall back to the old direct-FFmpeg path for a specific stream.
 
 The TV-side `BUFFERING...` slate is deferred. If a live source stops publishing long enough to drain the local cache, the existing dataplane underrun behavior still applies.
 

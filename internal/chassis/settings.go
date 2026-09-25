@@ -1518,7 +1518,7 @@ func writeSettingsHosts(w http.ResponseWriter, scope string, hosts []string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "scope": scope, "hosts": hosts})
 }
 
-const maxCookiesBody = 1 << 20 // 1 MiB; mirrors the URL adapter's legacy cap.
+const maxCookiesBody = 1 << 20 // 1 MiB cap on pasted cookies.txt.
 
 type cookieFieldError string
 

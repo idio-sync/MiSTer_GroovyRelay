@@ -384,6 +384,22 @@ func TestRefreshNowRemoteDisabledNonDirectPreservesLastError(t *testing.T) {
 	}
 }
 
+// TestRefreshNowRejectsUnknownProvider covers the "unknown provider_id"
+// rejection previously exercised through the legacy HTML settings-UI refresh
+// route's own validation. RefreshNow is now the sole entry point (used by
+// chassis's RefreshNow interface), so an unrecognized provider ID must
+// still fail without touching any catalog.
+func TestRefreshNowRejectsUnknownProvider(t *testing.T) {
+	a := newTestAdapterWithCatalog(t)
+	status := a.RefreshNow(t.Context(), "missing")
+	if status.Err == nil {
+		t.Fatal("RefreshNow(missing) = nil error, want error for unknown provider")
+	}
+	if len(status.refreshedProviderIDs) != 0 {
+		t.Fatalf("refreshed provider IDs = %#v, want none", status.refreshedProviderIDs)
+	}
+}
+
 func TestRefreshCatalogsDirectStreamsDoesNotFetchPlaylist(t *testing.T) {
 	a := newTestAdapterWithCatalog(t)
 	toonami := bundledToonamiAftermathDefinition()

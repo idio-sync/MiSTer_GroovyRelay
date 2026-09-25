@@ -3,8 +3,6 @@ package plex
 import (
 	"testing"
 	"time"
-
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
 // newTestAdapter returns an Adapter wired with a minimal AdapterConfig
@@ -85,6 +83,3 @@ func TestAdapter_LinkAware_PendingDoneSuccess(t *testing.T) {
 		t.Errorf("LinkPhase done-success: got %q, want %q", got, "linked")
 	}
 }
-
-// Compile-time assertion.
-var _ adapters.LinkAware = (*Adapter)(nil)

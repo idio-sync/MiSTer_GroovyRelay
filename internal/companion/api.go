@@ -1,4 +1,4 @@
-package ui
+package companion
 
 import (
 	"context"
@@ -10,26 +10,15 @@ import (
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
-	"github.com/idio-sync/MiSTer_GroovyRelay/internal/companion"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
-// CompanionSessionProvider is the UI package's narrow read view of
+// CompanionSessionProvider is the companion API's narrow read view of
 // core.Manager. The companion status response uses fresh point-in-time
 // snapshots only; clients must not extrapolate position between polls.
 type CompanionSessionProvider interface {
 	Status() core.SessionStatus
 }
-
-// Payload types are defined in internal/companion so internal/adapters/url
-// does not have to import internal/ui to satisfy the companion interfaces
-// (canonical layering is ui->adapters, never the reverse). The aliases
-// here let existing internal/ui code refer to the bare names.
-type (
-	CompanionPlayResult     = companion.CompanionPlayResult
-	CompanionHistoryEntry   = companion.CompanionHistoryEntry
-	CompanionSessionDisplay = companion.CompanionSessionDisplay
-)
 
 // CompanionURLSource is the companion surface owned by the URL adapter.
 // Step 1 uses only the read methods; mutating methods are added to this
@@ -73,10 +62,10 @@ type companionHealth struct {
 // companionOutputVolume returns the live output volume, or 0 when no
 // viewer is wired (tests / degraded config).
 func (s *Server) companionOutputVolume() int {
-	if s.cfg.CompanionVolumeViewer == nil {
+	if s.cfg.VolumeViewer == nil {
 		return 0
 	}
-	return s.cfg.CompanionVolumeViewer.OutputVolume()
+	return s.cfg.VolumeViewer.OutputVolume()
 }
 
 // State uses the same enum values as core.SessionStatus.State:
@@ -134,16 +123,16 @@ func (s *Server) mountCompanion(mux *http.ServeMux, method, pattern string, hand
 
 func (s *Server) handleCompanionStatus(w http.ResponseWriter, r *http.Request) {
 	st := core.SessionStatus{State: core.StateIdle}
-	if s.cfg.CompanionSession != nil {
-		st = s.cfg.CompanionSession.Status()
+	if s.cfg.Session != nil {
+		st = s.cfg.Session.Status()
 		if st.State == "" {
 			st.State = core.StateIdle
 		}
 	}
 
 	history := []CompanionHistoryEntry{}
-	if s.cfg.CompanionURL != nil {
-		history = s.cfg.CompanionURL.CompanionHistory()
+	if s.cfg.URL != nil {
+		history = s.cfg.URL.CompanionHistory()
 		if history == nil {
 			history = []CompanionHistoryEntry{}
 		}
@@ -231,8 +220,8 @@ func (s *Server) handleCompanionControl(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	state := core.StateIdle
-	if s.cfg.CompanionSession != nil {
-		state = s.cfg.CompanionSession.Status().State
+	if s.cfg.Session != nil {
+		state = s.cfg.Session.Status().State
 		if state == "" {
 			state = core.StateIdle
 		}
@@ -291,11 +280,11 @@ func (s *Server) handleCompanionLaunch(w http.ResponseWriter, r *http.Request) {
 	if !requireCompanionJSON(w, r) {
 		return
 	}
-	if s.cfg.MisterLauncher == nil {
+	if s.cfg.Launcher == nil {
 		writeCompanionError(w, r, http.StatusInternalServerError, "mister launcher not wired")
 		return
 	}
-	if err := s.cfg.MisterLauncher.Launch(r.Context()); err != nil {
+	if err := s.cfg.Launcher.Launch(r.Context()); err != nil {
 		writeCompanionError(w, r, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -321,11 +310,11 @@ func (s *Server) handleCompanionVolume(w http.ResponseWriter, r *http.Request) {
 		writeCompanionError(w, r, http.StatusBadRequest, "output_volume must be in 0..100")
 		return
 	}
-	if s.cfg.CompanionVolumeSaver == nil {
+	if s.cfg.VolumeSaver == nil {
 		writeCompanionError(w, r, http.StatusServiceUnavailable, "volume control not available")
 		return
 	}
-	if err := s.cfg.CompanionVolumeSaver.SaveOutputVolume(v); err != nil {
+	if err := s.cfg.VolumeSaver.SaveOutputVolume(v); err != nil {
 		writeCompanionError(w, r, http.StatusInternalServerError, "volume save failed")
 		return
 	}
@@ -363,11 +352,11 @@ func decodeCompanionJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 func (s *Server) companionURLRequired(w http.ResponseWriter, r *http.Request) (CompanionURLSource, bool) {
-	if s.cfg.CompanionURL == nil {
+	if s.cfg.URL == nil {
 		writeCompanionError(w, r, http.StatusInternalServerError, "companion URL source not wired")
 		return nil, false
 	}
-	return s.cfg.CompanionURL, true
+	return s.cfg.URL, true
 }
 
 func companionStartedResponse(res CompanionPlayResult) map[string]any {
@@ -390,8 +379,8 @@ func (s *Server) companionSession(st core.SessionStatus) companionSessionPayload
 	display := CompanionSessionDisplay{
 		AdapterName: s.companionAdapterName(st.AdapterRef),
 	}
-	if s.cfg.CompanionDisplay != nil {
-		if enriched := s.cfg.CompanionDisplay.CompanionDisplay(st.AdapterRef); enriched.AdapterName != "" ||
+	if s.cfg.Display != nil {
+		if enriched := s.cfg.Display.CompanionDisplay(st.AdapterRef); enriched.AdapterName != "" ||
 			enriched.Title != "" || enriched.SourceDisplay != "" || enriched.ResolvedVia != "" {
 			if enriched.AdapterName != "" {
 				display.AdapterName = enriched.AdapterName
@@ -428,7 +417,7 @@ func (s *Server) companionSession(st core.SessionStatus) companionSessionPayload
 }
 
 func (s *Server) companionCapabilities(st core.SessionStatus) companionCapabilities {
-	if s.cfg.CompanionURL == nil {
+	if s.cfg.URL == nil {
 		return companionCapabilities{}
 	}
 	if st.AdapterRef != "" && !strings.HasPrefix(st.AdapterRef, "url:") {
@@ -439,7 +428,7 @@ func (s *Server) companionCapabilities(st core.SessionStatus) companionCapabilit
 	}
 	caps := companionCapabilities{
 		CanPlay:   s.companionURLReady(),
-		CanReplay: s.cfg.CompanionURL.CompanionLastURLDisplay() != "",
+		CanReplay: s.cfg.URL.CompanionLastURLDisplay() != "",
 	}
 	switch st.State {
 	case core.StatePlaying:

@@ -9,18 +9,19 @@ import (
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
-	uipkg "github.com/idio-sync/MiSTer_GroovyRelay/internal/ui"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/companion"
 )
 
-// TestCutover_DualMount asserts the chassis (/ui), legacy UI (/old_ui), and
-// Companion API (/ui/companion) coexist on one mux without a duplicate-pattern
-// panic, and that the swapped routes resolve to the right surface.
-func TestCutover_DualMount(t *testing.T) {
+// TestMount_ChassisAndCompanion asserts the chassis (/ui) and the browser
+// extension's Companion API (/ui/companion) coexist on one mux without a
+// duplicate-pattern panic, that each route resolves to the right surface,
+// and that the retired legacy UI (/old_ui) and /receiver prefixes stay gone.
+func TestMount_ChassisAndCompanion(t *testing.T) {
 	reg := adapters.NewRegistry()
 
-	ui, err := uipkg.New(uipkg.Config{Registry: reg})
+	comp, err := companion.New(companion.Config{Registry: reg})
 	if err != nil {
-		t.Fatalf("ui.New: %v", err)
+		t.Fatalf("companion.New: %v", err)
 	}
 	ch, err := chassis.New(chassis.Config{Version: "test", StartedAt: time.Now(), Registry: reg})
 	if err != nil {
@@ -30,7 +31,7 @@ func TestCutover_DualMount(t *testing.T) {
 
 	mux := http.NewServeMux()
 	// Must not panic on duplicate patterns — mirrors main.go mount order.
-	ui.Mount(mux)
+	comp.Mount(mux)
 	ch.Mount(mux)
 
 	check := func(method, path, body string, want int) *httptest.ResponseRecorder {
@@ -82,9 +83,6 @@ func TestCutover_DualMount(t *testing.T) {
 	checkLocation(check("GET", "/", "", http.StatusFound), "/ui/")
 	checkBodyContains(check("GET", "/ui", "", http.StatusOK), "/ui/static/chassis.css")
 	checkBodyContains(check("GET", "/ui/", "", http.StatusOK), "/ui/static/chassis.css")
-	checkBodyContains(check("GET", "/old_ui/", "", http.StatusOK), "/old_ui/static/app.css")
-	checkLocation(check("GET", "/old_ui/setup", "", http.StatusFound), "/old_ui/setup/step/adapters")
-	check("POST", "/old_ui/setup/step/bridge", "mister.host=192.0.2.10", http.StatusInternalServerError)
 
 	// Companion status requires the browser-extension origin+header gate.
 	compStatusRec := func() *httptest.ResponseRecorder {
@@ -108,6 +106,8 @@ func TestCutover_DualMount(t *testing.T) {
 	// The legacy broad OPTIONS /ui/ preflight must not survive and catch chassis routes.
 	check("OPTIONS", "/ui/cast", "", http.StatusMethodNotAllowed)
 
+	check("GET", "/old_ui/", "", http.StatusNotFound)
+	check("GET", "/old_ui/static/app.css", "", http.StatusNotFound)
 	check("GET", "/receiver", "", http.StatusNotFound)
 	check("GET", "/receiver/static/chassis.css", "", http.StatusNotFound)
 }

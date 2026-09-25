@@ -1,4 +1,4 @@
-package ui
+package companion
 
 import (
 	"context"
@@ -110,17 +110,17 @@ func newCompanionRouteServer(t *testing.T, source fakeCompanionURL) (*Server, *h
 func newCompanionRouteServerWithLauncher(t *testing.T, source fakeCompanionURL, launcher MisterLauncher) (*Server, *http.ServeMux) {
 	t.Helper()
 	reg := adapters.NewRegistry()
-	if err := reg.Register(&uiStubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
+	if err := reg.Register(&stubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := New(Config{
 		Registry: reg,
-		CompanionSession: fakeCompanionSession{status: core.SessionStatus{
+		Session: fakeCompanionSession{status: core.SessionStatus{
 			State:      core.StatePlaying,
 			AdapterRef: "url:abc",
 		}},
-		CompanionURL:   source,
-		MisterLauncher: launcher,
+		URL:      source,
+		Launcher: launcher,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -219,19 +219,19 @@ func TestCompanionGatePreflightAllowsPrivateNetworkAccess(t *testing.T) {
 
 func TestCompanionStatusURLSessionIncludesCapabilitiesAndHistory(t *testing.T) {
 	reg := adapters.NewRegistry()
-	if err := reg.Register(&uiStubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
+	if err := reg.Register(&stubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := New(Config{
 		Registry: reg,
-		CompanionSession: fakeCompanionSession{status: core.SessionStatus{
+		Session: fakeCompanionSession{status: core.SessionStatus{
 			State:      core.StatePlaying,
 			AdapterRef: "url:abc",
 			Position:   90 * time.Second,
 			Duration:   3 * time.Minute,
 			StartedAt:  time.Date(2026, 5, 9, 1, 2, 3, 0, time.UTC),
 		}},
-		CompanionURL: fakeCompanionURL{
+		URL: fakeCompanionURL{
 			lastDisplay: "example.com/video.mp4",
 			history: []CompanionHistoryEntry{{
 				ID:         "h_7f4c9e2b8a1d4c0aa9d3e6f124b8c2d1",
@@ -240,7 +240,7 @@ func TestCompanionStatusURLSessionIncludesCapabilitiesAndHistory(t *testing.T) {
 				LastPlayed: time.Date(2026, 5, 9, 1, 2, 3, 0, time.UTC),
 			}},
 		},
-		CompanionDisplay: fakeCompanionDisplay{display: CompanionSessionDisplay{
+		Display: fakeCompanionDisplay{display: CompanionSessionDisplay{
 			AdapterName:   "URL",
 			Title:         "Example",
 			SourceDisplay: "example.com/video.mp4",
@@ -297,18 +297,18 @@ func TestCompanionStatusURLSessionIncludesCapabilitiesAndHistory(t *testing.T) {
 // rendering a misleading 0/0 control.
 func TestCompanionStatusURLSessionUnknownDurationDisablesSeek(t *testing.T) {
 	reg := adapters.NewRegistry()
-	if err := reg.Register(&uiStubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
+	if err := reg.Register(&stubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := New(Config{
 		Registry: reg,
-		CompanionSession: fakeCompanionSession{status: core.SessionStatus{
+		Session: fakeCompanionSession{status: core.SessionStatus{
 			State:      core.StatePlaying,
 			AdapterRef: "url:live",
 			Position:   30 * time.Second,
 			// Duration intentionally zero — live stream / unknown.
 		}},
-		CompanionURL: fakeCompanionURL{lastDisplay: "live.example.com/feed"},
+		URL: fakeCompanionURL{lastDisplay: "live.example.com/feed"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -346,16 +346,16 @@ func TestCompanionStatusURLSessionUnknownDurationDisablesSeek(t *testing.T) {
 
 func TestCompanionStatusForeignSessionReadOnly(t *testing.T) {
 	reg := adapters.NewRegistry()
-	if err := reg.Register(&uiStubAdapter{name: "plex", displayName: "Plex", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
+	if err := reg.Register(&stubAdapter{name: "plex", displayName: "Plex", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := New(Config{
 		Registry: reg,
-		CompanionSession: fakeCompanionSession{status: core.SessionStatus{
+		Session: fakeCompanionSession{status: core.SessionStatus{
 			State:      core.StatePlaying,
 			AdapterRef: "plex:machine",
 		}},
-		CompanionURL: fakeCompanionURL{},
+		URL: fakeCompanionURL{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -473,11 +473,11 @@ func (f *fakeCompanionVolume) SaveOutputVolume(v int) error { f.level = v; retur
 
 func TestCompanionVolumeSetsAndValidates(t *testing.T) {
 	reg := adapters.NewRegistry()
-	if err := reg.Register(&uiStubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
+	if err := reg.Register(&stubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
 		t.Fatal(err)
 	}
 	saver := &fakeCompanionVolume{}
-	s, err := New(Config{Registry: reg, CompanionVolumeSaver: saver})
+	s, err := New(Config{Registry: reg, VolumeSaver: saver})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -506,10 +506,10 @@ func TestCompanionVolumeSetsAndValidates(t *testing.T) {
 
 func TestCompanionVolumeRejectsNonExtension(t *testing.T) {
 	reg := adapters.NewRegistry()
-	if err := reg.Register(&uiStubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
+	if err := reg.Register(&stubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
 		t.Fatal(err)
 	}
-	s, _ := New(Config{Registry: reg, CompanionVolumeSaver: &fakeCompanionVolume{}})
+	s, _ := New(Config{Registry: reg, VolumeSaver: &fakeCompanionVolume{}})
 	mux := http.NewServeMux()
 	s.Mount(mux)
 
@@ -525,12 +525,12 @@ func TestCompanionVolumeRejectsNonExtension(t *testing.T) {
 
 func TestCompanionStatusIncludesOutputVolume(t *testing.T) {
 	reg := adapters.NewRegistry()
-	if err := reg.Register(&uiStubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
+	if err := reg.Register(&stubAdapter{name: "url", displayName: "URL", enabled: true, enabledSet: true, state: adapters.StateRunning}); err != nil {
 		t.Fatal(err)
 	}
 	s, err := New(Config{
-		Registry:              reg,
-		CompanionVolumeViewer: &fakeCompanionVolume{level: 73},
+		Registry:     reg,
+		VolumeViewer: &fakeCompanionVolume{level: 73},
 	})
 	if err != nil {
 		t.Fatal(err)

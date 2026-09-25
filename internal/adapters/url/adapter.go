@@ -65,7 +65,7 @@ type ytdlpProbe struct {
 //
 // Concurrency: all field reads and writes (cfg, state, lastErr,
 // stateSince, lastURL) go through mu. Status() and OnStop's mutator
-// share the same lock so the panel fragment never observes a torn read.
+// share the same lock so status readers never observe a torn read.
 type Adapter struct {
 	core SessionManager
 	// bridge is the bridge-level config snapshot used for URL-owned cache
@@ -82,7 +82,8 @@ type Adapter struct {
 	resolver resolverIface
 
 	// ytdlpProbe is the cached yt-dlp version + path. Set in
-	// Adapter.Start(). Surfaced in the panel via renderPanel.
+	// Adapter.Start(). probe.OK gates the Quick Cast mode radio and
+	// yt-dlp dispatch.
 	ytdlpProbe ytdlpProbe
 
 	// probeFn returns the result of probing for yt-dlp. Defaults to
@@ -103,10 +104,10 @@ type Adapter struct {
 	state         adapters.State
 	lastErr       string
 	stateSince    time.Time
-	lastURL       string // last URL handed to StartSession; surfaced in the panel
+	lastURL       string // last URL handed to StartSession; used by resume/replay + companion display
 	activeOverlay *hlsMeterHandle
 
-	// history is the LRU URL-recall list shown in the panel. Its own
+	// history is the LRU URL-recall list surfaced via CompanionHistory. Its own
 	// mutex; not guarded by a.mu. Path computed once at New() from
 	// cfg.Bridge.DataDir, mirroring the cookiesPath pattern.
 	history *History
@@ -286,7 +287,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 	// Build the resolver outside the lock (no shared state involved)
 	// then assign + cache probe under a.mu in one critical section.
 	// This keeps a.resolver writes lock-protected, matching the
-	// locked read in handlePlay (review fix I4 — prevents -race
+	// locked read in castURLWithStarter (review fix I4 — prevents -race
 	// detector flag in CI).
 	var resolver resolverIface
 	a.mu.Lock()
@@ -359,9 +360,10 @@ func (a *Adapter) Status() adapters.Status {
 	}
 }
 
-// SetEnabled implements ui.EnableSetter. The toggle handler
-// (ui.Server handleAdapterToggle) calls this in sync with
-// Start/Stop. Without it the toggle endpoint returns 500.
+// SetEnabled flips the in-memory enabled flag without touching the
+// rest of the config. The settings UI persists enable/disable through
+// ApplyConfig; this mutator remains for callers (and tests) that need
+// to toggle the flag directly.
 func (a *Adapter) SetEnabled(v bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -408,8 +410,8 @@ func (a *Adapter) ApplyConfig(raw toml.Primitive, meta toml.MetaData) (adapters.
 	return adapters.ScopeHotSwap, nil
 }
 
-// CurrentValues implements ui.ValueProvider via duck-typing — surfaces
-// the current cfg values to the UI for form prefill. Must stay in
+// CurrentValues surfaces the current cfg values (duck-typed) to the
+// settings UI for form prefill. Must stay in
 // lockstep with Fields(): the chassis form prefill (4D's
 // AdapterSettingsSaver.Current path) renders blank/off for any Fields()
 // key missing here, and this map is also SaveTouched's missing-section

@@ -217,3 +217,26 @@ func (a *Adapter) CastChannel(ctx context.Context, providerID, channelID string)
 	_, err := a.StartResolvedStream(ctx, res)
 	return err
 }
+
+// validatePlayRequest checks a caller-supplied resolution against the live
+// catalog before StartResolvedStream is invoked. Shared by CastPreset and
+// CastChannel, the adapter's play-request entry points.
+func (a *Adapter) validatePlayRequest(res streamhandoff.Resolution) error {
+	if res.ChannelID != "" && res.ItemID != "" && res.ChannelID != reservedAdhocID {
+		return playbackError(res.ProviderID, "resolution must identify exactly one channel or item")
+	}
+	if res.ItemID != "" && !youtubeIDRE.MatchString(res.ItemID) {
+		return invalidExtraction(res.ProviderID, "item is not a valid YouTube ID")
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	cat, ok := a.catalogs[res.ProviderID]
+	if !ok {
+		return invalidExtraction(res.ProviderID, "provider is not cataloged")
+	}
+	if res.ChannelID != "" && res.ChannelID != reservedAdhocID && cat.Channel(res.ChannelID) == nil {
+		return invalidExtraction(res.ProviderID, "channel is not cataloged")
+	}
+	return nil
+}

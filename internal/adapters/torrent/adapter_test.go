@@ -73,7 +73,6 @@ func (c *closeOnlyTorrentClient) Close() error {
 
 func TestAdapterImplementsCoreInterfaces(t *testing.T) {
 	var _ adapters.Adapter = (*Adapter)(nil)
-	var _ adapters.RouteProvider = (*Adapter)(nil)
 	var _ adapters.PublicRouteProvider = (*Adapter)(nil)
 }
 

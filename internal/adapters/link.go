@@ -23,10 +23,10 @@ type LinkSnapshot struct {
 	Error          string // error phase, or a linked-phase warning (post-auth restart trouble)
 }
 
-// LinkController is the orchestration a linkable adapter exposes so both
-// the legacy /ui HTML handlers and the chassis JSON binding drive the
-// same link-state machine. Implementations must keep the adapter's own
-// phase + event emissions authoritative regardless of caller.
+// LinkController is the orchestration a linkable adapter exposes so the
+// chassis JSON binding drives the adapter's link-state machine.
+// Implementations must keep the adapter's own phase + event emissions
+// authoritative regardless of caller.
 //
 // Method names: the start method is StartLink (not Start) so an adapter
 // can implement this interface directly — adapters.Adapter already
