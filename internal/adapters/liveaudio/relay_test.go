@@ -193,7 +193,7 @@ func TestRelayNewReaderTakesOver(t *testing.T) {
 	}
 }
 
-func TestRelayResetEndsReaderAndReleasesFeed(t *testing.T) {
+func TestRelayResetEndsReaderAndReleasesWrite(t *testing.T) {
 	h := newRelayHarness(t)
 	h.relay.SetDiscard(false)
 	body := h.open()

@@ -12,7 +12,6 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -120,8 +119,8 @@ func (r *Relay) URL(httpPort int) string {
 	return fmt.Sprintf("http://127.0.0.1:%d%s%s", httpPort, r.route, r.token)
 }
 
-// SetDiscard switches discard mode. While discarding, Feed drops input so
-// an idle helper never blocks; otherwise a full buffer blocks Feed.
+// SetDiscard switches discard mode. While discarding, Write drops input so
+// an idle helper never blocks; otherwise a full buffer blocks Write.
 // Entering discard mode also empties the buffer.
 func (r *Relay) SetDiscard(discard bool) {
 	r.mu.Lock()
@@ -133,23 +132,11 @@ func (r *Relay) SetDiscard(discard bool) {
 	r.cond.Broadcast()
 }
 
-// Feed copies src into the relay until src ends. Run it on its own
-// goroutine per helper process; killing the helper ends it (a Feed blocked
-// on a full buffer is released by Reset).
-func (r *Relay) Feed(src io.Reader) error {
-	chunk := make([]byte, 4096)
-	for {
-		n, err := src.Read(chunk)
-		if n > 0 {
-			r.push(chunk[:n])
-		}
-		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return err
-		}
-	}
+// Write makes the relay a helper's stdout. It blocks while the buffer is
+// full (unless discarding); Reset releases a blocked Write. It never fails.
+func (r *Relay) Write(p []byte) (int, error) {
+	r.push(p)
+	return len(p), nil
 }
 
 // push appends p, waiting for room unless discarding.
@@ -185,7 +172,7 @@ func (r *Relay) take(n int) []byte {
 }
 
 // Reset ends the current reader, enters discard mode, and empties the
-// buffer, releasing any Feed blocked on it. The relay stays usable.
+// buffer, releasing any Write blocked on it. The relay stays usable.
 func (r *Relay) Reset() {
 	r.mu.Lock()
 	r.reader = 0
