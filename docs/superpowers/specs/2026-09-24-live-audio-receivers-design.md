@@ -1,7 +1,11 @@
 # Live Audio Receivers (Spotify Connect + AirPlay) Design
 
 **Date:** 2026-09-24
-**Status:** Design approved; implementing commit-by-commit on `feat/live-audio-receivers`.
+**Status:** Phases 1–3 implemented on `feat/live-audio-receivers`. Not yet
+verified on real hardware: casting from a phone (Spotify app, iOS AirPlay),
+the Docker image build (librespot and shairport-sync stages), and real
+shairport-sync. librespot 0.8.0 was built locally with the image's feature
+set and ran under the bridge.
 **Scope:** Make the bridge a native Spotify Connect and AirPlay (classic) audio
 receiver whose audio drives the existing CRT music visualizer. Each protocol is
 its own adapter, peer to Plex/Jellyfin/DLNA. A shared `liveaudio` package owns
@@ -68,7 +72,8 @@ internal/adapters/liveaudio/     protocol-agnostic
   supervisor.go   spawn/restart/stop a helper (backoff, stderr → slog, health)
   relay.go        helper stdout PCM → ring buffer → paced loopback HTTP
   session.go      core.SessionRequest builder + Idle/Live/Held FSM
-  events.go       Event{Play, Pause, Resume, Track, Stop} + TrackMeta
+  events.go       Event{Play, Pause, Resume, Track, Artwork, Stop} + TrackMeta
+  receiver.go     Session + Supervisor lifecycle shared by both adapters
 internal/adapters/spotify/       librespot argv, onevent mapping, config/Fields/scopes
 internal/adapters/airplay/       shairport-sync argv/config, UDP metadata parser, config
 internal/core/                   + LiveTextDir pass-through, UpdateNowPlayingIfSession
@@ -221,16 +226,20 @@ disabled.
 
 ## Packaging
 
-- Dockerfile gains two musl build stages at pinned tags:
-  - librespot with the pipe backend and built-in (libmdns) discovery.
-  - shairport-sync built `--with-stdout --with-metadata` with built-in mDNS
-    (`--with-tinysvcmdns`); runtime adds the shared libs it links (libconfig,
-    popt, openssl, soxr).
+- Dockerfile gains two build stages at pinned versions:
+  - librespot 0.8.0 (`rust:1-alpine`): `--no-default-features --features
+    rustls-tls-webpki-roots,with-libmdns` — static musl, no runtime libs; the
+    pipe backend is always compiled in.
+  - shairport-sync 5.5.2 (`alpine:3.20`, matching the runtime) built
+    `--with-stdout --with-metadata --with-metadata-multicast
+    --with-tinysvcmdns --with-ssl=openssl` (tinysvcmdns is still offered by
+    5.5.x's configure); runtime adds popt, libconfig, libssl3/libcrypto3.
 - Native installs set `binary_path` or put the helper on PATH. README documents
   both.
-- Unverified until CI/Docker: that the pinned shairport-sync still supports
-  tinysvcmdns (fallback: supervise avahi-daemon + dbus) and arm64 Rust build
-  time under QEMU (mitigate with cache mounts).
+- Unverified until CI/Docker: both image stages, and the arm64 librespot
+  build time under QEMU (paid once per version; the GHA layer cache keeps it).
+  If tinysvcmdns clashes with a host avahi on port 5353, the fallback is to
+  supervise avahi-daemon + dbus.
 
 ## Testing
 
