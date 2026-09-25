@@ -1095,6 +1095,19 @@ func TestDataplaneStatsAttrsIncludeDeltaResyncs(t *testing.T) {
 	}
 }
 
+func TestDataplaneStatsAttrsIncludeCompressionAttempts(t *testing.T) {
+	snap := dataplaneStatsSnapshot{
+		window:           5 * time.Second,
+		deltaEnabled:     true,
+		fullLZ4Attempts:  40,
+		deltaLZ4Attempts: 7,
+	}
+	got := attrMap(dataplaneStatsAttrs(dataplaneStatsWindow{}, snap))
+	if got["full_lz4_attempts_total"] != uint64(40) || got["delta_lz4_attempts_total"] != uint64(7) {
+		t.Fatalf("attempt attrs = %#v / %#v, want 40 / 7", got["full_lz4_attempts_total"], got["delta_lz4_attempts_total"])
+	}
+}
+
 func TestDataplaneStatsAttrsIncludeFieldParityWhenInterlaced(t *testing.T) {
 	snap := dataplaneStatsSnapshot{
 		window:             5 * time.Second,

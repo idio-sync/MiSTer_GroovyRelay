@@ -117,6 +117,8 @@ type dataplaneStatsSnapshot struct {
 	deltaEnabled       bool
 	deltaSelectedTotal uint64
 	deltaResyncsTotal  uint64
+	fullLZ4Attempts    uint64
+	deltaLZ4Attempts   uint64
 
 	// Field-parity telemetry (interlaced modelines only; see
 	// fieldParityTracker).
@@ -293,7 +295,9 @@ func dataplaneStatsAttrs(window dataplaneStatsWindow, snap dataplaneStatsSnapsho
 		attrs = append(attrs,
 			"delta_selected", deltaSelected,
 			"delta_selected_total", snap.deltaSelectedTotal,
-			"delta_resyncs_total", snap.deltaResyncsTotal)
+			"delta_resyncs_total", snap.deltaResyncsTotal,
+			"full_lz4_attempts_total", snap.fullLZ4Attempts,
+			"delta_lz4_attempts_total", snap.deltaLZ4Attempts)
 	}
 	if snap.parityTracked {
 		attrs = append(attrs,
@@ -371,6 +375,11 @@ const (
 	// polarity about once per second, bounding silent delta-loss corruption
 	// without adding a user-facing tuning knob.
 	deltaLZ4ForcedFullInterval = 30
+	// Delta-attempt backoff (see compressField): after this many straight
+	// delta losses on a polarity, skip delta for deltaBackoffFields
+	// same-polarity fields (~0.5 s), then re-probe once.
+	deltaBackoffAfterLosses = 3
+	deltaBackoffFields      = 15
 )
 
 // Startup prebuffer defaults. The field tick loop runs at 59.94 Hz;
@@ -484,6 +493,14 @@ type Plane struct {
 	fieldDeltaLZ4Scratch []byte
 	fieldDeltaLZ4        lz4.Compressor
 	deltaFieldsSinceFull [2]int
+
+	// Per-polarity compression policy (see compressField) and attempt
+	// counters for the stats line. Tick-goroutine owned.
+	deltaLosses      [2]int // consecutive delta losses
+	deltaBackoff     [2]int // remaining fields to skip delta attempts
+	lastFullLZ4Bytes [2]int // last full-LZ4 size; 0 = unknown/incompressible
+	fullLZ4Attempts  uint64
+	deltaLZ4Attempts uint64
 
 	// deltaResyncs counts forced full-field resyncs after a duplicate run
 	// or an ACK echo gap (see resyncDeltaHistory). lastEchoResyncFrame
@@ -1137,6 +1154,8 @@ func (p *Plane) Run(ctx context.Context) error {
 				deltaEnabled:       p.deltaLZ4Enabled,
 				deltaSelectedTotal: p.deltaSelectedTotal,
 				deltaResyncsTotal:  p.deltaResyncs,
+				fullLZ4Attempts:    p.fullLZ4Attempts,
+				deltaLZ4Attempts:   p.deltaLZ4Attempts,
 			}
 			if parity != nil {
 				snap.parityTracked = true
@@ -1453,8 +1472,7 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats 
 	choice := fieldPayloadChoice{payload: raw}
 	if p.cfg.LZ4Enabled {
 		t := time.Now()
-		if n, ok := groovy.LZ4CompressInto(&p.lz4Compressor, p.lz4Scratch, raw); ok {
-			choice = p.chooseFieldPayload(field, raw, p.lz4Scratch[:n], ok)
+		if choice = p.compressField(field, raw); choice.compressed {
 			payload = choice.payload
 			opts.Compressed = true
 			opts.CompressedSize = uint32(len(payload))
@@ -1533,6 +1551,8 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats 
 				"delta_lz4_ok", choice.deltaLZ4OK,
 				"delta_lz4_selected", choice.delta,
 				"delta_lz4_forced_full", choice.deltaForcedFull,
+				"delta_lz4_backoff", choice.deltaBackoff,
+				"delta_lz4_full_skipped", choice.fullSkipped,
 				"delta_lz4_full_bytes", choice.fullLZ4Bytes,
 				"delta_lz4_bytes", choice.deltaLZ4Bytes,
 				"delta_lz4_chunks", datagramChunks(choice.deltaLZ4Bytes),
@@ -1567,12 +1587,15 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats 
 
 type fieldPayloadChoice struct {
 	payload           []byte
+	compressed        bool // payload is LZ4 (full or delta); false = RAW
 	delta             bool
-	fullLZ4Bytes      int
+	fullLZ4Bytes      int // this field's full-LZ4 size, or the remembered one when fullSkipped
+	fullSkipped       bool
 	deltaLZ4Available bool
 	deltaLZ4OK        bool
 	deltaLZ4Bytes     int
 	deltaForcedFull   bool
+	deltaBackoff      bool // delta attempt skipped: it has been losing on this polarity
 }
 
 type fieldDiagnostic struct {
@@ -1598,38 +1621,95 @@ func shouldUseDeltaLZ4(fullBytes, deltaBytes int) bool {
 	return deltaBytes*deltaLZ4WinDenominator < fullBytes*deltaLZ4WinNumerator
 }
 
-func (p *Plane) chooseFieldPayload(field uint8, raw []byte, fullLZ4 []byte, fullOK bool) fieldPayloadChoice {
-	choice := fieldPayloadChoice{
-		payload:      raw,
-		fullLZ4Bytes: len(fullLZ4),
-	}
-	if !fullOK {
-		return choice
-	}
-
-	choice.payload = fullLZ4
-	if !p.deltaLZ4Enabled || !p.hasFieldHistory(field, raw) ||
-		len(p.fieldDeltaScratch) < len(raw) || len(p.fieldDeltaLZ4Scratch) == 0 {
-		return choice
-	}
-
-	choice.deltaLZ4Available = true
-	if p.shouldForceDeltaLZ4Full(field) {
-		choice.deltaForcedFull = true
-		return choice
-	}
-
+// compressField picks the LZ4 payload for one field: full LZ4, or (delta-LZ4
+// enabled, same-polarity history available, no forced resync due) delta LZ4
+// when it is under 95% of the full size. RAW (compressed=false) when the
+// full field is incompressible.
+//
+// Each compression costs ~1.5-2.5 ms per 720x240 field on a laptop and
+// several times that on Atom-class hosts, so the policy only computes the
+// likely winner per polarity:
+//
+//   - Delta losing (grain, noise, motion): after deltaBackoffAfterLosses
+//     straight losses, skip delta attempts for deltaBackoffFields fields,
+//     then re-probe once; another loss backs off again immediately.
+//   - Delta winning (static or slow content): compress the delta first and
+//     compare it with the polarity's last full-LZ4 size. If it still wins,
+//     send it without compressing the full field. The periodic forced full
+//     (deltaLZ4ForcedFullInterval) refreshes that remembered size.
+//
+// Either payload is always valid on the wire; a stale comparison can only
+// pick the larger of the two until the next full compression.
+func (p *Plane) compressField(field uint8, raw []byte) fieldPayloadChoice {
 	slot := int(field & 1)
-	delta := p.fieldDeltaScratch[:len(raw)]
-	writeFieldSubDeltaInto(delta, raw, p.fieldPrev[slot])
-	n, ok := groovy.LZ4CompressInto(&p.fieldDeltaLZ4, p.fieldDeltaLZ4Scratch, delta)
-	choice.deltaLZ4OK = ok
-	choice.deltaLZ4Bytes = n
-	if ok && shouldUseDeltaLZ4(len(fullLZ4), n) {
-		choice.payload = p.fieldDeltaLZ4Scratch[:n]
+	choice := fieldPayloadChoice{payload: raw}
+
+	eligible := p.deltaLZ4Enabled && p.hasFieldHistory(field, raw) &&
+		len(p.fieldDeltaScratch) >= len(raw) && len(p.fieldDeltaLZ4Scratch) > 0
+	if eligible {
+		choice.deltaLZ4Available = true
+		if p.shouldForceDeltaLZ4Full(field) {
+			choice.deltaForcedFull = true
+			eligible = false
+		}
+	}
+	tryDelta := eligible
+	if eligible && p.deltaBackoff[slot] > 0 {
+		p.deltaBackoff[slot]--
+		choice.deltaBackoff = true
+		tryDelta = false
+	}
+
+	deltaDone := false
+	if tryDelta && p.deltaLosses[slot] == 0 && p.lastFullLZ4Bytes[slot] > 0 {
+		p.compressDeltaInto(&choice, slot, raw)
+		deltaDone = true
+		if choice.deltaLZ4OK && shouldUseDeltaLZ4(p.lastFullLZ4Bytes[slot], choice.deltaLZ4Bytes) {
+			choice.payload = p.fieldDeltaLZ4Scratch[:choice.deltaLZ4Bytes]
+			choice.compressed, choice.delta, choice.fullSkipped = true, true, true
+			choice.fullLZ4Bytes = p.lastFullLZ4Bytes[slot]
+			return choice
+		}
+	}
+
+	p.fullLZ4Attempts++
+	n, ok := groovy.LZ4CompressInto(&p.lz4Compressor, p.lz4Scratch, raw)
+	if !ok {
+		p.lastFullLZ4Bytes[slot] = 0
+		return choice
+	}
+	p.lastFullLZ4Bytes[slot] = n
+	choice.fullLZ4Bytes = n
+	choice.payload = p.lz4Scratch[:n]
+	choice.compressed = true
+
+	if tryDelta && !deltaDone {
+		p.compressDeltaInto(&choice, slot, raw)
+		deltaDone = true
+	}
+	if !deltaDone {
+		return choice
+	}
+	if choice.deltaLZ4OK && shouldUseDeltaLZ4(n, choice.deltaLZ4Bytes) {
+		choice.payload = p.fieldDeltaLZ4Scratch[:choice.deltaLZ4Bytes]
 		choice.delta = true
+		p.deltaLosses[slot] = 0
+		return choice
+	}
+	p.deltaLosses[slot]++
+	if p.deltaLosses[slot] >= deltaBackoffAfterLosses {
+		p.deltaBackoff[slot] = deltaBackoffFields
 	}
 	return choice
+}
+
+// compressDeltaInto computes the byte-wrap delta against the polarity's
+// history and LZ4-compresses it into fieldDeltaLZ4Scratch.
+func (p *Plane) compressDeltaInto(choice *fieldPayloadChoice, slot int, raw []byte) {
+	p.deltaLZ4Attempts++
+	delta := p.fieldDeltaScratch[:len(raw)]
+	writeFieldSubDeltaInto(delta, raw, p.fieldPrev[slot])
+	choice.deltaLZ4Bytes, choice.deltaLZ4OK = groovy.LZ4CompressInto(&p.fieldDeltaLZ4, p.fieldDeltaLZ4Scratch, delta)
 }
 
 func (p *Plane) shouldForceDeltaLZ4Full(field uint8) bool {
