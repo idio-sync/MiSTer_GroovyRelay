@@ -71,7 +71,7 @@ internal/adapters/liveaudio/     protocol-agnostic
   events.go       Event{Play, Pause, Resume, Track, Stop} + TrackMeta
 internal/adapters/spotify/       librespot argv, onevent mapping, config/Fields/scopes
 internal/adapters/airplay/       shairport-sync argv/config, UDP metadata parser, config
-internal/core/                   + live visualizer text update
+internal/core/                   + LiveTextDir pass-through, UpdateNowPlayingIfSession
 internal/ffmpeg/                 + drawtext textfile/reload path
 internal/chassis/                + AIRPLAY, SPOTIFY lamps
 cmd/mister-groovy-relay/         + register adapters; --librespot-event subcommand
@@ -152,7 +152,7 @@ Idle ──Play──▶ Live ──Pause──▶ Held ──Resume──▶ Li
 
 - **Play** → `Manager.StartSession` (last caster wins, as for every adapter).
   `AdapterRef` is `<adapter>:<session-id>`.
-- **Track** → `Manager.UpdateVisualizerText`. If the current mode uses artwork
+- **Track** → rewrite the live text files + `Manager.UpdateNowPlayingIfSession`. If the current mode uses artwork
   and the artwork hash changed, restart via `StartSessionIfSession(ref,
   generation)`; the relay buffers across the restart.
 - **Pause** → Held: relay emits silence (visualizer idles flat), grace timer
@@ -166,14 +166,23 @@ Idle ──Play──▶ Live ──Pause──▶ Held ──Resume──▶ Li
 
 ### Live visualizer text (core + ffmpeg)
 
-- `VisualizerRequest` gains `LiveText bool`. When set, the pipeline writes each
-  overlay line to a file in a per-session temp dir and uses
-  `drawtext=textfile=<path>:reload=1` instead of `text='…'`. Files are written
-  atomically (write temp + rename).
-- `Manager.UpdateVisualizerText(adapterRef string, generation uint64,
-  meta VisualizerMetadata) error` rewrites those files for the active session
-  only when ref and generation match; it returns an error otherwise. It holds
-  `Manager.mu` only to read session identity, never across file I/O.
+- `VisualizerRequest` gains `LiveTextDir string` (absolute). The adapter owns
+  that directory: it writes the title/artist/album files with
+  `ffmpeg.WriteVisualizerText` before starting the session, rewrites them on
+  track change, and removes them after the session ends. The pipeline renders
+  those three lines with `drawtext=textfile=…:reload=1:expansion=none`
+  instead of `text='…'`, reserving all three slots.
+- Core does no file I/O for live text, so there is no new locking or cleanup
+  path in `Manager`.
+- drawtext aborts the graph when a reload fails, so a file must never be
+  missing or resized mid-read. Linux/macOS replace files by atomic rename.
+  Windows cannot (rename and resize both race ffmpeg's open/mapping), so
+  Windows files are a fixed 512 bytes, NUL-padded (drawtext stops at the
+  first NUL), overwritten in place.
+- `Manager.UpdateNowPlayingIfSession(ref, generation, title, display)` updates
+  the active session's `Title`/`DisplayMetadata` (the VFD rows) under the
+  session-key guard. It is an in-memory write; the chassis picks it up on its
+  next tick.
 - Live sessions have `Duration = 0`, so no progress/duration text is shown.
 
 ## Configuration
@@ -232,8 +241,8 @@ disabled.
 - **spotify unit:** env → event mapping table; `--librespot-event` POST; argv.
 - **airplay unit:** metadata parser on captured fixtures incl. chunked PICT;
   argv/config.
-- **core/ffmpeg unit:** `UpdateVisualizerText` guards; textfile/reload argv;
-  atomic writes.
+- **core/ffmpeg unit:** `UpdateNowPlayingIfSession` guards; textfile/reload argv;
+  rewrites under a real ffmpeg reloading every frame.
 - **integration (build tag):** fake helper → relay → real ffmpeg →
   fake-mister: fields and audio arrive; text update causes no second INIT;
   artwork change causes exactly one restart.
