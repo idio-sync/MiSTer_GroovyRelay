@@ -40,7 +40,7 @@ type SupervisorConfig struct {
 
 // Health is a supervisor's view of its helper.
 type Health struct {
-	Running bool   // a helper process is up
+	Running bool   // a helper process is up (or being started)
 	Err     string // set once the helper keeps failing; cleared by a healthy run
 }
 
@@ -187,13 +187,20 @@ func (s *Supervisor) runOnce(ctx context.Context, spec HelperSpec) error {
 	cmd.Stderr = stderr
 	cmd.Cancel = func() error { return terminate(cmd.Process) }
 	cmd.WaitDelay = s.cfg.StopGrace
+	// Running before Start: exec begins copying the helper's stdout inside
+	// Start, so its first PCM can arrive before Start returns.
+	s.mu.Lock()
+	s.stderr = stderr
+	s.running = true
+	s.mu.Unlock()
 	if err := cmd.Start(); err != nil {
+		s.mu.Lock()
+		s.running = false
+		s.mu.Unlock()
 		return fmt.Errorf("start %s: %w", s.cfg.Name, err)
 	}
 	s.mu.Lock()
 	s.cmd = cmd
-	s.stderr = stderr
-	s.running = true
 	s.mu.Unlock()
 
 	err := cmd.Wait()

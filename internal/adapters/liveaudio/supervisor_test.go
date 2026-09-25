@@ -20,13 +20,22 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	case "pcm":
 		_, _ = os.Stdout.Write(bytes.Repeat([]byte{0x7f}, 4096))
-		select {}
+		idleForever()
 	case "crash":
 		fmt.Fprintln(os.Stderr, "starting")
 		fmt.Fprintln(os.Stderr, "boom: bad credentials")
 		os.Exit(3)
 	case "sleep":
-		select {}
+		idleForever()
+	}
+}
+
+// idleForever blocks a fake helper until it is killed. Not `select {}`:
+// with no other goroutines the runtime declares that a deadlock and exits
+// the helper moments after it starts.
+func idleForever() {
+	for {
+		time.Sleep(time.Hour)
 	}
 }
 
