@@ -88,7 +88,7 @@ type Relay struct {
 // NewRelay builds a relay whose reader route lives under route, which
 // must start and end with "/". The relay starts in discard mode.
 func NewRelay(route string) (*Relay, error) {
-	token, err := randomToken()
+	token, err := RandomToken()
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +101,8 @@ func newRelay(route, token string, c clock) *Relay {
 	return r
 }
 
-func randomToken() (string, error) {
+// RandomToken returns an unguessable URL-safe token for a loopback route.
+func RandomToken() (string, error) {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", fmt.Errorf("liveaudio: token: %w", err)
@@ -205,7 +206,7 @@ func (r *Relay) releaseReader(id uint64) {
 }
 
 func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	if !remoteIsLoopback(req.RemoteAddr) {
+	if !RemoteIsLoopback(req.RemoteAddr) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -267,10 +268,10 @@ func framesIn(d time.Duration) int64 {
 	return secs*SampleRate + rem*SampleRate/int64(time.Second)
 }
 
-// remoteIsLoopback reports whether an http.Request.RemoteAddr is a
+// RemoteIsLoopback reports whether an http.Request.RemoteAddr is a
 // loopback address. Unmap first: an IPv4-mapped IPv6 loopback
 // (::ffff:127.0.0.1) is not IsLoopback until unmapped.
-func remoteIsLoopback(remoteAddr string) bool {
+func RemoteIsLoopback(remoteAddr string) bool {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
 		return false

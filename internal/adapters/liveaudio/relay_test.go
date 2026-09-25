@@ -282,8 +282,8 @@ func TestRemoteIsLoopback(t *testing.T) {
 		"garbage":              false,
 	}
 	for addr, want := range cases {
-		if got := remoteIsLoopback(addr); got != want {
-			t.Errorf("remoteIsLoopback(%q) = %v, want %v", addr, got, want)
+		if got := RemoteIsLoopback(addr); got != want {
+			t.Errorf("RemoteIsLoopback(%q) = %v, want %v", addr, got, want)
 		}
 	}
 }
