@@ -744,8 +744,11 @@ func TestChassisJSInstallsAUXSourceAction(t *testing.T) {
 		`fetch('/ui/aux/start'`,
 		"URLSearchParams",
 		"input_id",
-		".source-cluster .hw-btn",
-		"classList.add('active', 'lit')",
+		// AUX is a lamp key now: an unconfigured AUX stays pressable (it
+		// flashes input info) so the start action must skip it by class.
+		"classList.contains('unavailable')",
+		".source-cluster .lamp",
+		"classList.add('casting')",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("static/chassis.js missing AUX source action contract %q", want)
@@ -1149,16 +1152,27 @@ func TestSourceClusterAUXButtonCarriesStartAction(t *testing.T) {
 		t.Fatalf("execute source-cluster partial: %v", err)
 	}
 	body := buf.String()
-	auxButton := regexp.MustCompile(`(?s)<button[^>]*data-source-action="aux-start"[^>]*>AUX</button>`).FindString(body)
+	auxButton := regexp.MustCompile(`(?s)<button[^>]*data-source-action="aux-start"[^>]*>.*?</button>`).FindString(body)
 	if auxButton == "" {
 		t.Fatalf("AUX source button with start action not found; full output:\n%s", body)
 	}
-	if !strings.Contains(auxButton, `data-input-id="aux"`) {
-		t.Fatalf("AUX source button missing input id; button:\n%s", auxButton)
+	for _, want := range []string{
+		`data-input-id="aux"`,
+		`class="lamp configured-idle"`,
+		`<span class="name">AUX</span>`,
+		`<span class="state">READY</span>`,
+	} {
+		if !strings.Contains(auxButton, want) {
+			t.Fatalf("AUX lamp key missing %q; button:\n%s", want, auxButton)
+		}
 	}
 }
 
-func TestSourceClusterAUXDisabledWhenUnavailable(t *testing.T) {
+// An unconfigured AUX is an unused input: it shows OFF like any other
+// lamp but stays pressable, because pressing an input key flashes its
+// status on the VFD (source-cluster.js); chassis.js skips the start
+// action for .unavailable lamps.
+func TestSourceClusterAUXOffWhenUnavailable(t *testing.T) {
 	t.Parallel()
 	cfg := nonZeroConfig()
 	cfg.AUX = &fakeAUXStarter{status: adapters.AUXStatus{
@@ -1176,14 +1190,17 @@ func TestSourceClusterAUXDisabledWhenUnavailable(t *testing.T) {
 	s.handleIndex(rr, req)
 
 	body := rr.Body.String()
-	auxButton := regexp.MustCompile(`(?s)<button[^>]*data-source-action="aux-start"[^>]*>AUX</button>`).FindString(body)
+	auxButton := regexp.MustCompile(`(?s)<button[^>]*data-source-action="aux-start"[^>]*>.*?</button>`).FindString(body)
 	if auxButton == "" {
 		t.Fatalf("AUX source button not found; full output:\n%s", body)
 	}
-	for _, want := range []string{`disabled`, `aria-disabled="true"`} {
+	for _, want := range []string{`class="lamp unavailable"`, `data-source-status="off"`, `<span class="state">OFF</span>`} {
 		if !strings.Contains(auxButton, want) {
-			t.Errorf("AUX unavailable button missing %q; button:\n%s", want, auxButton)
+			t.Errorf("AUX unavailable lamp missing %q; button:\n%s", want, auxButton)
 		}
+	}
+	if strings.Contains(auxButton, " disabled") {
+		t.Errorf("AUX unavailable lamp must stay pressable (input info), not disabled; button:\n%s", auxButton)
 	}
 }
 
@@ -2393,26 +2410,31 @@ func TestVfdLive_ExposesEventSourceReference_StaticAssetCheck(t *testing.T) {
 	}
 }
 
+// AUX is a lamp key now, so source events are owned by source-cluster.js
+// (which lights every lamp, AUX included); vfd-live.js must not toggle
+// disabled/aria-checked on source buttons any more. vfd-live.js instead
+// exposes the input-info flash the lamp keys call.
 func TestVFDLiveJSHandlesSourceEvents(t *testing.T) {
 	t.Parallel()
-	bytes, err := chassisStaticFS.ReadFile("static/vfd-live.js")
+	vfd, err := chassisStaticFS.ReadFile("static/vfd-live.js")
 	if err != nil {
 		t.Fatalf("read vfd-live.js: %v", err)
 	}
-	js := string(bytes)
-	for _, want := range []string{
-		"source.addEventListener('source'",
-		"handleSourceEvent",
-		"`[data-source-action=\"${button.action}\"]`",
-		"classList.toggle('active'",
-		"classList.toggle('lit'",
-		"aria-checked",
-		"aria-disabled",
-		"data-input-id",
-		"disabled",
-	} {
-		if !strings.Contains(js, want) {
-			t.Errorf("vfd-live.js missing source event contract %q", want)
+	for _, unwanted := range []string{"handleSourceEvent", "[data-source-action="} {
+		if strings.Contains(string(vfd), unwanted) {
+			t.Errorf("vfd-live.js must not drive source buttons any more (found %q)", unwanted)
+		}
+	}
+	if !strings.Contains(string(vfd), "window.Chassis.vfd = { flash }") {
+		t.Error("vfd-live.js must expose the input-info flash as window.Chassis.vfd.flash")
+	}
+	cluster, err := chassisStaticFS.ReadFile("static/source-cluster.js")
+	if err != nil {
+		t.Fatalf("read source-cluster.js: %v", err)
+	}
+	for _, want := range []string{"'aux'", "subscribe('source'"} {
+		if !strings.Contains(string(cluster), want) {
+			t.Errorf("source-cluster.js missing %q", want)
 		}
 	}
 }
@@ -2962,14 +2984,14 @@ func TestSourceClusterTemplate_LampSlotsForEmptyAction(t *testing.T) {
 	srv.handleIndex(rec, req)
 	html := rec.Body.String()
 	for _, want := range []string{
-		`<div class="lamp`,
+		`<button type="button" class="lamp`, // input keys are real buttons
 		`<span class="led-well"`,
 		`<span class="state">OFF</span>`,
 		`data-source-id="streams"`,
 		`data-source-id="plex"`,
 		`data-source-id="jellyfin"`,
 		`data-source-id="dlna"`,
-		`class="hw-btn`, // AUX still renders as hw-btn
+		`data-source-id="aux"`, // AUX is a lamp key like the others
 		`data-source-action="aux-start"`,
 	} {
 		if !strings.Contains(html, want) {
@@ -3011,7 +3033,7 @@ func TestSourceClusterTemplate_IssueStateUsesSingleLargeLED(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.handleIndex(rec, req)
 	html := rec.Body.String()
-	dlna := regexp.MustCompile(`(?s)<div class="lamp configured-idle issue"[^>]*data-source-id="dlna"[^>]*>.*?</div>`).FindString(html)
+	dlna := regexp.MustCompile(`(?s)<button type="button" class="lamp configured-idle issue"[^>]*data-source-id="dlna"[^>]*>.*?</button>`).FindString(html)
 	if dlna == "" {
 		t.Fatalf("DLNA issue source module not found: %s", excerpt(html, "DLNA"))
 	}

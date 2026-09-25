@@ -109,9 +109,8 @@ func TestSourceEnvelopeFromSnapshotIncludesStableActionsForEveryButton(t *testin
 		t.Fatalf("source envelope missing lamp state fields: %s", body)
 	}
 
-	// Lamp slots (STREAMS/PLEX/JELLYFIN/DLNA) render as indicator
-	// lamps with empty Action; only AUX retains a non-empty Action
-	// so it renders as a clickable hw-btn.
+	// Every source renders as a lamp key; only AUX carries a non-empty
+	// Action (a configured AUX press starts capture).
 	wantActions := map[string]string{
 		"STREAMS":  "",
 		"PLEX":     "",

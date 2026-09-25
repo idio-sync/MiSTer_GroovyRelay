@@ -1,30 +1,22 @@
 {{define "source-cluster"}}
 {{htmlComment "chassis:source-cluster"}}
+{{- /* Input keys: every source, AUX included, is a lamp key. Sources push
+       casts, so there is no input to switch to; a press flashes that
+       input's status on the VFD and a second press opens its settings
+       (source-cluster.js). A configured AUX press starts capture
+       (chassis.js). */ -}}
 <div class="source-cluster" role="group" aria-label="Media source">
   {{- range .Buttons -}}
-  {{- if eq .Action "" -}}
-    <div class="lamp{{if .Configured}} configured-idle{{else if not .Issue}} unavailable{{end}}{{if .Casting}} casting{{end}}{{if .Issue}} issue{{end}}"
+    <button type="button" class="lamp{{if .Configured}} configured-idle{{else if not .Issue}} unavailable{{end}}{{if .Casting}} casting{{end}}{{if .Issue}} issue{{end}}"
          data-source-id="{{lower .Label}}"
          data-source-status="{{if .Issue}}issue{{else if .Casting}}live{{else if .Configured}}ready{{else}}off{{end}}"
-         role="status"
+         {{- if .Action}} data-source-action="{{.Action}}" data-input-id="{{.InputID}}"{{end}}
          aria-label="{{.Label}}{{if .Issue}}, issue{{if .LastError}}: {{.LastError}}{{end}}{{else if .Casting}}, currently casting{{else if .Configured}}, ready{{else}}, not configured{{end}}"
          title="{{.Label}} - {{if .Issue}}issue{{if .LastError}}: {{.LastError}}{{end}}{{else if .Casting}}currently casting{{else if .Configured}}linked, idle{{else}}not configured{{end}}">
       <span class="nameplate"><span class="name">{{.Label}}</span></span>
       <span class="led-well" aria-hidden="true"><span class="led" aria-hidden="true"></span></span>
       <span class="state">{{if .Issue}}ISSUE{{else if .Casting}}LIVE{{else if .Configured}}READY{{else}}OFF{{end}}</span>
-    </div>
-  {{- else -}}
-    <button class="hw-btn{{if .Active}} active{{end}}{{if .Lit}} lit{{end}}"
-            type="button"
-            role="radio"
-            aria-checked="{{if .Active}}true{{else}}false{{end}}"
-            aria-disabled="{{if .Unavailable}}true{{else}}false{{end}}"
-            data-source-action="{{.Action}}"
-            data-input-id="{{.InputID}}"
-            {{- if .Unavailable}} disabled{{end}}
-            aria-label="{{.Label}}{{if .Active}} selected{{end}}{{if .Lit}} casting{{end}}"
-            title="{{.Label}}{{if .Active}} selected{{end}}{{if .Lit}} casting{{end}}">{{.Label}}</button>
-  {{- end -}}
+    </button>
   {{- end -}}
 </div>
 {{end}}

@@ -810,7 +810,8 @@ func TestSourceClusterLampsUsePassiveReceiverIndicatorVocabulary(t *testing.T) {
 		"border: 0;",
 		"font: 700 11px Inter, sans-serif;",
 		"inset 1px 0 0 rgba(255, 255, 255, 0.035)",
-		"cursor: default;",
+		// Indicator look, but a pressable input key (flashes input info).
+		"cursor: pointer;",
 		"transition:",
 	} {
 		if !strings.Contains(lampRule, want) {

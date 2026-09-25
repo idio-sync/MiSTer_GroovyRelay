@@ -275,11 +275,9 @@
       const data = JSON.parse(ev.data);
       notePrimary(data.primary);
       announceNowPlaying(data.primary, data.secondary);
-      applyTier('data-vfd-primary', data.primary);
-      applyTier('data-vfd-secondary', data.secondary);
-      applyTier('data-vfd-tertiary', data.tertiary);
+      latestTiers = { primary: data.primary || '', secondary: data.secondary || '', tertiary: data.tertiary || '' };
+      if (!flashTimer) renderTiers(latestTiers);
       const uptime = document.querySelector('[data-vfd-uptime]');
-      applyDensity(data.primary, data.secondary, data.tertiary);
       renderQueue(data.queueCurrent, data.queueTotal);
       if (uptime) uptime.textContent = data.uptime || '';
       // Re-measure once fonts are final (DSEG14 metrics differ from the
@@ -292,11 +290,43 @@
     }
   }
 
+  // Input-key info flash (source-cluster.js): a lamp key press puts that
+  // input's name and status on the tiers, the way a receiver shows the
+  // selected input. Live tier updates are held (but remembered) while it
+  // is up; afterwards the latest live text comes back.
+  const FLASH_MS = 4000;
+  let latestTiers = null;
+  let flashTimer = null;
+
+  function renderTiers(tiers) {
+    applyTier('data-vfd-primary', tiers.primary);
+    applyTier('data-vfd-secondary', tiers.secondary);
+    applyTier('data-vfd-tertiary', tiers.tertiary);
+    applyDensity(tiers.primary, tiers.secondary, tiers.tertiary);
+  }
+
+  function flash(primary, secondary, tertiary) {
+    if (flashTimer) clearTimeout(flashTimer);
+    renderTiers({ primary: primary || '', secondary: secondary || '', tertiary: tertiary || '' });
+    announce([primary, secondary, tertiary].filter(Boolean).join('. '));
+    flashTimer = setTimeout(() => {
+      flashTimer = null;
+      if (latestTiers) renderTiers(latestTiers);
+    }, FLASH_MS);
+  }
+
+  window.Chassis.vfd = { flash };
+
   function initialVfdRender() {
     const primary = document.querySelector('[data-vfd-primary]');
     const secondary = document.querySelector('[data-vfd-secondary]');
     const tertiary = document.querySelector('[data-vfd-tertiary]');
     lastPrimary = primary ? primary.textContent : '';
+    latestTiers = {
+      primary: primary ? primary.textContent : '',
+      secondary: secondary ? secondary.textContent : '',
+      tertiary: tertiary ? tertiary.textContent : '',
+    };
     // Seed with the server-rendered text so the first SSE frame, which
     // repeats what is already on screen, is not announced.
     lastAnnounced = [primary, secondary]
@@ -314,41 +344,10 @@
     }
   }
 
-  function handleSourceEvent(ev) {
-    try {
-      const data = JSON.parse(ev.data);
-      (data.buttons || []).forEach((button) => {
-        if (!button.action) {
-          return;
-        }
-        const btn = document.querySelector(`[data-source-action="${button.action}"]`);
-        if (!btn) {
-          return;
-        }
-        btn.classList.toggle('active', !!button.active);
-        btn.classList.toggle('lit', !!button.lit);
-        btn.setAttribute('aria-checked', button.active ? 'true' : 'false');
-        btn.setAttribute('aria-disabled', button.unavailable ? 'true' : 'false');
-        if (button.unavailable) {
-          btn.setAttribute('disabled', '');
-        } else {
-          btn.removeAttribute('disabled');
-        }
-        btn.setAttribute('data-input-id', button.inputId || '');
-        const label = `${button.label || btn.textContent || ''}${button.active ? ' selected' : ''}${button.lit ? ' casting' : ''}`;
-        btn.setAttribute('aria-label', label);
-        btn.setAttribute('title', label);
-      });
-    } catch (err) {
-      console.warn('vfd-live: bad source payload', ev.data, err);
-    }
-  }
-
   function connect() {
     source = new EventSource('/ui/events');
     source.addEventListener('state', handleStateEvent);
     source.addEventListener('vfd', handleVfdEvent);
-    source.addEventListener('source', handleSourceEvent);
     source.addEventListener('open', () => syncLinkLamp(true));
     source.addEventListener('error', () => {
       syncLinkLamp(false);

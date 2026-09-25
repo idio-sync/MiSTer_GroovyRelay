@@ -119,7 +119,9 @@
     document.querySelectorAll('[data-source-action="aux-start"]').forEach((btn) => {
       btn.addEventListener('click', () => {
         if (window.Chassis.setupBlocked()) return;
-        if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') {
+        // An unconfigured AUX lamp stays pressable (it flashes input info
+        // via source-cluster.js), so skip the start action by class too.
+        if (btn.disabled || btn.getAttribute('aria-disabled') === 'true' || btn.classList.contains('unavailable')) {
           return;
         }
         const form = new URLSearchParams();
@@ -138,12 +140,10 @@
             console.warn('source: AUX start failed', res.status);
             return;
           }
-          document.querySelectorAll('.source-cluster .hw-btn').forEach((sourceBtn) => {
-            sourceBtn.classList.remove('active');
-            sourceBtn.setAttribute('aria-checked', 'false');
+          document.querySelectorAll('.source-cluster .lamp').forEach((lamp) => {
+            lamp.classList.remove('casting');
           });
-          btn.classList.add('active', 'lit');
-          btn.setAttribute('aria-checked', 'true');
+          btn.classList.add('casting');
         }).catch((err) => {
           console.warn('source: AUX start failed', err);
         });

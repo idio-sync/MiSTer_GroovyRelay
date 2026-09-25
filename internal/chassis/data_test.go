@@ -191,6 +191,35 @@ func TestApplySourceLampState_RedactsCredentialsInLastError(t *testing.T) {
 	}
 }
 
+// AUX renders as a lamp key like the other sources, so its lamp fields
+// must mirror the AUX status: Configured when enabled+configured, Casting
+// while a capture is active.
+func TestApplyAUXSourceState_FillsLampFields(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                string
+		st                  adapters.AUXStatus
+		configured, casting bool
+	}{
+		{"unconfigured", adapters.AUXStatus{Enabled: true, Configured: false}, false, false},
+		{"disabled", adapters.AUXStatus{Enabled: false, Configured: true}, false, false},
+		{"ready", adapters.AUXStatus{Enabled: true, Configured: true}, true, false},
+		{"capturing", adapters.AUXStatus{Enabled: true, Configured: true, Active: true}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			base := &ReceiverPageData{Source: SourceData{Buttons: []SourceButton{
+				{Label: "AUX", Action: SourceActionAUXStart},
+			}}}
+			applyAUXSourceState(base, &fakeAUXStarter{status: tc.st})
+			got := base.Source.Buttons[0]
+			if got.Configured != tc.configured || got.Casting != tc.casting {
+				t.Fatalf("Configured=%v Casting=%v, want %v %v", got.Configured, got.Casting, tc.configured, tc.casting)
+			}
+		})
+	}
+}
+
 func TestApplySourceLampState_EmptyRefClearsCasting(t *testing.T) {
 	t.Parallel()
 	base := &ReceiverPageData{Source: SourceData{Buttons: []SourceButton{

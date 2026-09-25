@@ -80,18 +80,18 @@ type SourceData struct {
 	Buttons []SourceButton
 }
 
-// SourceButton represents one entry in the source cluster. AUX renders
-// as an hw-btn (Action != ""); STREAMS/PLEX/JELLYFIN/DLNA render as
-// indicator lamps (Action == ""). The lamp fields Configured, Casting,
-// and Issue drive four visual states:
+// SourceButton represents one entry in the source cluster. Every entry
+// renders as a lamp key; AUX additionally carries Action (its press starts
+// capture when configured). The lamp fields Configured, Casting, and
+// Issue drive four visual states:
 //
 //	Configured=false → unavailable (lamp dark)
 //	Configured=true, Casting=false → idle (lamp dim amber)
 //	Configured=true, Casting=true  → active (lamp bright green)
 //	Issue=true                    → issue (lamp red; LastError gives detail)
 //
-// Active / Lit / Unavailable / InputID remain in use for AUX only;
-// lamp slots leave them at the zero value.
+// Active / Lit / Unavailable / InputID remain in use for AUX only (and
+// are mirrored into its lamp fields); lamp slots leave them at zero.
 type SourceButton struct {
 	Label       string
 	Active      bool
@@ -123,6 +123,9 @@ func applyAUXSourceState(base *ReceiverPageData, aux AUXStarter) {
 		base.Source.Buttons[i].Unavailable = !st.Enabled || !st.Configured
 		base.Source.Buttons[i].Lit = st.Active
 		base.Source.Buttons[i].InputID = st.InputID
+		// AUX renders as a lamp key like the other sources.
+		base.Source.Buttons[i].Configured = st.Enabled && st.Configured
+		base.Source.Buttons[i].Casting = st.Active
 		if st.Active {
 			base.Source.Buttons[i].Active = true
 		}

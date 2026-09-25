@@ -196,6 +196,7 @@ function createHarness(initialState = 'idle', options = {}) {
 
   const lampCalls = [];
   const announce = new FakeElement();
+  const timers = [];
 
   const stateCalls = [];
   const bodyClasses = new Set(['receiver', initialState]);
@@ -237,7 +238,7 @@ function createHarness(initialState = 'idle', options = {}) {
     window,
     // The retune flicker schedules a class-clear timer; record-only stubs keep
     // the synchronous tier updates under test unaffected.
-    setTimeout: () => 0,
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
     clearTimeout() {},
     EventSource: FakeEventSource,
     CustomEvent: class {
@@ -273,6 +274,8 @@ function createHarness(initialState = 'idle', options = {}) {
     resizeListeners,
     announce,
     lampCalls,
+    timers,
+    window,
   };
 }
 
@@ -525,4 +528,28 @@ test('overflowing tier marquees in whole character steps', () => {
   assert.equal(h.primaryRow.classes.has('is-scrolling'), true);
   assert.equal(h.primaryRow.style._props.get('--vfd-scroll-steps'), '17');
   assert.equal(h.primaryRow.style._props.get('--vfd-scroll-dist'), '340px');
+});
+
+// Input-key info flash: a lamp key press puts the input's name and status
+// on the VFD for a few seconds, holds off live tier updates while it is
+// up, then restores the latest live text.
+test('flash shows input info, holds live updates, then restores the latest', () => {
+  const h = createHarness('live');
+  const frame = (primary, secondary) => h.source.dispatch('vfd', {
+    data: JSON.stringify({ primary, secondary, tertiary: '' }),
+  });
+  frame('Blade Runner', 'PLEX');
+  h.window.Chassis.vfd.flash('JELLYFIN', 'NOT CONFIGURED', 'PRESS AGAIN FOR SETUP');
+  assert.equal(h.primary.textContent, 'JELLYFIN');
+  assert.equal(h.secondary.textContent, 'NOT CONFIGURED');
+  assert.equal(h.tertiary.textContent, 'PRESS AGAIN FOR SETUP');
+  assert.equal(h.announce.textContent, 'JELLYFIN. NOT CONFIGURED. PRESS AGAIN FOR SETUP');
+
+  frame('Alien', 'PLEX'); // arrives mid-flash
+  assert.equal(h.primary.textContent, 'JELLYFIN', 'live update must not overwrite the flash');
+
+  while (h.timers.length) h.timers.shift()();
+  assert.equal(h.primary.textContent, 'Alien', 'restores the latest live text, not the pre-flash text');
+  assert.equal(h.secondary.textContent, 'PLEX');
+  assert.equal(h.tertiary.textContent, '');
 });

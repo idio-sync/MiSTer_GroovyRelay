@@ -5,7 +5,7 @@
     return;
   }
 
-  const KNOWN_SOURCES = ['streams', 'plex', 'jellyfin', 'dlna', 'url', 'local', 'localfiles'];
+  const KNOWN_SOURCES = ['streams', 'plex', 'jellyfin', 'dlna', 'url', 'local', 'localfiles', 'aux'];
 
   function normalizeSourceID(source) {
     if (!source || typeof source !== 'string') return '';
@@ -112,6 +112,89 @@
     try { data = JSON.parse(ev.data); } catch (_) { return; }
     applySource(data);
   }
+
+  // --- Input keys ---------------------------------------------------
+  // Sources push casts to the bridge, so there is no input to switch to.
+  // Pressing a lamp key does what a receiver does when you select an
+  // input: the VFD shows that input's name and status (READY with how to
+  // use it, ON AIR, NOT CONFIGURED, or the ISSUE detail that otherwise
+  // lives only in a tooltip). A second press while that is up opens the
+  // adapter's settings. A configured AUX press is left to chassis.js,
+  // which starts capture.
+  const INFO_MS = 4000; // matches vfd-live.js FLASH_MS
+  const HINTS = {
+    streams: 'PICK A PRESET OR BROWSE',
+    plex: 'CAST FROM THE PLEX APP',
+    jellyfin: 'CAST FROM JELLYFIN',
+    dlna: 'CAST FROM A DLNA APP',
+    aux: 'PRESS TO START CAPTURE',
+  };
+  const SETUP_HINT = 'PRESS AGAIN FOR SETUP';
+  let armedID = '';
+  let armTimer = null;
+
+  function disarm() {
+    armedID = '';
+    if (armTimer) {
+      clearTimeout(armTimer);
+      armTimer = null;
+    }
+  }
+
+  function inputInfo(el) {
+    const id = el.getAttribute('data-source-id') || '';
+    const label = lampLabel(el);
+    if (el.classList.contains('issue')) {
+      const detail = (el.dataset.lastError || 'CHECK SETUP').toUpperCase();
+      return { lines: [label, `ISSUE: ${detail}`, SETUP_HINT], setup: true };
+    }
+    if (el.classList.contains('casting')) {
+      return { lines: [label, 'ON AIR', ''], setup: false };
+    }
+    if (el.classList.contains('configured-idle')) {
+      return { lines: [label, `READY · ${HINTS[id] || 'CAST FROM ITS APP'}`, SETUP_HINT], setup: true };
+    }
+    return { lines: [label, 'NOT CONFIGURED', SETUP_HINT], setup: true };
+  }
+
+  function openSetup(id) {
+    document.body.classList.add('settings-open');
+    const tab = document.querySelector('.settings-tab[data-tab="adapters"]');
+    if (tab && typeof tab.click === 'function') tab.click();
+    const section = document.querySelector(`[data-adapter-section="${id}"]`);
+    const field = section ? null : document.querySelector(`.settings-pane[data-pane="adapters"] [data-adapter="${id}"]`);
+    const target = section || (field && (field.closest('.settings-section') || field));
+    if (target && typeof target.scrollIntoView === 'function') {
+      target.scrollIntoView({ block: 'start' });
+    }
+  }
+
+  function onKey(el) {
+    const id = el.getAttribute('data-source-id') || '';
+    const isAUX = el.getAttribute('data-source-action') === 'aux-start';
+    if (isAUX && el.classList.contains('configured-idle') && !el.classList.contains('casting')) {
+      return; // chassis.js starts capture
+    }
+    if (armedID && armedID === id) {
+      disarm();
+      openSetup(id);
+      return;
+    }
+    const info = inputInfo(el);
+    const vfd = window.Chassis.vfd;
+    if (vfd && typeof vfd.flash === 'function') vfd.flash(...info.lines);
+    disarm();
+    if (info.setup) {
+      armedID = id;
+      armTimer = setTimeout(disarm, INFO_MS);
+    }
+  }
+
+  document.querySelectorAll('.source-cluster .lamp').forEach((el) => {
+    if (typeof el.addEventListener === 'function') {
+      el.addEventListener('click', () => onKey(el));
+    }
+  });
 
   window.Chassis.events.subscribe('source', onSource);
   window.Chassis.events.subscribe('transport', onTransport);
