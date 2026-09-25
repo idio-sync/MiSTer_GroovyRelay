@@ -5623,6 +5623,7 @@ body.receiver .catalog-form .cf-channel-delete:hover {
 
 body.receiver .catalog-form .cf-footer {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
   margin-top: 8px;
@@ -5701,6 +5702,23 @@ body.receiver .catalog-form .cf-delete:hover {
 body.receiver .catalog-form .cf-delete[disabled] {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Inline two-step delete (provider-form.js): armed, the key fills red and
+   reads CONFIRM DELETE; the warning sits on its own line above the
+   footer keys so a long starred-slot warning can wrap. */
+body.receiver .catalog-form .cf-delete.armed {
+  background: oklch(0.42 0.16 25);
+  border-color: oklch(0.55 0.18 25);
+  color: #f4f4f6;
+}
+
+body.receiver .catalog-form .cf-delete-prompt {
+  flex: 1 0 100%;
+  order: -1;
+  color: oklch(0.80 0.12 25);
+  font: 500 11px/1.4 'Inter', sans-serif;
+  text-align: right;
 }
 
 body.receiver .catalog-form .cf-enum-chip {

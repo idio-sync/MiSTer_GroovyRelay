@@ -220,6 +220,7 @@ function createHarness(fetchImpl, opts = {}) {
   const addGroup = new FakeElement('button', { id: 'cf-add-group', className: 'cf-add-group' });
   const channels = new FakeElement('div', { id: 'cf-channels' });
   const addChannel = new FakeElement('button', { id: 'cf-add-channel', className: 'cf-add-channel' });
+  const delPrompt = new FakeElement('span', { id: 'cf-delete-prompt', hidden: true });
   const del = new FakeElement('button', { id: 'cf-delete', hidden: true });
   const save = new FakeElement('button', { id: 'cf-save', className: 'cf-save' });
   const cancel = new FakeElement('button', { id: 'cf-cancel' });
@@ -241,6 +242,7 @@ function createHarness(fetchImpl, opts = {}) {
   form.appendChild(groups);
   form.appendChild(channels);
   form.appendChild(addChannel);
+  form.appendChild(delPrompt);
   form.appendChild(del);
   form.appendChild(save);
   form.appendChild(cancel);
@@ -262,6 +264,7 @@ function createHarness(fetchImpl, opts = {}) {
     ['cf-add-group', addGroup],
     ['cf-channels', channels],
     ['cf-add-channel', addChannel],
+    ['cf-delete-prompt', delPrompt],
     ['cf-delete', del],
     ['cf-save', save],
     ['cf-form', form],
@@ -289,6 +292,7 @@ function createHarness(fetchImpl, opts = {}) {
   const reorderCalls = [];
   const eventHandlers = new Map();
   const confirmMessages = [];
+  const timers = [];
   const chassis = {
     settings: {
       showNotice(text, variant) {
@@ -324,6 +328,8 @@ function createHarness(fetchImpl, opts = {}) {
     fetch: fetchImpl || (async () => ({ ok: true, json: async () => ({}) })),
     URL,
     console,
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
+    clearTimeout() {},
   };
   context.window.window = context.window;
   context.window.document = document;
@@ -334,7 +340,7 @@ function createHarness(fetchImpl, opts = {}) {
   function emitEvent(name, payload) {
     for (const fn of eventHandlers.get(name) || []) fn({ data: JSON.stringify(payload) });
   }
-  return { context, drawer, formPanel, form, id, name, glyph, swatches, swatchButtons, groups, groupChips, addGroup, channels, addChannel, del, save, cancel, newButton, pencil, notices, reorderCalls, eventHandlers, emitEvent, confirmMessages };
+  return { context, drawer, formPanel, form, id, name, glyph, swatches, swatchButtons, groups, groupChips, addGroup, channels, addChannel, del, delPrompt, save, cancel, newButton, pencil, notices, reorderCalls, eventHandlers, emitEvent, confirmMessages, timers };
 }
 
 function jsonResponse(body, ok = true) {
@@ -1165,6 +1171,7 @@ test('delete for a new provider closes without confirming or posting', async () 
 
   assert.equal(requests.length, 0);
   assert.equal(h.confirmMessages.length, 0);
+  assert.equal(h.delPrompt.hidden, true, 'nothing to confirm for an unsaved provider');
   assert.equal(h.formPanel.getAttribute('aria-hidden'), 'true');
 });
 
@@ -1180,10 +1187,11 @@ test('delete ignores duplicate submissions and stale responses after form change
   const api = h.context.window.Chassis.providerForm;
 
   api.populate({ id: 'user:old', displayName: 'Old', groups: [], channels: [] });
+  assert.equal(await api._delete(), false, 'first press only arms');
   const first = api._delete();
   const second = api._delete();
 
-  assert.equal(h.confirmMessages.length, 1);
+  assert.equal(h.confirmMessages.length, 0, 'no native confirm dialog');
   assert.equal(requests.length, 1);
   assert.equal(h.save.disabled, true);
   assert.equal(h.del.disabled, true);
@@ -1214,8 +1222,14 @@ test('delete existing provider confirms, sends DELETE, closes, and reports clear
   api.populate({ id: 'user:mix/alpha', displayName: 'Mix', groups: [], channels: [] });
   h.del.dispatch('click');
   await nextTick();
+  assert.equal(requests.length, 0, 'first press arms, it does not delete');
+  assert.equal(h.del.textContent, 'Confirm delete');
+  assert.equal(h.delPrompt.hidden, false);
 
-  assert.equal(h.confirmMessages.length, 1);
+  h.del.dispatch('click');
+  await nextTick();
+
+  assert.equal(h.confirmMessages.length, 0, 'no native confirm dialog');
   assert.equal(requests.length, 1);
   assert.equal(requests[0][0], '/ui/catalog/provider/user%3Amix%2Falpha');
   assert.equal(requests[0][1].method, 'DELETE');
@@ -1236,7 +1250,7 @@ test('delete confirmation warns about starred preset cleanup only for current pr
 
   assert.equal(starredAPI._anyStarredChannel(), true);
   await starredAPI._delete();
-  assert.match(starred.confirmMessages[0], /starred|preset/i);
+  assert.match(starred.delPrompt.textContent, /starred|preset/i);
 
   const removed = createHarness(async () => jsonResponse({ ok: true }));
   const removedAPI = removed.context.window.Chassis.providerForm;
@@ -1250,7 +1264,7 @@ test('delete confirmation warns about starred preset cleanup only for current pr
 
   assert.equal(removedAPI._anyStarredChannel(), true);
   await removedAPI._delete();
-  assert.match(removed.confirmMessages[0], /starred|preset/i);
+  assert.match(removed.delPrompt.textContent, /starred|preset/i);
 
   const plain = createHarness(async () => jsonResponse({ ok: true }));
   const plainAPI = plain.context.window.Chassis.providerForm;
@@ -1264,7 +1278,8 @@ test('delete confirmation warns about starred preset cleanup only for current pr
 
   assert.equal(plainAPI._anyStarredChannel(), false);
   await plainAPI._delete();
-  assert.doesNotMatch(plain.confirmMessages[0], /starred|preset/i);
+  assert.match(plain.delPrompt.textContent, /delete/i);
+  assert.doesNotMatch(plain.delPrompt.textContent, /starred|preset/i);
 });
 
 test('_reorderListMove moves C before A and channel collection follows DOM order', () => {
@@ -1605,4 +1620,44 @@ test('group drag reorder preserves unsaved channel values and selections while r
       { id: 'sports', order: 1 },
     ],
   });
+});
+
+// Inline two-step delete (house pattern: settings restore-defaults). An
+// armed delete disarms after its window or when the form changes, so a
+// stale "Confirm delete" can never delete a different provider.
+test('an armed delete disarms after its window and the next press re-arms', async () => {
+  const requests = [];
+  const h = createHarness(async (url, init) => {
+    requests.push([url, init]);
+    return jsonResponse({ ok: true });
+  });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.populate({ id: 'user:mix', displayName: 'Mix', groups: [], channels: [] });
+  await api._delete();
+  assert.equal(h.del.classList.contains('armed'), true);
+  while (h.timers.length) h.timers.shift()();
+  assert.equal(h.del.classList.contains('armed'), false);
+  assert.equal(h.del.textContent, 'Delete provider');
+  assert.equal(h.delPrompt.hidden, true);
+
+  assert.equal(await api._delete(), false, 'after the window lapses, a press arms again');
+  assert.equal(requests.length, 0);
+});
+
+test('switching to another provider disarms a pending delete', async () => {
+  const requests = [];
+  const h = createHarness(async (url, init) => {
+    requests.push([url, init]);
+    return jsonResponse({ ok: true });
+  });
+  const api = h.context.window.Chassis.providerForm;
+
+  api.populate({ id: 'user:first', displayName: 'First', groups: [], channels: [] });
+  await api._delete();
+  api.populate({ id: 'user:second', displayName: 'Second', groups: [], channels: [] });
+  assert.equal(h.del.classList.contains('armed'), false);
+
+  assert.equal(await api._delete(), false, 'the press after switching only arms');
+  assert.equal(requests.length, 0);
 });
