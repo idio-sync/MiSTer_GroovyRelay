@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -41,6 +42,14 @@ type VisualizerSpec struct {
 	Enabled  bool
 	Mode     VisualizerMode
 	Metadata VisualizerMetadata
+
+	// LiveTextDir, when non-empty, renders the title/artist/album lines
+	// from text files in this directory (see WriteVisualizerText) that
+	// drawtext reloads every frame, so a live source can change them
+	// mid-session without restarting the pipeline. The files must exist
+	// before the pipeline spawns and must never be removed while it runs:
+	// drawtext aborts the graph when a reload fails.
+	LiveTextDir string
 
 	// DrawTextAvailable is populated by ffmpeg.Spawn after probing the
 	// resolved FFmpeg binary. BuildCommand stays pure and renders bars-only
@@ -331,6 +340,24 @@ func escapeSubtitlePathFor(goos, p string) string {
 	return p
 }
 
+func escapeFilterPath(p string) string {
+	return escapeFilterPathFor(runtime.GOOS, p)
+}
+
+// escapeFilterPathFor escapes a filesystem path for a single-quoted filter
+// option such as drawtext `textfile='...'`. The filtergraph layer strips the
+// quotes, then the filter's own option parser splits on `:` and consumes
+// backslashes, so a Windows drive colon must reach it as `\:`.
+func escapeFilterPathFor(goos, p string) string {
+	if goos == "windows" {
+		p = strings.ReplaceAll(p, `\`, "/")
+	}
+	p = strings.ReplaceAll(p, `\`, `\\`)
+	p = strings.ReplaceAll(p, ":", `\:`)
+	p = strings.ReplaceAll(p, `'`, `'\''`)
+	return p
+}
+
 // escapeFilterText escapes user-supplied metadata for inclusion inside a
 // drawtext `text='...'` value. FFmpeg's filtergraph parser treats the
 // single-quoted region as literal (backslash escapes are NOT processed
@@ -389,6 +416,9 @@ type visualizerTextLine struct {
 	Y           string
 	WindowWidth int
 	Marquee     bool
+	// File, when set, makes the line render the contents of this text
+	// file (reloaded every frame) instead of Text.
+	File string
 }
 
 type visualizerOverlayLayout struct {
@@ -443,11 +473,27 @@ func visualizerMetadataLine(layout visualizerOverlayLayout, role, text, y string
 	return visualizerTextLine{Text: strings.ToUpper(strings.TrimSpace(text)), Role: role, FontSize: fontSize, FontColor: color, X: fmt.Sprintf("%d", layout.MetadataX), Y: y, WindowWidth: layout.MetadataWidth, Marquee: true}
 }
 
+func visualizerLiveLine(layout visualizerOverlayLayout, role, file, y string, fontSize int, color string) visualizerTextLine {
+	line := visualizerMetadataLine(layout, role, "", y, fontSize, color)
+	line.File = file
+	return line
+}
+
 func visualizerTextLines(s PipelineSpec) []visualizerTextLine {
 	md := s.Visualizer.Metadata
 	logicalW, _ := logicalCanvas(s.OutputHeight)
 	layout := visualizerLayoutFor(s.Visualizer.Mode, logicalW)
 	lines := make([]visualizerTextLine, 0, 4)
+	if dir := s.Visualizer.LiveTextDir; dir != "" {
+		// Live text reserves all three slots: which lines are blank can
+		// change mid-session, so the layout cannot collapse around them.
+		lines = append(lines,
+			visualizerLiveLine(layout, visualizerTextRoleTitle, filepath.Join(dir, VisualizerTitleFile), layout.MetadataY[0], 20, visualizerMetadataColor),
+			visualizerLiveLine(layout, visualizerTextRoleArtist, filepath.Join(dir, VisualizerArtistFile), layout.MetadataY[1], 20, visualizerMetadataColor),
+			visualizerLiveLine(layout, visualizerTextRoleAlbum, filepath.Join(dir, VisualizerAlbumFile), layout.MetadataY[2], 18, visualizerAlbumColor),
+		)
+		return lines
+	}
 	y := 0
 	title := strings.TrimSpace(md.Title)
 	if title == "" {
@@ -496,11 +542,17 @@ func visualizerMarqueeX(line visualizerTextLine) string {
 }
 
 func visualizerLineLayerFilter(line visualizerTextLine, idx int) string {
+	// expansion=none keeps file contents literal, so WriteVisualizerText
+	// needs no drawtext escaping.
+	source := fmt.Sprintf("text='%s'", visualizerDrawText(line))
+	if line.File != "" {
+		source = fmt.Sprintf("textfile='%s':reload=1:expansion=none", escapeFilterPath(line.File))
+	}
 	return fmt.Sprintf(
-		"color=c=black@0.0:s=%dx%d,format=rgba,drawtext=text='%s':x='%s':y=0:fontsize=%d:fontcolor=%s:box=1:boxcolor=0x00000099[vizline%d]",
+		"color=c=black@0.0:s=%dx%d,format=rgba,drawtext=%s:x='%s':y=0:fontsize=%d:fontcolor=%s:box=1:boxcolor=0x00000099[vizline%d]",
 		line.WindowWidth,
 		visualizerLineLayerHeight(line.FontSize),
-		visualizerDrawText(line),
+		source,
 		visualizerMarqueeX(line),
 		line.FontSize,
 		line.FontColor,
