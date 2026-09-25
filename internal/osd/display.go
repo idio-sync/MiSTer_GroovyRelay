@@ -55,6 +55,12 @@ const (
 type Display struct {
 	mu sync.Mutex
 	st state
+
+	// The clock string is formatted at most once per minute so steady-state
+	// Draw never allocates.
+	clockMinute int64
+	clockH24    bool
+	clockStr    string
 }
 
 // state is the copyable part of Display.
@@ -62,6 +68,7 @@ type state struct {
 	opts Options
 
 	volume      int
+	volumeText  string // strconv.Itoa(volume), formatted off the tick path
 	muted       bool
 	volumeUntil time.Time
 
@@ -86,8 +93,11 @@ func (d *Display) SetOptions(opts Options) {
 
 // ShowVolume shows the volume bar (or MUTING) for VolumeDuration.
 func (d *Display) ShowVolume(volume int, muted bool, now time.Time) {
+	volume = min(max(volume, 0), 100)
+	text := strconv.Itoa(volume)
 	d.mu.Lock()
-	d.st.volume = min(max(volume, 0), 100)
+	d.st.volume = volume
+	d.st.volumeText = text
 	d.st.muted = muted
 	d.st.volumeUntil = now.Add(VolumeDuration)
 	d.mu.Unlock()
@@ -122,6 +132,10 @@ func (d *Display) Draw(c Canvas, now time.Time) {
 	}
 	d.mu.Lock()
 	s := d.st // copy; drawing happens unlocked
+	var clock string
+	if s.opts.Enabled && s.opts.Clock && now.Before(s.channelUntil) {
+		clock = d.clockLocked(now, s.opts.Clock24h)
+	}
 	d.mu.Unlock()
 	if !s.opts.Enabled {
 		return
@@ -135,8 +149,7 @@ func (d *Display) Draw(c Canvas, now time.Time) {
 	}
 	if now.Before(s.channelUntil) {
 		c.DrawText(l.safeX1-TextWidth(s.channel, l.sx), l.safeY0, s.channel, l.style(colorGreen))
-		if s.opts.Clock {
-			clock := clockText(now.Local(), s.opts.Clock24h)
+		if clock != "" {
 			c.DrawText(l.safeX1-TextWidth(clock, l.sx), l.safeY0+l.rowH, clock, l.style(colorWhite))
 		}
 	}
@@ -144,7 +157,7 @@ func (d *Display) Draw(c Canvas, now time.Time) {
 		if s.muted {
 			c.DrawText(l.safeX0, l.volumeY, "MUTING", l.style(colorRed))
 		} else {
-			l.drawVolumeBar(c, s.volume)
+			l.drawVolumeBar(c, s.volume, s.volumeText)
 		}
 	}
 }
@@ -190,7 +203,7 @@ func (l layout) segmentCenter(i int) (x, y int) {
 	return l.barX0 + i*l.segmentPitch() + l.sx, l.volumeY + l.glyphH/2
 }
 
-func (l layout) drawVolumeBar(c Canvas, volume int) {
+func (l layout) drawVolumeBar(c Canvas, volume int, volumeText string) {
 	c.DrawText(l.safeX0, l.volumeY, "VOLUME", l.style(colorGreen))
 	lit := (volume*VolumeSegments + 99) / 100 // any non-zero volume lights one
 	segW := 2 * l.sx
@@ -204,7 +217,18 @@ func (l layout) drawVolumeBar(c Canvas, volume int) {
 		c.FillRect(x, l.volumeY, segW, l.glyphH, col)
 	}
 	numX := l.barX0 + VolumeSegments*l.segmentPitch() + CellWidth*l.sx
-	c.DrawText(numX, l.volumeY, strconv.Itoa(volume), l.style(colorWhite))
+	c.DrawText(numX, l.volumeY, volumeText, l.style(colorWhite))
+}
+
+// clockLocked returns the clock string for now, reformatting only when the
+// minute or 12h/24h setting changes. Caller holds d.mu.
+func (d *Display) clockLocked(now time.Time, h24 bool) string {
+	minute := now.Unix() / 60
+	if d.clockStr == "" || minute != d.clockMinute || h24 != d.clockH24 {
+		d.clockStr = clockText(now.Local(), h24)
+		d.clockMinute, d.clockH24 = minute, h24
+	}
+	return d.clockStr
 }
 
 func transportText(t Transport) string {
