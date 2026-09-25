@@ -28,6 +28,7 @@ Note: The primary deployment target is a Docker container running on the same ho
 - Torrent streaming (uploaded .torrent files and .torrent URLs/magnet links)
 - Local media files (browse a mounted or host directory)
 - DLNA / UPnP MediaRenderer
+- Spotify Connect (music to the CRT visualizer)
 - Built-in catalog of streaming channels
 
 ## Music visualizer modes
@@ -69,6 +70,15 @@ If your FFmpeg build does not stream `-f wav` cleanly over HTTP (some builds emi
 provide a binary or script in the future to make this easier.
 
 Set `audio_output = "visual_only"` to drive the CRT visualizer without sending PCM monitor audio to MiSTer. Set `audio_output = "monitor"` to keep PCM output enabled so the captured audio can be monitored through the normal MiSTer audio path.
+
+### Spotify Connect
+
+Enable `[adapters.spotify]` and the bridge appears in the Spotify app's device list (Spotify Premium required). Picking it plays the music through the MiSTer and drives the CRT visualizer; track title, artist, and album update on screen without interrupting playback, and the `cover_vu` / `cover_spectrum` modes show the album art.
+
+- The bridge runs [librespot](https://github.com/librespot-org/librespot) as a supervised helper. The Docker image bundles it; native installs need `librespot` on `PATH` or `binary_path` set.
+- Discovery uses mDNS, so the container needs `--network=host` (already required). Set `zeroconf_port` if a firewall needs a fixed port.
+- Pausing keeps the cast on the CRT for `pause_grace_seconds` (default 30), then ends it. Starting another cast (Plex, DLNA, …) takes over and disconnects the phone.
+- `audio_output = "visual_only"` drives the visualizer without sending audio to the MiSTer.
 
 ## Hardware requirements
 
@@ -153,6 +163,7 @@ The settings UI labels whether a saved field applies live, restarts the current 
 | Torrent | Global Cast drawer magnet link or `.torrent` upload | Off | Requires explicit traffic acknowledgement. See [docs/torrent.md](docs/torrent.md). |
 | Local Files | Receiver settings drawer | Off | Browse named on-disk libraries and cast one media file. |
 | DLNA / UPnP | DLNA controller | Off | Exposes unauthenticated LAN control. See [docs/dlna.md](docs/dlna.md). |
+| Spotify Connect | Spotify app device picker | Off | Music to the CRT visualizer via a supervised librespot. See [Spotify Connect](#spotify-connect). |
 
 ## Local Files
 

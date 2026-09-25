@@ -24,6 +24,21 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/mister-groovy-relay ./cmd/mister-groovy-relay
 
+# librespot: the Spotify Connect receiver the spotify adapter supervises.
+# Pure-Rust TLS (rustls + ring) and mDNS (libmdns) with no default audio
+# backend make it a static musl binary with no runtime libraries; the pipe
+# backend (PCM to stdout) is always compiled in. Pinned because librespot
+# tracks Spotify's protocol: bump deliberately. cmake/perl only cover a
+# crypto crate that falls back to building C sources.
+# Spec: docs/superpowers/specs/2026-09-24-live-audio-receivers-design.md.
+FROM rust:1-alpine AS librespot
+ARG LIBRESPOT_VERSION=0.8.0
+RUN apk add --no-cache musl-dev cmake make perl
+RUN cargo install librespot --version "${LIBRESPOT_VERSION}" --locked \
+      --no-default-features --features rustls-tls-webpki-roots,with-libmdns \
+      --root /out \
+    && /out/bin/librespot --version
+
 FROM alpine:3.20
 # nodejs: required by yt-dlp's EJS (Embedded JavaScript Solver) to evaluate
 # YouTube's signature/n-challenge functions. Without a JS runtime on PATH,
@@ -63,6 +78,7 @@ RUN case "$TARGETARCH" in \
     && chmod +x /usr/local/bin/yt-dlp \
     && /usr/local/bin/yt-dlp --version
 COPY --from=build /out/mister-groovy-relay /usr/local/bin/mister-groovy-relay
+COPY --from=librespot /out/bin/librespot /usr/local/bin/librespot
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 ENV MISTER_GROOVY_CONFIG=/config/config.toml
