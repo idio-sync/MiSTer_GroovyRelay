@@ -1845,8 +1845,23 @@ func (p *Plane) measureFieldDiagnostic(field uint8, raw []byte) fieldDiagnostic 
 	}
 }
 
+// writeFieldSubDeltaInto writes the per-byte mod-256 difference
+// current-previous into dst, eight bytes per step (SWAR): setting each
+// minuend byte's high bit and clearing each subtrahend byte's high bit
+// keeps a byte from ever borrowing from its neighbour, and the XOR term
+// restores the true high bit (Hacker's Delight 2-18). Runs on every
+// delta-LZ4 attempt over the full 518 KB field.
 func writeFieldSubDeltaInto(dst, current, previous []byte) {
-	for i := range current {
+	const hi = 0x8080808080808080
+	n := len(current)
+	dst, previous = dst[:n], previous[:n]
+	i := 0
+	for ; i+8 <= n; i += 8 {
+		a := binary.LittleEndian.Uint64(current[i:])
+		b := binary.LittleEndian.Uint64(previous[i:])
+		binary.LittleEndian.PutUint64(dst[i:], ((a|hi)-(b&^hi))^((a^^b)&hi))
+	}
+	for ; i < n; i++ {
 		dst[i] = current[i] - previous[i]
 	}
 }

@@ -145,3 +145,55 @@ func TestDeltaPolicy_BackoffIsPerPolarity(t *testing.T) {
 		t.Fatalf("polarity 1 payload type %d, want delta despite polarity 0 backoff", got)
 	}
 }
+
+// scalarSubDelta is the reference byte-wrap subtraction.
+func scalarSubDelta(dst, current, previous []byte) {
+	for i := range current {
+		dst[i] = current[i] - previous[i]
+	}
+}
+
+// writeFieldSubDeltaInto must match per-byte mod-256 subtraction exactly:
+// every byte pair, lengths that exercise the non-multiple-of-8 tail, and a
+// full random field.
+func TestWriteFieldSubDeltaInto_MatchesScalarReference(t *testing.T) {
+	var cur, prev []byte
+	for a := 0; a < 256; a++ {
+		for b := 0; b < 256; b++ {
+			cur = append(cur, byte(a))
+			prev = append(prev, byte(b))
+		}
+	}
+	rng := rand.New(rand.NewSource(7))
+	full := make([]byte, policyFieldBytes)
+	fullPrev := make([]byte, policyFieldBytes)
+	rng.Read(full)
+	rng.Read(fullPrev)
+
+	cases := [][2][]byte{{cur, prev}, {full, fullPrev}}
+	for n := 0; n <= 17; n++ {
+		cases = append(cases, [2][]byte{full[:n], fullPrev[:n]})
+	}
+	for _, c := range cases {
+		got := make([]byte, len(c[0])+3) // dst may be longer than the field
+		want := make([]byte, len(c[0]))
+		writeFieldSubDeltaInto(got, c[0], c[1])
+		scalarSubDelta(want, c[0], c[1])
+		if !bytes.Equal(got[:len(want)], want) {
+			t.Fatalf("len %d: SWAR delta differs from scalar reference", len(want))
+		}
+	}
+}
+
+func BenchmarkWriteFieldSubDeltaInto(b *testing.B) {
+	cur := make([]byte, policyFieldBytes)
+	prev := make([]byte, policyFieldBytes)
+	dst := make([]byte, policyFieldBytes)
+	rng := rand.New(rand.NewSource(1))
+	rng.Read(cur)
+	rng.Read(prev)
+	b.SetBytes(policyFieldBytes)
+	for i := 0; i < b.N; i++ {
+		writeFieldSubDeltaInto(dst, cur, prev)
+	}
+}
