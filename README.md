@@ -29,6 +29,7 @@ Note: The primary deployment target is a Docker container running on the same ho
 - Local media files (browse a mounted or host directory)
 - DLNA / UPnP MediaRenderer
 - Spotify Connect (music to the CRT visualizer)
+- AirPlay from iPhone, iPad, and Mac (music to the CRT visualizer)
 - Built-in catalog of streaming channels
 
 ## Music visualizer modes
@@ -79,6 +80,15 @@ Enable `[adapters.spotify]` and the bridge appears in the Spotify app's device l
 - Discovery uses mDNS, so the container needs `--network=host` (already required). Set `zeroconf_port` if a firewall needs a fixed port.
 - Pausing keeps the cast on the CRT for `pause_grace_seconds` (default 30), then ends it. Starting another cast (Plex, DLNA, …) takes over and disconnects the phone.
 - `audio_output = "visual_only"` drives the visualizer without sending audio to the MiSTer.
+
+### AirPlay
+
+Enable `[adapters.airplay]` and the bridge appears as an AirPlay speaker on iPhones, iPads, and Macs. It behaves like Spotify Connect above: live track text, album art in the cover modes, a pause grace window, and another cast taking over.
+
+- The bridge runs [shairport-sync](https://github.com/mikebrady/shairport-sync) in classic AirPlay (AirPlay 1) mode. The Docker image bundles it; native Linux and macOS installs need `shairport-sync` on `PATH` (built with `--with-stdout --with-metadata --with-metadata-multicast`) or `binary_path` set. Windows is not supported.
+- It listens on RTSP port 5000 plus UDP ports 6001–6010. Change `port` if another AirPlay receiver on the host (for example macOS's own AirPlay Receiver) already uses 5000.
+- Discovery uses shairport-sync's built-in mDNS responder. If the speaker does not appear on a host that runs its own mDNS daemon (avahi), check the helper's log lines for port 5353 errors.
+- AirPlay 2 (multi-room grouping with HomePods) is not supported yet.
 
 ## Hardware requirements
 
@@ -164,6 +174,7 @@ The settings UI labels whether a saved field applies live, restarts the current 
 | Local Files | Receiver settings drawer | Off | Browse named on-disk libraries and cast one media file. |
 | DLNA / UPnP | DLNA controller | Off | Exposes unauthenticated LAN control. See [docs/dlna.md](docs/dlna.md). |
 | Spotify Connect | Spotify app device picker | Off | Music to the CRT visualizer via a supervised librespot. See [Spotify Connect](#spotify-connect). |
+| AirPlay | AirPlay speaker picker | Off | Music to the CRT visualizer via a supervised shairport-sync; Linux/macOS/Docker only. See [AirPlay](#airplay). |
 
 ## Local Files
 
