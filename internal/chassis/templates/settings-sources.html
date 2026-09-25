@@ -1,6 +1,6 @@
 {{- define "settings-sources" -}}
 {{/* Sources tab — the ways media reaches the bridge. Cast targets first
-     (Plex, Jellyfin, DLNA, Spotify push to us), then paste-in (URL, Torrent),
+     (Plex, Jellyfin, DLNA, Spotify, AirPlay push to us), then paste-in (URL, Torrent),
      then local disk. The Streams catalog adapter lives on its own tab
      beside the channel providers it feeds.
 
@@ -16,6 +16,8 @@
   {{ template "settings-adapter-dlna" (adapterPane .Adapters "dlna") }}
 
   {{ template "settings-adapter-spotify" (adapterPane .Adapters "spotify") }}
+
+  {{ template "settings-adapter-airplay" (adapterPane .Adapters "airplay") }}
 
   {{ template "settings-adapter-url" (adapterPane .Adapters "url") }}
 

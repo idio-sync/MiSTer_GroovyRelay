@@ -5,7 +5,7 @@
     return;
   }
 
-  const KNOWN_SOURCES = ['streams', 'plex', 'jellyfin', 'dlna', 'spotify', 'url', 'local', 'localfiles', 'aux'];
+  const KNOWN_SOURCES = ['streams', 'plex', 'jellyfin', 'dlna', 'spotify', 'airplay', 'url', 'local', 'localfiles', 'aux'];
 
   function normalizeSourceID(source) {
     if (!source || typeof source !== 'string') return '';
@@ -128,6 +128,7 @@
     jellyfin: 'CAST FROM JELLYFIN',
     dlna: 'CAST FROM A DLNA APP',
     spotify: 'CAST FROM THE SPOTIFY APP',
+    airplay: 'CAST WITH AIRPLAY',
     aux: 'PRESS TO START CAPTURE',
   };
   const SETUP_HINT = 'PRESS AGAIN FOR SETUP';

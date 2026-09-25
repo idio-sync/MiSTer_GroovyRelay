@@ -221,6 +221,7 @@ func TestIdleSnapshot_AllFieldsPopulated(t *testing.T) {
 				{Label: "JELLYFIN"},
 				{Label: "DLNA"},
 				{Label: "SPOTIFY"},
+				{Label: "AIRPLAY"},
 				{Label: "AUX", Active: false, Lit: false, Action: SourceActionAUXStart},
 			},
 		},
@@ -1079,7 +1080,7 @@ func TestIdleSnapshotRendersFiveSourceButtonsIncludingAUX(t *testing.T) {
 	for _, button := range got.Source.Buttons {
 		labels = append(labels, button.Label)
 	}
-	want := []string{"STREAMS", "PLEX", "JELLYFIN", "DLNA", "SPOTIFY", "AUX"}
+	want := []string{"STREAMS", "PLEX", "JELLYFIN", "DLNA", "SPOTIFY", "AIRPLAY", "AUX"}
 	if !reflect.DeepEqual(labels, want) {
 		t.Fatalf("source labels = %#v, want %#v", labels, want)
 	}
@@ -4844,6 +4845,33 @@ func TestSettingsAdapterSpotifyTemplate_RendersFields(t *testing.T) {
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in rendered Spotify pane", want)
+		}
+	}
+}
+
+func TestSettingsAdapterAirPlayTemplate_RendersFields(t *testing.T) {
+	t.Parallel()
+	data := SettingsData{
+		Errors: map[string]string{},
+		Adapters: []AdapterPaneData{
+			{Name: "airplay", Hint: "CAST · DISABLED", Fields: []adapters.FieldDef{
+				{Key: "enabled", Kind: adapters.KindBool, Label: "Enabled", ApplyScope: adapters.ScopeRestartCast},
+				{Key: "name", Kind: adapters.KindText, Label: "Speaker Name", ApplyScope: adapters.ScopeRestartCast},
+				{Key: "port", Kind: adapters.KindInt, Label: "RTSP Port", ApplyScope: adapters.ScopeRestartCast},
+			}, Values: map[string]any{"enabled": false, "name": "MiSTer CRT", "port": 5000}},
+		},
+	}
+	s := renderDrawer(t, data)
+	for _, want := range []string{
+		`data-adapter-section="airplay"`,
+		`class="source-name">AirPlay<`,
+		`id="source-airplay-body"`,
+		`name="port"`,
+		`data-adapter="airplay"`,
+		"CAST · DISABLED",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in rendered AirPlay pane", want)
 		}
 	}
 }

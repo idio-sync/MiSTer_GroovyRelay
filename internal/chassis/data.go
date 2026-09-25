@@ -786,7 +786,7 @@ func settingsDataFromConfig(cfg Config) SettingsData {
 	// so 4A/4B/4C configs (no saver wired) leave data.Adapters nil, preserving
 	// the prior package-builder behavior exactly.
 	if saver := cfg.AdapterSettingsSaver; saver != nil {
-		for _, name := range []string{"dlna", "spotify", "torrent", "streams", "plex", "jellyfin", "url", "localfiles"} {
+		for _, name := range []string{"dlna", "spotify", "airplay", "torrent", "streams", "plex", "jellyfin", "url", "localfiles"} {
 			fields, ok := saver.Fields(name)
 			if !ok {
 				continue
@@ -875,7 +875,7 @@ func buildAdapterHint(cfg Config, name string, values map[string]any) string {
 			return "CAST · LISTENING"
 		}
 		return "CAST · DISABLED"
-	case "jellyfin", "spotify":
+	case "jellyfin", "spotify", "airplay":
 		if v, _ := values["enabled"].(bool); v {
 			return "CAST · LISTENING"
 		}
@@ -928,6 +928,7 @@ func idleSnapshot(cfg Config, now time.Time) ReceiverPageData {
 				{Label: "JELLYFIN"},
 				{Label: "DLNA"},
 				{Label: "SPOTIFY"},
+				{Label: "AIRPLAY"},
 				{Label: "AUX", Action: SourceActionAUXStart},
 			},
 		},
@@ -1153,7 +1154,7 @@ func parseAdapterRefSource(ref string) string {
 		return ""
 	}
 	switch ref[:colon] {
-	case "streams", "plex", "jellyfin", "dlna", "spotify":
+	case "streams", "plex", "jellyfin", "dlna", "spotify", "airplay":
 		return ref[:colon]
 	}
 	return ""
@@ -1162,7 +1163,7 @@ func parseAdapterRefSource(ref string) string {
 func normalizeSourceID(source string) string {
 	id := strings.ToLower(strings.TrimSpace(source))
 	switch id {
-	case "streams", "plex", "jellyfin", "dlna", "spotify":
+	case "streams", "plex", "jellyfin", "dlna", "spotify", "airplay":
 		return id
 	}
 	return ""

@@ -117,6 +117,7 @@ func TestSourceEnvelopeFromSnapshotIncludesStableActionsForEveryButton(t *testin
 		"JELLYFIN": "",
 		"DLNA":     "",
 		"SPOTIFY":  "",
+		"AIRPLAY":  "",
 		"AUX":      "aux-start",
 	}
 	if len(env.Buttons) != len(wantActions) {
