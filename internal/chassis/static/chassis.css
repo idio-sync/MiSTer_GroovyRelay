@@ -5623,6 +5623,7 @@ body.receiver .catalog-form .cf-channel-delete:hover {
 
 body.receiver .catalog-form .cf-footer {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
   margin-top: 8px;
@@ -5701,6 +5702,23 @@ body.receiver .catalog-form .cf-delete:hover {
 body.receiver .catalog-form .cf-delete[disabled] {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Inline two-step delete (provider-form.js): armed, the key fills red and
+   reads CONFIRM DELETE; the warning sits on its own line above the
+   footer keys so a long starred-slot warning can wrap. */
+body.receiver .catalog-form .cf-delete.armed {
+  background: oklch(0.42 0.16 25);
+  border-color: oklch(0.55 0.18 25);
+  color: #f4f4f6;
+}
+
+body.receiver .catalog-form .cf-delete-prompt {
+  flex: 1 0 100%;
+  order: -1;
+  color: oklch(0.80 0.12 25);
+  font: 500 11px/1.4 'Inter', sans-serif;
+  text-align: right;
 }
 
 body.receiver .catalog-form .cf-enum-chip {
@@ -7000,23 +7018,67 @@ body.receiver .audio-deck .deck-level {
   min-width: 204px;
 }
 /* TONE key: only the narrow deck folds sections (see @container 900px).
-   Same machined cap as the transport keys. */
+   A latching key in MUTING's family: the cap sinks and its LED lights
+   green ("engaged", as on LOUD/MONO) while tone/EQ/memory are unfolded;
+   the legend sits below the cap on the same baseline as MUTING/VOLUME. */
+body.receiver .audio-deck .tone-control {
+  display: none;
+}
+
 body.receiver .audio-deck .tone-toggle {
   display: none;
-  align-items: center;
-  justify-content: center;
-  background: linear-gradient(180deg, #3a3a3e 0%, #1a1a1c 100%);
-  border: 1px solid #0a0a0b;
+  position: relative;
+  width: 44px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid #050506;
   border-radius: 2px;
-  color: #c0c0c4;
-  font: 700 10px 'Inter', sans-serif;
+  cursor: pointer;
+  background: linear-gradient(180deg, #4a4a50 0%, #2a2a2e 55%, #1c1c20 100%);
+  box-shadow: var(--edge-hi), var(--edge-lo), var(--cast-key);
+  transition: transform 60ms ease-out, box-shadow 60ms ease-out;
+}
+
+body.receiver .audio-deck .tone-toggle::before {
+  content: "";
+  position: absolute;
+  top: -11px;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  margin-left: -3px;
+  border-radius: 50%;
+  background: #1d1d22;
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.7);
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+body.receiver .audio-deck .tone-toggle:focus-visible {
+  outline: 2px solid var(--vfd);
+  outline-offset: 2px;
+}
+
+body.receiver .audio-strip.tone-open .tone-toggle {
+  transform: translateY(1px);
+  background: linear-gradient(180deg, #3e3e44 0%, #242428 55%, #18181c 100%);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.55), 0 1px 0 #0a0a0b;
+}
+
+body.receiver .audio-strip.tone-open .tone-toggle::before {
+  background: var(--lamp-green);
+  box-shadow: 0 0 5px color-mix(in oklch, var(--lamp-green) 80%, transparent), inset 0 0 1px rgba(255, 255, 255, 0.5);
+}
+
+body.receiver .audio-deck .tone-label {
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  transform: translateX(-50%);
+  color: var(--silk);
+  font: 700 9px 'Inter', sans-serif;
   letter-spacing: var(--silk-track-legend);
   text-transform: uppercase;
-  cursor: pointer;
-  box-shadow: var(--edge-hi), var(--edge-lo);
-}
-body.receiver .audio-strip.tone-open .tone-toggle {
-  color: var(--vfd-bright);
+  white-space: nowrap;
 }
 
 /* EQ graphic faders — recessed machined channel, VFD-cyan fill, metal cap. */
@@ -7160,11 +7222,16 @@ body.receiver .sw-cell .sw-lbl { color: var(--silk); font: 700 9px 'Inter', sans
     display: none;
   }
 
+  body.receiver .audio-deck .tone-control {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 58px;
+    min-height: 64px;
+  }
+
   body.receiver .audio-deck .tone-toggle {
     display: inline-flex;
-    align-self: center;
-    min-height: 40px;
-    padding: 0 16px;
   }
 
   body.receiver .audio-deck .knob-row {
@@ -7743,4 +7810,123 @@ body.receiver.setup .setup-disabled {
   pointer-events: none;
   opacity: .45;
   filter: grayscale(0.3);
+}
+
+/* ---- Phone remote (remote-pad.html, remote.js) ---------------------- */
+/* Below 600px the chassis is a remote control by default: the meter,
+   visualizer bank, preset tiles and history fold away; the input keys,
+   transport, LEVEL and URL paste stay; a Sony RM-style keypad recalls
+   presets 1-12 and steps the volume. PANEL restores the full faceplate
+   (body[data-phone-view="panel"]); the pad's REMOTE key comes back. */
+body.receiver .remote-pad {
+  display: none;
+}
+
+@container chassis (max-width: 600px) {
+  body.receiver .remote-pad {
+    display: grid;
+    gap: 8px;
+  }
+
+  body.receiver .remote-pad .remote-cap {
+    color: var(--silk);
+    font: 600 10px 'Inter', sans-serif;
+    letter-spacing: var(--silk-track-caption);
+    text-transform: uppercase;
+  }
+
+  body.receiver .remote-keys {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  body.receiver .remote-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+  }
+
+  /* Rubber remote keys: rounded, a little proud of the body, top-lit. */
+  body.receiver .remote-key {
+    min-height: 44px;
+    border: 1px solid #0a0a0b;
+    border-radius: 8px;
+    background: linear-gradient(180deg, #3a3a40 0%, #232327 100%);
+    color: var(--silk);
+    font: 700 16px 'Inter', sans-serif;
+    cursor: pointer;
+    box-shadow: var(--edge-hi), var(--edge-lo), var(--cast-key);
+  }
+
+  body.receiver .remote-key:active {
+    transform: translateY(1px);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.55), 0 1px 0 #0a0a0b;
+  }
+
+  body.receiver .remote-key:focus-visible {
+    outline: 2px solid var(--vfd);
+    outline-offset: 2px;
+  }
+
+  body.receiver .remote-key.vol {
+    font-size: 11px;
+    letter-spacing: var(--silk-track-legend);
+    text-transform: uppercase;
+  }
+
+  body.receiver .remote-view-toggle {
+    min-height: 44px;
+  }
+
+  body.receiver:not([data-phone-view="panel"]) .meter-source-row,
+  body.receiver:not([data-phone-view="panel"]) .viz-section,
+  body.receiver:not([data-phone-view="panel"]) .preset-section,
+  body.receiver:not([data-phone-view="panel"]) .history-section {
+    display: none;
+  }
+
+  /* The meter is folded in the remote view, so its DISPLAY key is moot. */
+  body.receiver:not([data-phone-view="panel"]) [data-meter-display-toggle] {
+    display: none;
+  }
+
+  body.receiver[data-phone-view="panel"] .remote-keys,
+  body.receiver[data-phone-view="panel"] .remote-key.vol {
+    display: none;
+  }
+
+  /* Remote-view LEVEL: the EQ sits behind TONE, so the stale EQUALIZER
+     side label goes and the section becomes one centred row,
+     [MUTING] [VOLUME] [TONE], under a centred LEVEL caption. */
+  body.receiver:not([data-phone-view="panel"]) .audio-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  body.receiver:not([data-phone-view="panel"]) .audio-strip > .strip-label {
+    display: none;
+  }
+
+  body.receiver:not([data-phone-view="panel"]) .audio-strip:not(.tone-open) .audio-deck {
+    justify-content: center;
+  }
+
+  body.receiver:not([data-phone-view="panel"]) .audio-deck > .deck-level {
+    display: grid;
+    grid-template-columns: auto auto;
+    justify-content: center;
+    align-items: center;
+    column-gap: 14px;
+  }
+
+  body.receiver:not([data-phone-view="panel"]) .audio-deck > .deck-level > .deck-cap {
+    grid-column: 1 / -1;
+  }
+
+  /* Stretch to the knob's height so the TONE legend shares the
+     MUTING/VOLUME baseline. */
+  body.receiver:not([data-phone-view="panel"]) .audio-deck > .deck-level > .tone-control {
+    align-self: stretch;
+  }
 }

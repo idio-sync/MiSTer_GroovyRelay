@@ -155,6 +155,9 @@ func (s *Server) handleSetupBridgePOST(w http.ResponseWriter, r *http.Request) {
 	if candidate.Video.AspectMode == "" {
 		candidate.Video.AspectMode = cur.Video.AspectMode
 	}
+	if candidate.Video.InterlaceFilter == "" {
+		candidate.Video.InterlaceFilter = cur.Video.InterlaceFilter
+	}
 	if candidate.Video.RGBMode == "" {
 		candidate.Video.RGBMode = cur.Video.RGBMode
 	}

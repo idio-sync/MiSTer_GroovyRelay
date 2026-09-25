@@ -321,3 +321,44 @@ func TestSectioned_Validate_BadInterlaceOrder(t *testing.T) {
 		t.Error("want validation error for bad interlace order")
 	}
 }
+
+// The interlace anti-twitter filter defaults to "light" for configs that
+// predate the key, sectioned or migrated from the flat format.
+func TestInterlaceFilter_DefaultsToLightWhenKeyAbsent(t *testing.T) {
+	for name, body := range map[string]string{"sectioned": sectionedTOML, "legacy": legacyTOML} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			s, err := LoadSectioned(path)
+			if err != nil {
+				t.Fatalf("LoadSectioned: %v", err)
+			}
+			if got := s.Bridge.Video.InterlaceFilter; got != "light" {
+				t.Fatalf("interlace_filter = %q, want light", got)
+			}
+		})
+	}
+}
+
+func TestInterlaceFilter_Validation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(sectionedTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := LoadSectioned(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"", "off", "light", "full"} {
+		s.Bridge.Video.InterlaceFilter = v
+		if err := s.Validate(); err != nil {
+			t.Fatalf("interlace_filter %q rejected: %v", v, err)
+		}
+	}
+	s.Bridge.Video.InterlaceFilter = "heavy"
+	if err := s.Validate(); err == nil || !strings.Contains(err.Error(), "interlace_filter") {
+		t.Fatalf("interlace_filter heavy: err = %v, want a validation error", err)
+	}
+}

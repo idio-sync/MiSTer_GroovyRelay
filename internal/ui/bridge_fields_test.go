@@ -367,3 +367,36 @@ func TestBuildBridgeSections_LaunchAppearsLast(t *testing.T) {
 		t.Errorf("last section: got %q, want %q", last.Name, "Launch")
 	}
 }
+
+func TestBridgeFields_HasInterlaceFilter(t *testing.T) {
+	var found *adapters.FieldDef
+	for i, f := range bridgeFields() {
+		if f.Key == "video.interlace_filter" {
+			fields := bridgeFields()
+			found = &fields[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("video.interlace_filter not found in bridgeFields()")
+	}
+	if found.Section != "Video" || found.Kind != adapters.KindEnum {
+		t.Errorf("section/kind = %q/%v, want Video/KindEnum", found.Section, found.Kind)
+	}
+	if found.Default != "light" {
+		t.Errorf("default = %v, want light", found.Default)
+	}
+	if found.ApplyScope != adapters.ScopeRestartCast {
+		t.Errorf("scope = %v, want ScopeRestartCast", found.ApplyScope)
+	}
+}
+
+func TestBridgeLookup_InterlaceFilterShowsEffectiveValue(t *testing.T) {
+	if got := bridgeLookupString("video.interlace_filter", config.BridgeConfig{}); got != "light" {
+		t.Errorf("unset interlace filter renders as %q, want light", got)
+	}
+	cur := config.BridgeConfig{Video: config.VideoConfig{InterlaceFilter: "off"}}
+	if got := bridgeLookupString("video.interlace_filter", cur); got != "off" {
+		t.Errorf("bridgeLookupString(video.interlace_filter) = %q, want off", got)
+	}
+}

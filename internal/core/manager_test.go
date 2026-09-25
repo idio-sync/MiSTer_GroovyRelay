@@ -3803,3 +3803,51 @@ func TestProbeForStart_SingleCropSampleWhenNotSeekable(t *testing.T) {
 		})
 	}
 }
+
+// The interlace anti-twitter filter reaches the pipeline only for
+// interlaced modelines; progressive output has no field flicker to fix.
+func TestManager_InterlaceFilterReachesPipelineForInterlacedModelines(t *testing.T) {
+	cases := []struct {
+		modeline, filter, want string
+	}{
+		{"NTSC_480i", "", "light"},
+		{"NTSC_480i", "off", "off"},
+		{"NTSC_480i", "full", "full"},
+		{"PAL_576i", "light", "light"},
+		{"NTSC_240p", "full", ""},
+		{"PAL_288p", "light", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.modeline+"/"+tc.filter, func(t *testing.T) {
+			origProbe := probeInputFn
+			origCrop := probeCropFn
+			origNewPlane := newPlane
+			t.Cleanup(func() {
+				probeInputFn = origProbe
+				probeCropFn = origCrop
+				newPlane = origNewPlane
+			})
+			probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+				return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60}, nil
+			}
+			probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) { return nil, nil }
+			var captured dataplane.PlaneConfig
+			done := make(chan struct{})
+			t.Cleanup(func() { close(done) })
+			newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+				captured = cfg
+				return &blockingDonePlane{done: done}
+			}
+
+			m := newTestManager(t)
+			m.bridge.Video.Modeline = tc.modeline
+			m.bridge.Video.InterlaceFilter = tc.filter
+			if err := m.StartSession(SessionRequest{StreamURL: "http://example/clip.mp4", AdapterRef: "url:clip", DirectPlay: true}); err != nil {
+				t.Fatalf("StartSession: %v", err)
+			}
+			if got := captured.SpawnSpec.InterlaceFilter; got != tc.want {
+				t.Fatalf("pipeline interlace filter = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

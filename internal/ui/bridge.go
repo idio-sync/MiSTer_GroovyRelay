@@ -401,6 +401,8 @@ func bridgeLookupString(key string, cur config.BridgeConfig) string {
 		return cur.Video.InterlaceFieldOrder
 	case "video.aspect_mode":
 		return cur.Video.AspectMode
+	case "video.interlace_filter":
+		return cur.Video.EffectiveInterlaceFilter()
 	case "audio.sample_rate":
 		return fmt.Sprintf("%d", cur.Audio.SampleRate)
 	case "audio.channels":

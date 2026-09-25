@@ -4470,6 +4470,7 @@ func TestSettingsAVAndMisterTemplates_RenderAllFields(t *testing.T) {
 		`name="video_modeline"`,
 		`name="video_interlace_field_order"`,
 		`name="video_aspect_mode"`,
+		`name="video_interlace_filter"`,
 		`data-field="video_lz4_enabled"`, // switch renders <button data-field=...>
 		`data-field="video_delta_lz4_enabled"`,
 		`name="audio_sample_rate"`,

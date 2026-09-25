@@ -971,3 +971,26 @@ func TestSaveAudioDSPMemory_StoreAndRecall(t *testing.T) {
 		t.Error("empty slot 3 should not recall")
 	}
 }
+
+func TestDiffBridgeConfig_InterlaceFilterRestartCast(t *testing.T) {
+	old := config.BridgeConfig{Video: config.VideoConfig{InterlaceFilter: "light"}}
+	newCfg := old
+	newCfg.Video.InterlaceFilter = "full"
+	if keys := diffBridgeConfig(old, newCfg); !containsStr(keys, "video.interlace_filter") {
+		t.Errorf("expected video.interlace_filter in diff keys, got %v", keys)
+	}
+	if got := scopeForBridgeField("video.interlace_filter"); got != adapters.ScopeRestartCast {
+		t.Errorf("scopeForBridgeField(video.interlace_filter) = %v, want ScopeRestartCast", got)
+	}
+}
+
+// A form or config without the key means the default; switching between
+// "unset" and the explicit default must not drop the active cast.
+func TestDiffBridgeConfig_InterlaceFilterUnsetEqualsDefault(t *testing.T) {
+	old := config.BridgeConfig{Video: config.VideoConfig{InterlaceFilter: "light"}}
+	newCfg := old
+	newCfg.Video.InterlaceFilter = ""
+	if keys := diffBridgeConfig(old, newCfg); containsStr(keys, "video.interlace_filter") {
+		t.Errorf("unset vs light reported as a change: %v", keys)
+	}
+}

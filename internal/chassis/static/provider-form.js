@@ -814,6 +814,7 @@
     invalidateLoad();
     invalidateReorder();
     invalidateMutation();
+    disarmDelete();
     document.body.classList.remove('catalog-form-open');
     const form = byID('catalog-form');
     if (form) form.setAttribute('aria-hidden', 'true');
@@ -828,6 +829,7 @@
     invalidateLoad();
     invalidateReorder();
     invalidateMutation();
+    disarmDelete();
     state.mode = 'new';
     state.id = '';
     state.glyphTouched = false;
@@ -848,6 +850,7 @@
     invalidateLoad();
     invalidateReorder();
     invalidateMutation();
+    disarmDelete();
     const data = form || {};
     state.mode = data.id ? 'edit' : 'new';
     state.id = data.id || '';
@@ -968,15 +971,62 @@
     return 'Delete this provider?';
   }
 
+  // Inline two-step delete (house pattern; see settings-drawer.js restore
+  // defaults) instead of a native window.confirm() dialog: the first press
+  // arms the button and shows the warning beside it; a second press
+  // deletes. The armed state lapses after DELETE_ARM_MS and whenever the
+  // form is switched or closed, so a stale "Confirm delete" can never
+  // delete a different provider.
+  const DELETE_ARM_MS = 10000;
+  let deleteArmTimer = null;
+
+  function deleteArmed() {
+    const btn = byID('cf-delete');
+    return !!(btn && btn.classList.contains('armed'));
+  }
+
+  function disarmDelete() {
+    if (deleteArmTimer) {
+      clearTimeout(deleteArmTimer);
+      deleteArmTimer = null;
+    }
+    const btn = byID('cf-delete');
+    if (btn) {
+      btn.classList.remove('armed');
+      btn.textContent = 'Delete provider';
+    }
+    const prompt = byID('cf-delete-prompt');
+    if (prompt) {
+      prompt.textContent = '';
+      prompt.hidden = true;
+    }
+  }
+
+  function armDelete() {
+    const btn = byID('cf-delete');
+    if (btn) {
+      btn.classList.add('armed');
+      btn.textContent = 'Confirm delete';
+    }
+    const prompt = byID('cf-delete-prompt');
+    if (prompt) {
+      prompt.textContent = deleteConfirmMessage();
+      prompt.hidden = false;
+    }
+    deleteArmTimer = setTimeout(disarmDelete, DELETE_ARM_MS);
+  }
+
   async function deleteProvider() {
     if (!state.id) {
       closeForm();
       return true;
     }
     if (pendingMutation) return false;
-    if (typeof window.confirm === 'function' && !window.confirm(deleteConfirmMessage())) {
+    if (!deleteArmed()) {
+      armDelete();
       return false;
     }
+    disarmDelete();
     const token = beginMutation();
     if (!token) return false;
     const id = state.id;

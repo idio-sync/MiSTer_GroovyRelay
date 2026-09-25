@@ -38,11 +38,22 @@ GROOVY_DELTA_LZ4=1 ./mister-groovy-relay --config /path/to/config.toml
 
 The generated config enables it by default. The feature has no effect unless `bridge.lz4_enabled` is also true, which is also the default.
 
-**Known limitation: delta loss is silent.** UDP packet loss is structural in this protocol: there are no per-chunk sequence numbers, and the receiver concatenates by arrival order. If a delta-LZ4 field is dropped, sender and receiver history diverge until the next full BLIT resyncs them. On a stable LAN this usually recovers within a few frames; on a lossy link, leave delta-LZ4 off.
+**Known limitation: delta loss is not acknowledged per chunk.** UDP packet loss is structural in this protocol: there are no per-chunk sequence numbers, and the receiver concatenates by arrival order. If a delta-LZ4 field is lost, sender and receiver history diverge until a full BLIT resyncs them. The bridge forces that resync early whenever the receiver may be out of step:
 
-To bound recovery time, the bridge periodically sends a normal full-LZ4 BLIT while delta-LZ4 is enabled, even when the delta payload would otherwise win.
+- when the MiSTer's ACK frame echo skips a frame or goes backwards (a BLIT or its ACK was lost), rate-limited to once per ~0.5 s;
+- after any duplicate-field run (video underrun);
+- after any payload send that aborted mid-field;
+- and unconditionally about once per second per field polarity.
 
-Grep logs for `delta_selected` to see how often the adaptive selector chose the delta path in each 5-second window.
+On a lossy link where resyncs fire constantly, leave delta-LZ4 off.
+
+The bridge only computes the compression that is likely to win. If delta keeps losing on a polarity (film grain, noise, heavy motion), it stops trying delta for ~0.5 s and re-checks; if delta keeps winning, it skips the full-field compression. Both payloads are always valid on the wire.
+
+Useful fields on the 5-second `dataplane stats` line:
+
+- `delta_selected`: fields sent as delta in the window.
+- `delta_resyncs_total`: forced full-field resyncs. A steady climb on a wired LAN would mean the receiver is not ACKing every BLIT.
+- `full_lz4_attempts_total` / `delta_lz4_attempts_total`: compressions actually performed, useful when judging CPU headroom on small hosts.
 
 ## Live HLS buffering
 
@@ -105,6 +116,16 @@ The bridge uses a single FFmpeg process with shared A/V timestamps, so long-term
 **The picture shimmers or fields look wrong.**
 
 Flip `interlace_field_order` between `tff` and `bff`. The correct value depends on the MiSTer core and cable path.
+
+**Subtitles, text, or thin horizontal lines flicker on an interlaced mode.**
+
+That is interlace twitter: a detail one line tall exists in only one field, so it flashes at 30 Hz (25 Hz on PAL). `bridge.video.interlace_filter` applies a vertical low-pass before the fields are split so both fields carry the detail. It is set in the Settings UI as **Flicker filter**:
+
+- `light` (default): halves one-line flicker; barely softer than unfiltered.
+- `full`: removes one-line flicker; visibly softer.
+- `off`: full vertical sharpness, maximum flicker.
+
+It applies only to interlaced modes (480i, 576i) and takes effect on the next cast. Film downscaled from HD is already soft vertically, so the difference shows mostly on subtitles, visualizer text, animation, and native 480-line sources.
 
 **Plex says the target is offline moments after casting.**
 

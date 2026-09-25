@@ -503,6 +503,11 @@ func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
 	if oldCfg.Video.AspectMode != newCfg.Video.AspectMode {
 		keys = append(keys, "video.aspect_mode")
 	}
+	// Compare effective values: an unset filter means the default, so a
+	// form without the key must not look like a change and drop the cast.
+	if oldCfg.Video.EffectiveInterlaceFilter() != newCfg.Video.EffectiveInterlaceFilter() {
+		keys = append(keys, "video.interlace_filter")
+	}
 	if oldCfg.Video.RGBMode != newCfg.Video.RGBMode {
 		keys = append(keys, "video.rgb_mode")
 	}
@@ -625,6 +630,7 @@ func scopeForBridgeField(key string) adapters.ApplyScope {
 		return adapters.ScopeHotSwap
 	case "video.modeline",
 		"video.aspect_mode",
+		"video.interlace_filter",
 		"video.rgb_mode",
 		"video.lz4_enabled",
 		"video.delta_lz4_enabled",

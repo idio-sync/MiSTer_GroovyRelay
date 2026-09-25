@@ -895,6 +895,11 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		FFmpegPath:          ffmpegPath,
 		Policy:              req.MediaInputPolicy,
 	}
+	// Interlace twitter only exists on interlaced output; progressive
+	// modelines keep full vertical detail.
+	if modeline.Interlaced() {
+		spec.InterlaceFilter = m.bridge.Video.EffectiveInterlaceFilter()
+	}
 
 	plane := newPlane(dataplane.PlaneConfig{
 		Sender:              m.sender,

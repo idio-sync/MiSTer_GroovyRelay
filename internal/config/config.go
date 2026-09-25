@@ -179,6 +179,22 @@ type VideoConfig struct {
 	RGBMode             string `toml:"rgb_mode"`
 	LZ4Enabled          bool   `toml:"lz4_enabled"`
 	DeltaLZ4Enabled     bool   `toml:"delta_lz4_enabled"`
+	// InterlaceFilter is the vertical low-pass against interlace twitter on
+	// interlaced modelines: "off", "light" (default), or "full". Empty is
+	// treated as the default.
+	InterlaceFilter string `toml:"interlace_filter"`
+}
+
+// DefaultInterlaceFilter is the interlace anti-twitter strength used when
+// bridge.video.interlace_filter is unset.
+const DefaultInterlaceFilter = "light"
+
+// EffectiveInterlaceFilter resolves an unset InterlaceFilter to the default.
+func (v VideoConfig) EffectiveInterlaceFilter() string {
+	if v.InterlaceFilter == "" {
+		return DefaultInterlaceFilter
+	}
+	return v.InterlaceFilter
 }
 
 type AudioConfig struct {
@@ -360,6 +376,11 @@ func (s *Sectioned) Validate() error {
 	case "letterbox", "zoom", "auto":
 	default:
 		return fmt.Errorf("bridge.video.aspect_mode must be letterbox, zoom, or auto, got %q", b.Video.AspectMode)
+	}
+	switch b.Video.InterlaceFilter {
+	case "", "off", "light", "full":
+	default:
+		return fmt.Errorf("bridge.video.interlace_filter must be off, light, or full, got %q", b.Video.InterlaceFilter)
 	}
 	if b.Video.RGBMode != "rgb888" {
 		return fmt.Errorf("bridge.video.rgb_mode: only rgb888 is supported (got %q)", b.Video.RGBMode)

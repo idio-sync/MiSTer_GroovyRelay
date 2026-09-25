@@ -1647,3 +1647,69 @@ func TestChassisMeterIdleAndDisplayKey_Wiring(t *testing.T) {
 		t.Error("shell.html must load meter-display.js")
 	}
 }
+
+// Phone remote: below 600px the page is a remote control by default
+// (keypad 1-12 recalls presets, VOL-/VOL+, PANEL toggle); the full
+// faceplate is one key away and the choice is applied before paint.
+func TestChassisPhoneRemote_Wiring(t *testing.T) {
+	t.Parallel()
+	read := func(fsys interface{ ReadFile(string) ([]byte, error) }, name string) string {
+		b, err := fsys.ReadFile(name)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", name, err)
+		}
+		return string(b)
+	}
+	pad := read(chassisTemplatesFS, "templates/remote-pad.html")
+	for _, want := range []string{
+		`{{define "remote-pad"}}`,
+		`data-remote-preset="{{$slot.Slot}}"`,
+		`data-remote-volume="-5"`,
+		`data-remote-volume="5"`,
+		`data-phone-view-toggle`,
+	} {
+		if !strings.Contains(pad, want) {
+			t.Errorf("remote-pad.html missing %q", want)
+		}
+	}
+	shell := read(chassisTemplatesFS, "templates/shell.html")
+	for _, want := range []string{`{{template "remote-pad" .Presets}}`, "/ui/static/remote.js", "'chassis.phoneView'"} {
+		if !strings.Contains(shell, want) {
+			t.Errorf("shell.html missing %q", want)
+		}
+	}
+	css := read(chassisStaticFS, "static/chassis.css")
+	if !strings.Contains(cssRuleBlock(t, css, "body.receiver .remote-pad"), "display: none;") {
+		t.Error("the remote keypad must be hidden outside phone remote view")
+	}
+	const at = "@container chassis (max-width: 600px)"
+	// The pad shows on phones in both views (its PANEL/REMOTE toggle is the
+	// way back); only its keys fold away in the panel view.
+	shown := cssRuleBlockInAtRules(t, css, at, `body.receiver .remote-pad`)
+	if !strings.Contains(shown, "display: grid;") {
+		t.Errorf("phone chassis must show the remote pad: %s", shown)
+	}
+	panelKeys := cssRuleBlockInAtRules(t, css, at, `body.receiver[data-phone-view="panel"] .remote-keys,
+  body.receiver[data-phone-view="panel"] .remote-key.vol`)
+	if !strings.Contains(panelKeys, "display: none;") {
+		t.Errorf("panel view must fold the keypad keys but keep the toggle: %s", panelKeys)
+	}
+	hidden := cssRuleBlockInAtRules(t, css, at, `body.receiver:not([data-phone-view="panel"]) .meter-source-row,
+  body.receiver:not([data-phone-view="panel"]) .viz-section,
+  body.receiver:not([data-phone-view="panel"]) .preset-section,
+  body.receiver:not([data-phone-view="panel"]) .history-section`)
+	if !strings.Contains(hidden, "display: none;") {
+		t.Errorf("phone remote view must fold the meter, visualizer, preset tiles and history: %s", hidden)
+	}
+	// LEVEL reads as one centred row, [MUTING] [VOLUME] [TONE], without the
+	// stale EQUALIZER side label (the EQ is behind TONE).
+	if !strings.Contains(cssRuleBlockInAtRules(t, css, at, `body.receiver:not([data-phone-view="panel"]) .audio-strip > .strip-label`), "display: none;") {
+		t.Error("remote view must drop the EQUALIZER side label")
+	}
+	level := cssRuleBlockInAtRules(t, css, at, `body.receiver:not([data-phone-view="panel"]) .audio-deck > .deck-level`)
+	for _, want := range []string{"grid-template-columns: auto auto;", "justify-content: center;"} {
+		if !strings.Contains(level, want) {
+			t.Errorf("remote-view LEVEL row missing %q: %s", want, level)
+		}
+	}
+}
