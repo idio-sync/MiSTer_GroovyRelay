@@ -45,6 +45,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/hlsbuffer"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/logging"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/osd"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/playback"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/uiserver"
 )
@@ -201,7 +202,8 @@ func main() {
 
 	coreMgr := core.NewManager(sec.Bridge, sender,
 		core.WithBinaryResolvers(ffmpegResolver, ffprobeResolver),
-		core.WithEventLog(elog))
+		core.WithEventLog(elog),
+		core.WithOSD(osd.NewDisplay(osd.Options{}))) // options follow bridge.osd
 
 	auxAdapter, err := aux.New(aux.AdapterConfig{
 		Bridge:   sec.Bridge,

@@ -90,6 +90,17 @@ Enable `[adapters.airplay]` and the bridge appears as an AirPlay speaker on iPho
 - Discovery uses shairport-sync's built-in mDNS responder. If the speaker does not appear on a host that runs its own mDNS daemon (avahi), check the helper's log lines for port 5353 errors.
 - AirPlay 2 (multi-room grouping with HomePods) is not supported yet.
 
+## On-screen display
+
+While a cast is playing, the bridge draws an old-TV-style OSD into the picture: a green volume bar (or red `MUTING`) when you turn the knob, a green channel banner when a cast starts (`CH 07` for a streams channel in the preset bank, otherwise the channel or source name, such as `PLEX`), and `PLAY ▶` / `FF ▶▶` / `REW ◀◀` on start, resume and seek. Each element fades after a few seconds and stays inside the title-safe area of a consumer CRT.
+
+Configure it under `[bridge.osd]`; every setting applies live, mid-cast:
+
+- `enabled` (default `true`) turns the whole OSD on or off.
+- `clock` (default `false`) shows the local time under the channel banner, with `clock_24h` for `21:41` instead of `9:41 PM`. In Docker, set the `TZ` environment variable (for example `TZ=America/New_York`) or the clock shows UTC.
+
+The OSD appears only while something is playing. When paused or idle the MiSTer has no picture to draw on.
+
 ## Hardware requirements
 
 - MiSTer FPGA with Analogue I/O board or direct video adapter wired to a 15 kHz-capable CRT (consumer, PVM, arcade, etc.)

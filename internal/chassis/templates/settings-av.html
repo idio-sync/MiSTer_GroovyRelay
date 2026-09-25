@@ -77,5 +77,24 @@
       "Error" (errOf .Errors "audio_channels")) }}
   </div>
 
+  <div class="settings-section">
+    <h4>On-screen display</h4>
+    {{ field (dict
+      "Name" "osd_enabled" "Type" "switch" "Label" "On-screen display"
+      "Help" "Draws a volume bar, channel banner and PLAY / FF / REW into the picture while casting."
+      "Value" (boolStr .Bridge.OSD.Enabled)
+      "Scope" "hot") }}
+    {{ field (dict
+      "Name" "osd_clock" "Type" "switch" "Label" "Clock"
+      "Help" "Shows the local time under the channel banner. In Docker, set TZ or it shows UTC."
+      "Value" (boolStr .Bridge.OSD.Clock)
+      "Scope" "hot") }}
+    {{ field (dict
+      "Name" "osd_clock_24h" "Type" "switch" "Label" "24-hour clock"
+      "Help" "21:41 instead of 9:41 PM."
+      "Value" (boolStr .Bridge.OSD.Clock24h)
+      "Scope" "hot") }}
+  </div>
+
 </div>
 {{- end -}}

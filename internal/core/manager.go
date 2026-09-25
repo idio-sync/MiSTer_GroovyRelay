@@ -26,6 +26,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/osd"
 )
 
 // removeSubtitleFile deletes the file at path if path is non-empty.
@@ -104,6 +105,11 @@ type Manager struct {
 	outputMuted       bool
 
 	eventLog *eventlog.Log // nilable; nil disables event emission
+
+	// osd is the on-screen display shared by every plane. Nil disables it
+	// (osd.Display methods are nil-safe). now is its clock; tests freeze it.
+	osd *osd.Display
+	now func() time.Time
 }
 
 type planeRunner interface {
@@ -149,6 +155,15 @@ func WithBinaryResolvers(ffmpegResolver, ffprobeResolver BinaryResolver) Manager
 func WithEventLog(log *eventlog.Log) ManagerOption {
 	return func(m *Manager) {
 		m.eventLog = log
+	}
+}
+
+// WithOSD wires the on-screen display. The Manager hands it to every plane
+// it builds and announces volume, mute, cast start, resume and seek on it.
+// Its options always follow bridge.osd (NewManager, UpdateBridge).
+func WithOSD(d *osd.Display) ManagerOption {
+	return func(m *Manager) {
+		m.osd = d
 	}
 }
 
@@ -252,13 +267,18 @@ func (m *Manager) startGuardMatchesLocked(guard sessionGuard, requireIdle bool) 
 // MiSTer's address; Manager does not own its lifecycle (the sender is shared
 // across the process lifetime so its source UDP port remains stable).
 func NewManager(bridge config.BridgeConfig, sender *groovynet.Sender, opts ...ManagerOption) *Manager {
-	m := &Manager{bridge: bridge, sender: sender, fsm: New()}
+	m := &Manager{bridge: bridge, sender: sender, fsm: New(), now: time.Now}
 	m.audioDSPRuntime = bridge.Audio.DSP
 	m.audioDSPPersisted = true
 	for _, opt := range opts {
 		opt(m)
 	}
+	m.osd.SetOptions(osdOptions(bridge.OSD))
 	return m
+}
+
+func osdOptions(c config.OSDConfig) osd.Options {
+	return osd.Options{Enabled: c.Enabled, Clock: c.Clock, Clock24h: c.Clock24h}
 }
 
 func resolveBinary(r BinaryResolver, fallback string) (string, error) {
@@ -900,6 +920,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		AudioChans:          audioChans,
 		SuppressAudioOutput: suppressAudio,
 		OutputVolume:        m.effectiveOutputVolumeLocked(),
+		OSD:                 m.osd,
 		AudioDSP:            dspParamsFromConfig(m.bridge.Audio.DSP, audioRate, audioChans),
 		SeekOffsetMs:        offsetMs,
 		Generation:          generation,
@@ -949,6 +970,7 @@ func (m *Manager) StartSession(req SessionRequest) error {
 	if err := m.startPlaneLocked(req, req.SeekOffsetMs, probe, cropRect, ffmpegPath, generation, sessionGuard{}, false); err != nil {
 		return err
 	}
+	m.announceStartLocked(req)
 	return m.fsm.Transition(EvPlayMedia)
 }
 
@@ -1044,6 +1066,7 @@ func (m *Manager) startSessionIfSessionGuard(req SessionRequest, guard sessionGu
 		}
 		return SessionStatus{}, true, err
 	}
+	m.announceStartLocked(req)
 	if err := m.fsm.Transition(EvPlayMedia); err != nil {
 		return m.statusLocked(), true, err
 	}
@@ -1232,6 +1255,7 @@ func (m *Manager) playIfSessionGuard(guard sessionGuard) (bool, error) {
 		}
 		return true, err
 	}
+	m.osd.ShowTransport(osd.TransportPlay, m.now())
 	return true, m.fsm.Transition(EvPlay)
 }
 
@@ -1307,6 +1331,7 @@ func (m *Manager) SetOutputVolume(volume int) error {
 		return fmt.Errorf("audio.output_volume must be in 0..100, got %d", volume)
 	}
 	m.bridge.Audio.OutputVolume = volume
+	m.osd.ShowVolume(volume, m.outputMuted, m.now())
 	if m.plane != nil {
 		return m.plane.SetOutputVolume(m.effectiveOutputVolumeLocked())
 	}
@@ -1320,10 +1345,25 @@ func (m *Manager) SetOutputMuted(muted bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.outputMuted = muted
+	m.osd.ShowVolume(m.bridge.Audio.OutputVolume, muted, m.now())
 	if m.plane != nil {
 		return m.plane.SetOutputVolume(m.effectiveOutputVolumeLocked())
 	}
 	return nil
+}
+
+// announceStartLocked shows the channel banner and PLAY for a newly started
+// session. Resume and seek announce only their transport action.
+func (m *Manager) announceStartLocked(req SessionRequest) {
+	now := m.now()
+	label := req.ChannelLabel
+	if label == "" {
+		label = req.Source
+	}
+	if label != "" {
+		m.osd.ShowChannel(label, now)
+	}
+	m.osd.ShowTransport(osd.TransportPlay, now)
 }
 
 func (m *Manager) effectiveOutputVolumeLocked() int {
@@ -1429,6 +1469,9 @@ func (m *Manager) UpdateBridge(b config.BridgeConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.bridge = b
+	// The display re-reads its options every field, so OSD settings are
+	// hot-swap with no plane involvement.
+	m.osd.SetOptions(osdOptions(b.OSD))
 }
 
 // VisualizerMode returns the live bridge's visualizer mode under
@@ -1654,12 +1697,18 @@ func (m *Manager) seekToIfSessionGuard(guard sessionGuard, offsetMs int) (bool, 
 	if !m.sessionGuardMatchesLocked(guard) {
 		return false, nil
 	}
+	from := m.statusLocked().Position
 	if err := m.startPlaneLocked(req, offsetMs, probe, cropRect, ffmpegPath, generation, guard, false); err != nil {
 		if errors.Is(err, errAdapterRefChanged) {
 			return false, nil
 		}
 		return true, err
 	}
+	direction := osd.TransportFastForward
+	if time.Duration(offsetMs)*time.Millisecond < from {
+		direction = osd.TransportRewind
+	}
+	m.osd.ShowTransport(direction, m.now())
 	// Seek keeps state=playing; FSM's Seek event is a no-op transition.
 	return true, m.fsm.Transition(EvSeek)
 }

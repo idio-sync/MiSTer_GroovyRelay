@@ -380,6 +380,18 @@ var bridgeFieldDecoders = map[string]bridgeFieldDecoder{
 		v, err := decodeBool(s)
 		return v, err
 	},
+	"osd_enabled": func(s string) (any, error) {
+		v, err := decodeBool(s)
+		return v, err
+	},
+	"osd_clock": func(s string) (any, error) {
+		v, err := decodeBool(s)
+		return v, err
+	},
+	"osd_clock_24h": func(s string) (any, error) {
+		v, err := decodeBool(s)
+		return v, err
+	},
 }
 
 // decodeMisterHost trims whitespace and accepts a non-empty IPv4 string
@@ -591,6 +603,9 @@ var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
 	"hls_max_variant_height":       func(c *config.BridgeConfig, v any) { c.HLSBuffer.MaxVariantHeight = v.(int) },
 	"hls_stale_cache_reap_hours":   func(c *config.BridgeConfig, v any) { c.HLSBuffer.StaleCacheReapHours = v.(int) },
 	"logging_debug":                func(c *config.BridgeConfig, v any) { c.Logging.Debug = v.(bool) },
+	"osd_enabled":                  func(c *config.BridgeConfig, v any) { c.OSD.Enabled = v.(bool) },
+	"osd_clock":                    func(c *config.BridgeConfig, v any) { c.OSD.Clock = v.(bool) },
+	"osd_clock_24h":                func(c *config.BridgeConfig, v any) { c.OSD.Clock24h = v.(bool) },
 }
 
 // bridgeFieldScopes is the chassis-side mirror of which ApplyScope each
@@ -635,6 +650,9 @@ var bridgeFieldScopes = map[string]adapters.ApplyScope{
 	"hls_max_variant_height":       adapters.ScopeRestartCast,
 	"hls_stale_cache_reap_hours":   adapters.ScopeRestartCast,
 	"logging_debug":                adapters.ScopeHotSwap,
+	"osd_enabled":                  adapters.ScopeHotSwap,
+	"osd_clock":                    adapters.ScopeHotSwap,
+	"osd_clock_24h":                adapters.ScopeHotSwap,
 }
 
 // scopeLabel maps an ApplyScope to the chassis JSON wire label. Returns

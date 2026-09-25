@@ -65,6 +65,14 @@ func TestNilDisplayDrawIsNoOp(t *testing.T) {
 	}
 }
 
+func TestNilDisplayMutatorsAreNoOps(t *testing.T) {
+	var d *Display
+	d.SetOptions(Options{Enabled: true})
+	d.ShowVolume(50, false, testNow)
+	d.ShowChannel("CH 07", testNow)
+	d.ShowTransport(TransportPlay, testNow)
+}
+
 func TestDisplayDisabledDrawsNothing(t *testing.T) {
 	c := newFieldCanvas()
 	d := NewDisplay(Options{Enabled: false})
@@ -298,6 +306,71 @@ func TestAllElementsStayInsideTitleSafe(t *testing.T) {
 			t.Errorf("%dx%d: overlay bbox %+v escapes title-safe [%d,%d]-[%d,%d]",
 				size[0], size[1], b, l.safeX0, l.safeY0, l.safeX1, l.safeY1)
 		}
+	}
+}
+
+func TestShowingReportsWhatDrawWouldDraw(t *testing.T) {
+	var nilDisplay *Display
+	if got := nilDisplay.Showing(testNow); got != (Showing{}) {
+		t.Fatalf("nil Showing = %+v, want zero", got)
+	}
+
+	d := NewDisplay(Options{Enabled: true})
+	if got := d.Showing(testNow); got != (Showing{}) {
+		t.Fatalf("idle Showing = %+v, want zero", got)
+	}
+
+	d.ShowVolume(40, true, testNow)
+	d.ShowChannel("plex", testNow)
+	d.ShowTransport(TransportRewind, testNow)
+	want := Showing{VolumeVisible: true, Volume: 40, Muted: true, Channel: "PLEX", Transport: TransportRewind}
+	if got := d.Showing(testNow); got != want {
+		t.Fatalf("Showing = %+v, want %+v", got, want)
+	}
+	if got := d.Showing(testNow.Add(ChannelDuration)); got != (Showing{}) {
+		t.Fatalf("Showing after every duration = %+v, want zero", got)
+	}
+
+	d.SetOptions(Options{Enabled: false})
+	if got := d.Showing(testNow); got != (Showing{}) {
+		t.Fatalf("disabled Showing = %+v, want zero", got)
+	}
+}
+
+// Draw runs once per field (~60 Hz) on the data-plane tick goroutine, which
+// is held to an allocation budget.
+func TestDrawDoesNotAllocateInSteadyState(t *testing.T) {
+	d := NewDisplay(Options{Enabled: true, Clock: true})
+	d.ShowVolume(100, false, testNow)
+	d.ShowChannel("CH 12", testNow)
+	d.ShowTransport(TransportPlay, testNow)
+	c := newFieldCanvas()
+	d.Draw(c, testNow) // first draw of a minute may format the clock
+
+	if allocs := testing.AllocsPerRun(50, func() { d.Draw(c, testNow) }); allocs != 0 {
+		t.Fatalf("Draw allocated %.1f times per call, want 0", allocs)
+	}
+}
+
+func TestClockTextFollowsMinuteChanges(t *testing.T) {
+	d := NewDisplay(Options{Enabled: true, Clock: true})
+	draw := func(at time.Time) Canvas {
+		d.ShowChannel("CH 12", at)
+		c := newFieldCanvas()
+		d.Draw(c, at)
+		return c
+	}
+	a := draw(time.Date(2026, 1, 1, 9, 41, 0, 0, time.Local))
+	b := draw(time.Date(2026, 1, 1, 9, 42, 0, 0, time.Local))
+	same := true
+	for i := range a.Pix {
+		if a.Pix[i] != b.Pix[i] {
+			same = false
+			break
+		}
+	}
+	if same {
+		t.Fatal("clock did not change between 9:41 and 9:42 (stale cache)")
 	}
 }
 

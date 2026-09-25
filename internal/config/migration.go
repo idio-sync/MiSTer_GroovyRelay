@@ -125,6 +125,7 @@ func Migrate(legacy []byte) ([]byte, error) {
 			Visualizer: VisualizerConfig{
 				Mode: VisualizerModeRetroAnalyzer,
 			},
+			OSD: defaultOSDConfig(),
 			MiSTer: MisterConfig{
 				Host:       old.MisterHost,
 				Port:       old.MisterPort,
@@ -303,6 +304,7 @@ func defaultBridge() BridgeConfig {
 		Visualizer: VisualizerConfig{
 			Mode: VisualizerModeRetroAnalyzer,
 		},
+		OSD: defaultOSDConfig(),
 		MiSTer: MisterConfig{
 			Port:        d.MisterPort,
 			SourcePort:  d.SourcePort,

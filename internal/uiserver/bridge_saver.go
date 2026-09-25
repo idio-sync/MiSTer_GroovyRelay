@@ -532,6 +532,15 @@ func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
 	if oldCfg.Visualizer.Mode != newCfg.Visualizer.Mode {
 		keys = append(keys, "visualizer.mode")
 	}
+	if oldCfg.OSD.Enabled != newCfg.OSD.Enabled {
+		keys = append(keys, "osd.enabled")
+	}
+	if oldCfg.OSD.Clock != newCfg.OSD.Clock {
+		keys = append(keys, "osd.clock")
+	}
+	if oldCfg.OSD.Clock24h != newCfg.OSD.Clock24h {
+		keys = append(keys, "osd.clock_24h")
+	}
 	if oldCfg.MiSTer.Host != newCfg.MiSTer.Host {
 		keys = append(keys, "mister.host")
 	}
@@ -605,6 +614,10 @@ func scopeForBridgeField(key string) adapters.ApplyScope {
 	case "audio.output_volume":
 		return adapters.ScopeHotSwap
 	case "audio.dsp":
+		return adapters.ScopeHotSwap
+	case "osd.enabled", "osd.clock", "osd.clock_24h":
+		// Applied by Manager.UpdateBridge; the display re-reads its
+		// options on every field.
 		return adapters.ScopeHotSwap
 	case "mister.ssh_user", "mister.ssh_password":
 		return adapters.ScopeHotSwap

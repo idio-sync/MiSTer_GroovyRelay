@@ -198,6 +198,11 @@ type SessionRequest struct {
 	// Surfaced by the status home; never inspected by core. May be empty.
 	Title string
 
+	// ChannelLabel is the on-screen-display channel banner shown when this
+	// session starts (e.g. "CH 07" for a preset). Empty falls back to the
+	// upper-cased Source, like a TV announcing its input; with neither, no
+	// banner is shown.
+	ChannelLabel string
 	// DisplayMetadata is the adapter-composed three-row VFD text. When
 	// zero-valued, consumers fall back to Title for the primary row.
 	DisplayMetadata DisplayMetadata

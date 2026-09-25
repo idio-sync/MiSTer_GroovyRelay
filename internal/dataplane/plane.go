@@ -16,6 +16,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/osd"
 	"github.com/pierrec/lz4/v4"
 )
 
@@ -336,6 +337,12 @@ type PlaneConfig struct {
 	AudioDSP            audiodsp.Params // tone/EQ chain; zero value = transparent
 	SeekOffsetMs        int             // reported as session start position
 	Generation          uint64          // session generation; stamps audio snapshots
+
+	// OSD, when non-nil, is drawn into every outgoing field just before
+	// compression. It is owned by the control plane and shared across
+	// sessions; the plane only ever calls Draw. Only bgr24 (3 bytes per
+	// pixel) payloads are stamped.
+	OSD *osd.Display
 
 	// OnInit is fired exactly once after the INIT handshake completes.
 	// nil err = success (FPGA accepted INIT, ready for frames); non-nil
@@ -1233,6 +1240,7 @@ func (p *Plane) Run(ctx context.Context) error {
 				} else {
 					payload = fb.Data[:fb.N]
 				}
+				p.stampOSD(payload, time.Now())
 				sendStats := p.sendField(frameNum, emitField, payload)
 				statWindow.fieldsSent++
 				statWindow.observeField(sendStats, p.fieldBudgetThreshold())
@@ -1448,6 +1456,18 @@ func (p *Plane) effectiveAudioConfig() (rate, chans int) {
 func (p *Plane) fieldBudgetThreshold() time.Duration {
 	fieldPeriodMs := time.Duration(p.periodMsNumer) * time.Millisecond / time.Duration(p.periodMsDenom)
 	return fieldPeriodMs * 84 / 100
+}
+
+// stampOSD draws the on-screen display into an outgoing bgr24 payload. The
+// canvas height comes from the payload length so the same call covers an
+// interlaced field (p.fieldScratch) and a progressive pool frame. Must run
+// before sendField: delta-LZ4 history then records what was actually sent.
+func (p *Plane) stampOSD(payload []byte, now time.Time) {
+	if p.cfg.OSD == nil || p.cfg.BytesPerPixel != 3 || p.cfg.FieldWidth <= 0 {
+		return
+	}
+	rows := len(payload) / (p.cfg.FieldWidth * 3)
+	p.cfg.OSD.Draw(osd.Canvas{Pix: payload, Width: p.cfg.FieldWidth, Height: rows}, now)
 }
 
 // sendField sends one BLIT_FIELD_VSYNC header + payload using session-
