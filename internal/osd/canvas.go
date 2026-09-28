@@ -13,6 +13,25 @@ type Canvas struct {
 	Pix    []byte
 	Width  int
 	Height int
+	// Picture is the part of the canvas the operator calibrated as the
+	// on-screen picture, in canvas pixels and rows. The zero value is the
+	// whole canvas.
+	Picture Rect
+}
+
+// Rect is an axis-aligned rectangle in canvas pixels and rows.
+type Rect struct{ X, Y, W, H int }
+
+// picture resolves c.Picture, clipped to the canvas; an empty or
+// out-of-canvas rect falls back to the whole canvas.
+func (c Canvas) picture() Rect {
+	r := c.Picture
+	x0, y0 := max(r.X, 0), max(r.Y, 0)
+	x1, y1 := min(r.X+r.W, c.Width), min(r.Y+r.H, c.Height)
+	if r.W <= 0 || r.H <= 0 || x1 <= x0 || y1 <= y0 {
+		return Rect{W: c.Width, H: c.Height}
+	}
+	return Rect{X: x0, Y: y0, W: x1 - x0, H: y1 - y0}
 }
 
 // TextStyle controls DrawText. Scale 0 is treated as 1. Outline draws a

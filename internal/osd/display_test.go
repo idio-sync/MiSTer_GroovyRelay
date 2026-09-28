@@ -107,7 +107,7 @@ func TestVolumeBarLightsProportionalSegments(t *testing.T) {
 		d.ShowVolume(tc.volume, false, testNow)
 		d.Draw(c, testNow)
 
-		l := layoutFor(c.Width, c.Height)
+		l := layoutFor(c)
 		lit := 0
 		for i := 0; i < VolumeSegments; i++ {
 			x, y := l.segmentCenter(i)
@@ -173,7 +173,7 @@ func TestChannelIsGreenAndRightAligned(t *testing.T) {
 	if countColor(c, colorGreen) == 0 {
 		t.Fatal("channel label drew no green pixels")
 	}
-	l := layoutFor(c.Width, c.Height)
+	l := layoutFor(c)
 	b := changed(c)
 	// Outline extends one pixel past the glyphs on each side.
 	if b.x1 != l.safeX1 {
@@ -206,7 +206,7 @@ func TestLongChannelLabelIsTruncated(t *testing.T) {
 	d.ShowChannel("A VERY LONG STREAM CHANNEL NAME", testNow)
 	d.Draw(c, testNow)
 
-	l := layoutFor(c.Width, c.Height)
+	l := layoutFor(c)
 	b := changed(c)
 	if got, max := b.x1-b.x0+1, TextWidth("0123456789", l.sx)+2; got > max {
 		t.Fatalf("channel label width = %d, want <= %d (%d runes + outline)", got, max, MaxChannelRunes)
@@ -277,7 +277,7 @@ func TestTransportIsTopLeftAndExpires(t *testing.T) {
 
 	c := newFieldCanvas()
 	d.Draw(c, testNow)
-	l := layoutFor(c.Width, c.Height)
+	l := layoutFor(c)
 	b := changed(c)
 	if b.n == 0 || b.x0 != l.safeX0-1 || b.y0 != l.safeY0-1 {
 		t.Fatalf("transport bbox = %+v, want top-left at (%d,%d)", b, l.safeX0-1, l.safeY0-1)
@@ -300,7 +300,7 @@ func TestAllElementsStayInsideTitleSafe(t *testing.T) {
 		d.ShowTransport(TransportRewind, testNow)
 		d.Draw(c, time.Date(2026, 1, 1, 12, 59, 0, 0, time.Local)) // widest 12h clock
 
-		l := layoutFor(c.Width, c.Height)
+		l := layoutFor(c)
 		b := changed(c)
 		if b.x0 < l.safeX0-1 || b.y0 < l.safeY0-1 || b.x1 > l.safeX1 || b.y1 > l.safeY1 {
 			t.Errorf("%dx%d: overlay bbox %+v escapes title-safe [%d,%d]-[%d,%d]",

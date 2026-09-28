@@ -343,6 +343,10 @@ type PlaneConfig struct {
 	// sessions; the plane only ever calls Draw. Only bgr24 (3 bytes per
 	// pixel) payloads are stamped.
 	OSD *osd.Display
+	// OSDPicture is the calibrated picture area in field coordinates
+	// (rows of one transmitted field). The OSD keeps to its title-safe
+	// inset. Zero = the whole field.
+	OSDPicture osd.Rect
 
 	// OnInit is fired exactly once after the INIT handshake completes.
 	// nil err = success (FPGA accepted INIT, ready for frames); non-nil
@@ -1467,7 +1471,7 @@ func (p *Plane) stampOSD(payload []byte, now time.Time) {
 		return
 	}
 	rows := len(payload) / (p.cfg.FieldWidth * 3)
-	p.cfg.OSD.Draw(osd.Canvas{Pix: payload, Width: p.cfg.FieldWidth, Height: rows}, now)
+	p.cfg.OSD.Draw(osd.Canvas{Pix: payload, Width: p.cfg.FieldWidth, Height: rows, Picture: p.cfg.OSDPicture}, now)
 }
 
 // sendField sends one BLIT_FIELD_VSYNC header + payload using session-

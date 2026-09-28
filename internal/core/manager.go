@@ -281,6 +281,17 @@ func osdOptions(c config.OSDConfig) osd.Options {
 	return osd.Options{Enabled: c.Enabled, Clock: c.Clock, Clock24h: c.Clock24h}
 }
 
+// osdPicture converts the on-raster part of the calibrated picture into the
+// field coordinates the OSD draws in: interlaced fields carry every other
+// raster line (PictureRect keeps Y and H even there).
+func osdPicture(pic config.PictureRect, ml groovy.Modeline) osd.Rect {
+	v := pic.Visible(int(ml.HActive), int(ml.VActive))
+	if ml.Interlaced() {
+		v.Y, v.H = v.Y/2, v.H/2
+	}
+	return osd.Rect(v)
+}
+
 func resolveBinary(r BinaryResolver, fallback string) (string, error) {
 	if r == nil {
 		return fallback, nil
@@ -909,6 +920,8 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 	if modeline.Interlaced() {
 		spec.InterlaceFilter = m.bridge.Video.EffectiveInterlaceFilter()
 	}
+	picture := m.bridge.Video.PictureRect(int(modeline.HActive), int(modeline.VActive), modeline.Interlaced())
+	spec.Picture = ffmpeg.PictureArea(picture)
 
 	plane := newPlane(dataplane.PlaneConfig{
 		Sender:              m.sender,
@@ -925,7 +938,8 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		SuppressAudioOutput: suppressAudio,
 		OutputVolume:        m.effectiveOutputVolumeLocked(),
 		OSD:                 m.osd,
-		AudioDSP:            dspParamsFromConfig(m.bridge.Audio.DSP, audioRate, audioChans),
+		OSDPicture:          osdPicture(picture, modeline),
+		AudioDSP:           dspParamsFromConfig(m.bridge.Audio.DSP, audioRate, audioChans),
 		SeekOffsetMs:        offsetMs,
 		Generation:          generation,
 		OnInit:              m.makeOnInitCallback(req.AdapterRef, m.bridge.Video.Modeline),

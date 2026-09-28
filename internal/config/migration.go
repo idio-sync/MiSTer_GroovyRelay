@@ -294,6 +294,8 @@ func defaultBridge() BridgeConfig {
 			LZ4Enabled:          d.LZ4Enabled,
 			DeltaLZ4Enabled:     d.DeltaLZ4Enabled,
 			InterlaceFilter:     DefaultInterlaceFilter,
+			PictureHSize:        DefaultPictureSize,
+			PictureVSize:        DefaultPictureSize,
 		},
 		Audio: AudioConfig{
 			SampleRate:   d.AudioSampleRate,

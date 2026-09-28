@@ -80,6 +80,7 @@ var templateFuncs = template.FuncMap{
 	"humanizeBytes":           humanizeBytes,
 	"boolStr":                 boolStr,
 	"i64toa":                  i64toa,
+	"ftoa":                    ftoa,
 	"passwordPlaceholder":     passwordPlaceholder,
 	"adapterPane":             adapterPane,
 	"fieldKindWire":           fieldKindWire,
@@ -325,6 +326,11 @@ func i64toa(n int64) string {
 	return strconv.FormatInt(n, 10)
 }
 
+// ftoa formats f with the fewest digits that round-trip (92.5, 100).
+func ftoa(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
 // passwordPlaceholder returns the placeholder string for the SSH
 // password input: "••••••••" when a password is stored, "not set"
 // otherwise. The chassis renders the password field with value="" at
@@ -433,7 +439,8 @@ func stubHelper(id, title, spec string) stubPaneArgs {
 
 // fieldHelper renders one field row. The option bag (built by dict in
 // templates) supports the keys: Name, Type, Label, Help, Value,
-// Placeholder, Scope, Unit, Options, InputWidth, Error.
+// Placeholder, Scope, Unit, Options, InputWidth, Error, and Min / Max /
+// Step for Type=number.
 //
 // All values are HTML-escaped. Type=switch renders a <button>, not an
 // <input>; switches POST via client JS, not by form submission.
@@ -459,6 +466,12 @@ func fieldHelper(args map[string]any) template.HTML {
 	errMsg := get("Error")
 	adapter := get("Adapter")
 	rowEnd := get("RowEnd")
+	var rangeAttr string
+	for _, k := range []string{"Min", "Max", "Step"} {
+		if v := get(k); v != "" {
+			rangeAttr += fmt.Sprintf(` %s="%s"`, strings.ToLower(k), html.EscapeString(v))
+		}
+	}
 	skipEmpty, _ := args["SkipEmpty"].(bool)
 
 	// Identity attribute: bridge fields are addressed by data-field (the field
@@ -537,8 +550,8 @@ func fieldHelper(args map[string]any) template.HTML {
 		if inputWidth != "" {
 			style = fmt.Sprintf(` style="max-width:%s"`, html.EscapeString(inputWidth))
 		}
-		middleHTML = fmt.Sprintf(`<input class="field-input num%s" type="number" name="%s" value="%s"%s%s%s>`,
-			hasValue, html.EscapeString(name), html.EscapeString(value), style, bytesAttr, identAttr)
+		middleHTML = fmt.Sprintf(`<input class="field-input num%s" type="number" name="%s" value="%s"%s%s%s%s>`,
+			hasValue, html.EscapeString(name), html.EscapeString(value), rangeAttr, style, bytesAttr, identAttr)
 	case "password":
 		// 4B password rendering: never echo the stored password into the
 		// HTML response — render value="" always. Placeholder communicates

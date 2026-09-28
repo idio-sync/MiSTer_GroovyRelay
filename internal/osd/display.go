@@ -189,7 +189,7 @@ func (d *Display) Draw(c Canvas, now time.Time) {
 		return
 	}
 
-	l := layoutFor(c.Width, c.Height)
+	l := layoutFor(c)
 	if now.Before(s.transportUntil) {
 		if text := transportText(s.transport); text != "" {
 			c.DrawText(l.safeX0, l.safeY0, text, l.style(colorWhite))
@@ -211,8 +211,10 @@ func (d *Display) Draw(c Canvas, now time.Time) {
 }
 
 // layout is the OSD geometry for one canvas size. Glyphs sit inside the
-// title-safe rectangle [safeX0,safeX1)×[safeY0,safeY1) — a 10% inset that
-// consumer CRTs never crop — and their outline may spill one pixel past it.
+// title-safe rectangle [safeX0,safeX1)×[safeY0,safeY1) — a 10% inset of the
+// picture area that consumer CRTs never crop — and their outline may spill
+// one pixel past it. Glyph scale follows the whole canvas so text keeps its
+// size when the picture is shrunk.
 type layout struct {
 	sx, sy         int
 	safeX0, safeY0 int
@@ -222,16 +224,17 @@ type layout struct {
 	barX0          int
 }
 
-func layoutFor(w, h int) layout {
+func layoutFor(c Canvas) layout {
+	w, h, pic := c.Width, c.Height, c.picture()
 	l := layout{
 		// 3× wide and 2 field lines tall on a 720×240 field: ~28 scanlines
 		// per character once both fields interleave on the tube.
 		sx:     max(1, w/240),
 		sy:     max(1, h/120),
-		safeX0: w / 10,
-		safeY0: h / 10,
-		safeX1: w - w/10,
-		safeY1: h - h/10,
+		safeX0: pic.X + pic.W/10,
+		safeY0: pic.Y + pic.H/10,
+		safeX1: pic.X + pic.W - pic.W/10,
+		safeY1: pic.Y + pic.H - pic.H/10,
 	}
 	l.glyphH = GlyphHeight * l.sy
 	l.rowH = (GlyphHeight + 3) * l.sy

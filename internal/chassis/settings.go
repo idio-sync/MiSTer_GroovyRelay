@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -308,6 +309,22 @@ var bridgeFieldDecoders = map[string]bridgeFieldDecoder{
 		v, err := decodeInterlaceFilter(s)
 		return v, err
 	},
+	"video_picture_h_size": func(s string) (any, error) {
+		v, err := decodePictureSize(s)
+		return v, err
+	},
+	"video_picture_v_size": func(s string) (any, error) {
+		v, err := decodePictureSize(s)
+		return v, err
+	},
+	"video_picture_h_offset": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, -config.MaxPictureHOffset, config.MaxPictureHOffset)
+		return v, err
+	},
+	"video_picture_v_offset": func(s string) (any, error) {
+		v, err := decodeIntInRange(s, -config.MaxPictureVOffset, config.MaxPictureVOffset)
+		return v, err
+	},
 	"video_lz4_enabled": func(s string) (any, error) {
 		v, err := decodeBool(s)
 		return v, err
@@ -579,6 +596,10 @@ var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
 	"video_interlace_field_order": func(c *config.BridgeConfig, v any) { c.Video.InterlaceFieldOrder = v.(string) },
 	"video_aspect_mode":           func(c *config.BridgeConfig, v any) { c.Video.AspectMode = v.(string) },
 	"video_interlace_filter":      func(c *config.BridgeConfig, v any) { c.Video.InterlaceFilter = v.(string) },
+	"video_picture_h_size":        func(c *config.BridgeConfig, v any) { c.Video.PictureHSize = v.(float64) },
+	"video_picture_v_size":        func(c *config.BridgeConfig, v any) { c.Video.PictureVSize = v.(float64) },
+	"video_picture_h_offset":      func(c *config.BridgeConfig, v any) { c.Video.PictureHOffset = v.(int) },
+	"video_picture_v_offset":      func(c *config.BridgeConfig, v any) { c.Video.PictureVOffset = v.(int) },
 	"video_lz4_enabled":           func(c *config.BridgeConfig, v any) { c.Video.LZ4Enabled = v.(bool) },
 	"video_delta_lz4_enabled":     func(c *config.BridgeConfig, v any) { c.Video.DeltaLZ4Enabled = v.(bool) },
 	"audio_sample_rate":           func(c *config.BridgeConfig, v any) { c.Audio.SampleRate = v.(int) },
@@ -632,6 +653,10 @@ var bridgeFieldScopes = map[string]adapters.ApplyScope{
 	"video_interlace_field_order":  adapters.ScopeHotSwap,
 	"video_aspect_mode":            adapters.ScopeRestartCast,
 	"video_interlace_filter":       adapters.ScopeRestartCast,
+	"video_picture_h_size":         adapters.ScopeRestartCast,
+	"video_picture_v_size":         adapters.ScopeRestartCast,
+	"video_picture_h_offset":       adapters.ScopeRestartCast,
+	"video_picture_v_offset":       adapters.ScopeRestartCast,
 	"video_lz4_enabled":            adapters.ScopeRestartCast,
 	"video_delta_lz4_enabled":      adapters.ScopeRestartCast,
 	"audio_sample_rate":            adapters.ScopeRestartCast,
@@ -744,6 +769,20 @@ func decodeIntInRange(raw string, lo, hi int) (int, error) {
 		return 0, fmt.Errorf("must be in [%d, %d]", lo, hi)
 	}
 	return n, nil
+}
+
+// decodePictureSize parses a picture size percentage, rounded to one decimal
+// so the stored TOML stays readable.
+func decodePictureSize(raw string) (float64, error) {
+	f, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("must be a number")
+	}
+	f = math.Round(f*10) / 10
+	if f < config.MinPictureSize || f > config.MaxPictureSize {
+		return 0, fmt.Errorf("must be in [%g, %g]", config.MinPictureSize, config.MaxPictureSize)
+	}
+	return f, nil
 }
 
 // decodeInt64InRange parses an int64 from raw and asserts lo <= n <= hi.

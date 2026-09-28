@@ -94,7 +94,11 @@ type PipelineSpec struct {
 	// "light", "full", or ""/"off" for none. The control plane sets it
 	// only for interlaced modelines. See interlaceFilter.
 	InterlaceFilter string
-	Visualizer      VisualizerSpec
+	// Picture is where the picture lands in the OutputWidth×OutputHeight
+	// raster (the operator's CRT size/position calibration). The zero value
+	// fills the raster. See pictureArea.
+	Picture    PictureArea
+	Visualizer VisualizerSpec
 
 	SubtitleURL   string // deprecated; libass cannot fetch URLs. Use SubtitlePath.
 	SubtitlePath  string // local filesystem path the filter graph passes to libass
@@ -157,6 +161,42 @@ func visualizerAudioInputMap(s PipelineSpec) string {
 	return audioInputMap(s)
 }
 
+// PictureArea is a picture rectangle in output-raster pixels and full-frame
+// lines. X/Y may be negative, and X+W / Y+H may exceed the raster, when the
+// picture is shifted partly off-screen; the off-raster part is cropped.
+type PictureArea struct {
+	X, Y, W, H int
+}
+
+// pictureArea resolves s.Picture, treating an empty rect as the full raster.
+func pictureArea(s PipelineSpec) PictureArea {
+	if s.Picture.W <= 0 || s.Picture.H <= 0 {
+		return PictureArea{W: s.OutputWidth, H: s.OutputHeight}
+	}
+	return s.Picture
+}
+
+// picturePlacement returns the filters that place a picture already scaled
+// to pictureArea(s).W×H into the output raster: crop whatever an offset
+// pushed off-raster, then pad the rest with black. Nil when the picture
+// fills the raster exactly, so the default chain is unchanged.
+func picturePlacement(s PipelineSpec) []string {
+	a := pictureArea(s)
+	if a == (PictureArea{W: s.OutputWidth, H: s.OutputHeight}) {
+		return nil
+	}
+	x0, y0 := max(a.X, 0), max(a.Y, 0)
+	x1, y1 := min(a.X+a.W, s.OutputWidth), min(a.Y+a.H, s.OutputHeight)
+	if x1 <= x0 || y1 <= y0 {
+		return nil // entirely off-raster; config bounds rule this out
+	}
+	var out []string
+	if x0 != a.X || y0 != a.Y || x1 != a.X+a.W || y1 != a.Y+a.H {
+		out = append(out, fmt.Sprintf("crop=%d:%d:%d:%d", x1-x0, y1-y0, x0-a.X, y0-a.Y))
+	}
+	return append(out, fmt.Sprintf("pad=w=%d:h=%d:x=%d:y=%d:color=black", s.OutputWidth, s.OutputHeight, x0, y0))
+}
+
 // visibleDARNum / visibleDARDen describe the displayed aspect of the output
 // buffer on the target CRT. All four shipped modelines drive a 15 kHz analog
 // CRT whose visible area is 4:3, so the 720×N output buffer is rendered with
@@ -199,8 +239,10 @@ func logicalCanvas(outputHeight int) (int, int) {
 // Order is load-bearing:
 //  1. bwdif (only if interlaced source) → one progressive frame per input field.
 //  2. crop/scale/pad for aspect mode in a square-pixel logical canvas.
-//  3. anamorphic stretch from logical canvas to OutputWidth×OutputHeight.
-//  4. subtitle burn-in on the stretched buffer.
+//  3. anamorphic stretch from logical canvas to OutputWidth×OutputHeight
+//     (or to the calibrated picture area's size).
+//  4. subtitle burn-in on the stretched buffer, then placement of the
+//     picture area in the raster, then the interlace low-pass.
 //  5. format=bgr24, then fps=<OutputFpsExpr> → normalize every source to the
 //     modeline's field cadence. fps runs last because it duplicates frames
 //     (2.5x for film); any filter after it would redo identical work per
@@ -257,9 +299,12 @@ func buildFilterChain(s PipelineSpec) string {
 	// 3. Anamorphic stretch from logical canvas to the output buffer.
 	//    For NTSC 480i this is 640×480 → 720×480 (PAR 8:9); the CRT undoes
 	//    the stretch on display so the picture lands at correct 4:3 aspect.
-	if logicalW != s.OutputWidth || logicalH != s.OutputHeight {
+	//    A calibrated picture area folds its shrink into this same scale,
+	//    so the picture is resampled once.
+	area := pictureArea(s)
+	if logicalW != area.W || logicalH != area.H {
 		filters = append(filters,
-			fmt.Sprintf("scale=w=%d:h=%d", s.OutputWidth, s.OutputHeight))
+			fmt.Sprintf("scale=w=%d:h=%d", area.W, area.H))
 	}
 
 	// 4. Subtitle burn-in on the stretched buffer. Only filesystem paths
@@ -271,8 +316,12 @@ func buildFilterChain(s PipelineSpec) string {
 			fmt.Sprintf("subtitles=filename='%s':si=%d", escapeSubtitlePath(s.SubtitlePath), s.SubtitleIndex))
 	}
 
-	// 4b. Interlace anti-twitter low-pass, after subtitles so burned-in
-	//     text is filtered too.
+	// 4a. Place the calibrated picture in the raster. After subtitles so
+	//     they stay inside the picture the CRT actually shows.
+	filters = append(filters, picturePlacement(s)...)
+
+	// 4b. Interlace anti-twitter low-pass, after subtitles and placement
+	//     so burned-in text and the picture's edge are filtered too.
 	if f := interlaceFilter(s.InterlaceFilter); f != "" {
 		filters = append(filters, f)
 	}
@@ -775,12 +824,14 @@ func buildVisualizerFilterChain(s PipelineSpec) (string, error) {
 			label = next
 		}
 	}
-	lowpass := ""
+	area := pictureArea(s)
+	tail := picturePlacement(s)
 	if f := interlaceFilter(s.InterlaceFilter); f != "" {
-		lowpass = f + ","
+		tail = append(tail, f)
 	}
-	parts = append(parts, fmt.Sprintf("[%s]fps=%s,scale=w=%d:h=%d,%sformat=bgr24[visualizer_video]",
-		label, fpsExpr, s.OutputWidth, s.OutputHeight, lowpass))
+	tail = append(tail, "format=bgr24")
+	parts = append(parts, fmt.Sprintf("[%s]fps=%s,scale=w=%d:h=%d,%s[visualizer_video]",
+		label, fpsExpr, area.W, area.H, strings.Join(tail, ",")))
 	return strings.Join(parts, ";"), nil
 }
 

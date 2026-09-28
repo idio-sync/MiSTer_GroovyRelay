@@ -44,6 +44,34 @@
         (dict "Value" "off" "Label" "Off"))
       "Error" (errOf .Errors "video_interlace_filter")) }}
     {{ field (dict
+      "Name" "video_picture_h_size" "Type" "number" "Label" "Picture width"
+      "Help" "Shrink the picture if your CRT cuts off the left and right edges."
+      "Value" (ftoa .Bridge.Video.EffectivePictureHSize)
+      "Scope" "recast" "InputWidth" "90px" "Unit" "%"
+      "Min" "80" "Max" "100" "Step" "0.5"
+      "Error" (errOf .Errors "video_picture_h_size")) }}
+    {{ field (dict
+      "Name" "video_picture_v_size" "Type" "number" "Label" "Picture height"
+      "Help" "Shrink the picture if your CRT cuts off the top and bottom edges."
+      "Value" (ftoa .Bridge.Video.EffectivePictureVSize)
+      "Scope" "recast" "InputWidth" "90px" "Unit" "%"
+      "Min" "80" "Max" "100" "Step" "0.5"
+      "Error" (errOf .Errors "video_picture_v_size")) }}
+    {{ field (dict
+      "Name" "video_picture_h_offset" "Type" "number" "Label" "Horizontal position"
+      "Help" "Moves the picture right (+) or left (−) to centre it on your CRT."
+      "Value" (itoa .Bridge.Video.PictureHOffset)
+      "Scope" "recast" "InputWidth" "90px" "Unit" "px"
+      "Min" "-72" "Max" "72" "Step" "1"
+      "Error" (errOf .Errors "video_picture_h_offset")) }}
+    {{ field (dict
+      "Name" "video_picture_v_offset" "Type" "number" "Label" "Vertical position"
+      "Help" "Moves the picture down (+) or up (−) to centre it on your CRT."
+      "Value" (itoa .Bridge.Video.PictureVOffset)
+      "Scope" "recast" "InputWidth" "90px" "Unit" "lines"
+      "Min" "-28" "Max" "28" "Step" "1"
+      "Error" (errOf .Errors "video_picture_v_offset")) }}
+    {{ field (dict
       "Name" "video_lz4_enabled" "Type" "switch" "Label" "LZ4 compression"
       "Help" "Compresses each frame sent to the MiSTer. Strongly recommended."
       "Value" (boolStr .Bridge.Video.LZ4Enabled)

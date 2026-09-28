@@ -92,7 +92,7 @@ Enable `[adapters.airplay]` and the bridge appears as an AirPlay speaker on iPho
 
 ## On-screen display
 
-While a cast is playing, the bridge draws an old-TV-style OSD into the picture: a green volume bar (or red `MUTING`) when you turn the knob, a green channel banner when a cast starts (`CH 07` for a streams channel in the preset bank, otherwise the channel or source name, such as `PLEX`), and `PLAY ▶` / `FF ▶▶` / `REW ◀◀` on start, resume and seek. Each element fades after a few seconds and stays inside the title-safe area of a consumer CRT.
+While a cast is playing, the bridge draws an old-TV-style OSD into the picture: a green volume bar (or red `MUTING`) when you turn the knob, a green channel banner when a cast starts (`CH 07` for a streams channel in the preset bank, otherwise the channel or source name, such as `PLEX`), and `PLAY ▶` / `FF ▶▶` / `REW ◀◀` on start, resume and seek. Each element fades after a few seconds and stays inside the title-safe area of a consumer CRT (inside the picture, if you have shrunk it; see below).
 
 Configure it under `[bridge.osd]`; every setting applies live, mid-cast:
 
@@ -100,6 +100,15 @@ Configure it under `[bridge.osd]`; every setting applies live, mid-cast:
 - `clock` (default `false`) shows the local time under the channel banner, with `clock_24h` for `21:41` instead of `9:41 PM`. In Docker, set the `TZ` environment variable (for example `TZ=America/New_York`) or the clock shows UTC.
 
 The OSD appears only while something is playing. When paused or idle the MiSTer has no picture to draw on.
+
+## Picture size and position
+
+Every consumer CRT crops the edges of the picture differently, and some sit off-centre. Settings → Video & Audio has four fields for this, stored under `[bridge.video]`:
+
+- `picture_h_size` / `picture_v_size` (default `100`, range `80`–`100`) shrink the picture, in percent, until the edges your CRT was cutting off come into view. The freed border is black.
+- `picture_h_offset` (pixels, `-72`–`72`) and `picture_v_offset` (field lines, `-28`–`28`) move the picture right/down (+) or left/up (−).
+
+Changes apply on the next cast; saving restarts the current one. There is no test pattern yet, so line it up against something with detail near the edges, such as a 4:3 show with on-screen text.
 
 ## Hardware requirements
 
@@ -242,6 +251,7 @@ DLNA controller findings live in [docs/dlna-compatibility.md](docs/dlna-compatib
 | No video on CRT | MiSTer is running Groovy_MiSTer and listening on `mister_port` | [Operations](docs/operations.md) |
 | Audio drift or motion glitches | Host CPU contention | [Operations](docs/operations.md) |
 | Field shimmer | Flip `interlace_field_order` | Settings UI |
+| Picture edges cut off, or picture off-centre | Picture width/height and position | [Picture size and position](#picture-size-and-position) |
 | Plex reports target offline after cast | Fixed `source_port` and no port conflict | [Operations](docs/operations.md) |
 | DLNA renderer missing or uncontrollable | `bridge.host_ip`, UDP 1900, trusted LAN only | [DLNA adapter](docs/dlna.md) |
 

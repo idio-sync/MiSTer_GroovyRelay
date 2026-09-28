@@ -984,6 +984,30 @@ func TestDiffBridgeConfig_InterlaceFilterRestartCast(t *testing.T) {
 	}
 }
 
+func TestDiffBridgeConfig_PictureGeometryRestartCast(t *testing.T) {
+	old := config.BridgeConfig{Video: config.VideoConfig{PictureHSize: 100, PictureVSize: 100}}
+	newCfg := old
+	newCfg.Video.PictureHSize = 92.5
+	newCfg.Video.PictureVSize = 95
+	newCfg.Video.PictureHOffset = 3
+	newCfg.Video.PictureVOffset = -1
+	keys := diffBridgeConfig(old, newCfg)
+	for _, key := range []string{"video.picture_h_size", "video.picture_v_size", "video.picture_h_offset", "video.picture_v_offset"} {
+		if !containsStr(keys, key) {
+			t.Errorf("expected %s in diff keys, got %v", key, keys)
+		}
+		if got := scopeForBridgeField(key); got != adapters.ScopeRestartCast {
+			t.Errorf("scopeForBridgeField(%s) = %v, want ScopeRestartCast", key, got)
+		}
+	}
+	// Unset size means 100%; it must not look like a change and drop the cast.
+	unset := old
+	unset.Video.PictureHSize, unset.Video.PictureVSize = 0, 0
+	if keys := diffBridgeConfig(old, unset); len(keys) != 0 {
+		t.Errorf("unset vs 100%% reported as a change: %v", keys)
+	}
+}
+
 // A form or config without the key means the default; switching between
 // "unset" and the explicit default must not drop the active cast.
 func TestDiffBridgeConfig_InterlaceFilterUnsetEqualsDefault(t *testing.T) {

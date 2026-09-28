@@ -183,6 +183,14 @@ type VideoConfig struct {
 	// interlaced modelines: "off", "light" (default), or "full". Empty is
 	// treated as the default.
 	InterlaceFilter string `toml:"interlace_filter"`
+	// Picture size and position on the CRT, for sets that crop the edges
+	// or sit off-centre. Sizes are percent of the raster (0 = 100); offsets
+	// are raster pixels (horizontal) and field lines (vertical). See
+	// VideoConfig.PictureRect.
+	PictureHSize   float64 `toml:"picture_h_size"`
+	PictureVSize   float64 `toml:"picture_v_size"`
+	PictureHOffset int     `toml:"picture_h_offset"`
+	PictureVOffset int     `toml:"picture_v_offset"`
 }
 
 // DefaultInterlaceFilter is the interlace anti-twitter strength used when
@@ -381,6 +389,9 @@ func (s *Sectioned) Validate() error {
 	case "", "off", "light", "full":
 	default:
 		return fmt.Errorf("bridge.video.interlace_filter must be off, light, or full, got %q", b.Video.InterlaceFilter)
+	}
+	if err := validatePicture(b.Video); err != nil {
+		return err
 	}
 	if b.Video.RGBMode != "rgb888" {
 		return fmt.Errorf("bridge.video.rgb_mode: only rgb888 is supported (got %q)", b.Video.RGBMode)

@@ -757,6 +757,49 @@ func TestBridgeFieldInterlaceFilter_RecastScopeAndOverlay(t *testing.T) {
 	}
 }
 
+func TestDecodePictureSize(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]float64{"80": 80, "92.5": 92.5, " 100 ": 100, "95.44": 95.4} {
+		if v, err := decodePictureSize(in); err != nil || v != want {
+			t.Errorf("decodePictureSize(%q) = (%v, %v), want %v", in, v, err, want)
+		}
+	}
+	for _, bad := range []string{"", "abc", "79.9", "100.5", "NaN", "Inf"} {
+		if _, err := decodePictureSize(bad); err == nil {
+			t.Errorf("decodePictureSize(%q) accepted", bad)
+		}
+	}
+}
+
+func TestBridgeFieldPicture_RecastScopeAndOverlay(t *testing.T) {
+	t.Parallel()
+	cfg := config.BridgeConfig{}
+	for name, raw := range map[string]string{
+		"video_picture_h_size":   "92.5",
+		"video_picture_v_size":   "95",
+		"video_picture_h_offset": "-72",
+		"video_picture_v_offset": "28",
+	} {
+		if got := bridgeFieldScopes[name]; got != adapters.ScopeRestartCast {
+			t.Errorf("%s scope = %v, want ScopeRestartCast", name, got)
+		}
+		v, err := bridgeFieldDecoders[name](raw)
+		if err != nil {
+			t.Fatalf("%s decode(%q): %v", name, raw, err)
+		}
+		bridgeFieldOverlays[name](&cfg, v)
+	}
+	want := config.VideoConfig{PictureHSize: 92.5, PictureVSize: 95, PictureHOffset: -72, PictureVOffset: 28}
+	if cfg.Video != want {
+		t.Fatalf("overlaid video = %+v, want %+v", cfg.Video, want)
+	}
+	for name, raw := range map[string]string{"video_picture_h_offset": "73", "video_picture_v_offset": "-29"} {
+		if _, err := bridgeFieldDecoders[name](raw); err == nil {
+			t.Errorf("%s accepted out-of-range %q", name, raw)
+		}
+	}
+}
+
 func TestDecodeBool(t *testing.T) {
 	t.Parallel()
 	for _, in := range []string{"true", "false"} {

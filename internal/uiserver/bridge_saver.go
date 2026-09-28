@@ -508,6 +508,19 @@ func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
 	if oldCfg.Video.EffectiveInterlaceFilter() != newCfg.Video.EffectiveInterlaceFilter() {
 		keys = append(keys, "video.interlace_filter")
 	}
+	// Effective sizes, like the filter above: unset means 100%.
+	if oldCfg.Video.EffectivePictureHSize() != newCfg.Video.EffectivePictureHSize() {
+		keys = append(keys, "video.picture_h_size")
+	}
+	if oldCfg.Video.EffectivePictureVSize() != newCfg.Video.EffectivePictureVSize() {
+		keys = append(keys, "video.picture_v_size")
+	}
+	if oldCfg.Video.PictureHOffset != newCfg.Video.PictureHOffset {
+		keys = append(keys, "video.picture_h_offset")
+	}
+	if oldCfg.Video.PictureVOffset != newCfg.Video.PictureVOffset {
+		keys = append(keys, "video.picture_v_offset")
+	}
 	if oldCfg.Video.RGBMode != newCfg.Video.RGBMode {
 		keys = append(keys, "video.rgb_mode")
 	}
@@ -631,6 +644,10 @@ func scopeForBridgeField(key string) adapters.ApplyScope {
 	case "video.modeline",
 		"video.aspect_mode",
 		"video.interlace_filter",
+		"video.picture_h_size",
+		"video.picture_v_size",
+		"video.picture_h_offset",
+		"video.picture_v_offset",
 		"video.rgb_mode",
 		"video.lz4_enabled",
 		"video.delta_lz4_enabled",

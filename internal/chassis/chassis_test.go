@@ -4473,6 +4473,10 @@ func TestSettingsAVAndMisterTemplates_RenderAllFields(t *testing.T) {
 		`name="video_interlace_field_order"`,
 		`name="video_aspect_mode"`,
 		`name="video_interlace_filter"`,
+		`name="video_picture_h_size" value="100" min="80" max="100" step="0.5"`, // unset size renders 100%
+		`name="video_picture_v_size" value="100"`,
+		`name="video_picture_h_offset" value="0" min="-72" max="72" step="1"`,
+		`name="video_picture_v_offset" value="0" min="-28" max="28" step="1"`,
 		`data-field="video_lz4_enabled"`, // switch renders <button data-field=...>
 		`data-field="video_delta_lz4_enabled"`,
 		`name="audio_sample_rate"`,
