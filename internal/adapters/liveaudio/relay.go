@@ -69,9 +69,10 @@ func (r realTicker) Stop()               { r.t.Stop() }
 // buffer: the first shortfalls pad it until the helper's delivery jitter
 // no longer empties it.
 //
-// Only the newest reader is served; a new connection (ffprobe, then
-// ffmpeg, then ffmpeg again after an artwork restart) ends the previous
-// one.
+// Only the newest reader is served; a new connection (ffmpeg, then ffmpeg
+// again after an artwork restart) ends the previous one. ffprobe instead
+// reads ProbeURL, which serves silence without touching the served
+// reader: a restart probes while the old ffmpeg is still streaming.
 type Relay struct {
 	route string // mux pattern prefix, e.g. "/internal/liveaudio/spotify/pcm/"
 	token string
@@ -118,6 +119,12 @@ func (r *Relay) Mount(mux *http.ServeMux) {
 // URL is the loopback URL ffmpeg reads, for a bridge listening on httpPort.
 func (r *Relay) URL(httpPort int) string {
 	return fmt.Sprintf("http://127.0.0.1:%d%s%s", httpPort, r.route, r.token)
+}
+
+// ProbeURL is the loopback URL ffprobe reads: paced silence that neither
+// ends the served reader nor takes its audio.
+func (r *Relay) ProbeURL(httpPort int) string {
+	return r.URL(httpPort) + "?probe=1"
 }
 
 // SetDiscard switches discard mode. While discarding, Write drops input so
@@ -214,8 +221,12 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.NotFound(w, req)
 		return
 	}
-	id := r.claimReader()
-	defer r.releaseReader(id)
+	probe := req.URL.Query().Has("probe")
+	var id uint64
+	if !probe {
+		id = r.claimReader()
+		defer r.releaseReader(id)
+	}
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Cache-Control", "no-store")
@@ -235,7 +246,7 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		case <-tick.C():
 		}
-		if !r.stillServing(id) {
+		if !probe && !r.stillServing(id) {
 			return
 		}
 		due := framesIn(r.clock.Now().Sub(start)) * bytesPerFrame
@@ -247,7 +258,10 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			need = relayMaxBurst
 			sent = due - need
 		}
-		chunk := r.take(int(need))
+		var chunk []byte
+		if !probe {
+			chunk = r.take(int(need))
+		}
 		if pad := int(need) - len(chunk); pad > 0 {
 			chunk = append(chunk, make([]byte, pad)...) // silence
 		}

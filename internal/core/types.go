@@ -87,9 +87,13 @@ type VisualizerRequest struct {
 }
 
 type AudioCaptureInput struct {
-	Enabled         bool
-	Format          string
-	Device          string
+	Enabled bool
+	Format  string
+	Device  string
+	// ProbeDevice optionally gives ffprobe a separate device, for capture
+	// sources that serve one reader: probing a restart must not consume
+	// the running pipeline's input.
+	ProbeDevice     string
 	SampleRate      int
 	Channels        int
 	ThreadQueueSize int

@@ -667,11 +667,15 @@ func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpe
 		probeURL = req.StreamProbeURL
 	}
 	filteredProbeHeaders := req.MediaInputPolicy.FilterHeaders(req.InputHeaders)
+	probeCapture := ffmpegCaptureSpec(req.AudioCapture)
+	if probeCapture.Enabled && req.AudioCapture.ProbeDevice != "" {
+		probeCapture.Device = req.AudioCapture.ProbeDevice
+	}
 	probeInput := ffmpeg.ProbeInputSpec{
 		URL:     probeURL,
 		Headers: filteredProbeHeaders,
 		Policy:  req.MediaInputPolicy,
-		Capture: ffmpegCaptureSpec(req.AudioCapture),
+		Capture: probeCapture,
 	}
 	// TEMP DEBUG (jellyfin probe-killed investigation): log the exact probe
 	// URL and ffprobe wall-time so we can correlate against JF transcode

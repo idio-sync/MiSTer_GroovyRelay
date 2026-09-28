@@ -282,7 +282,8 @@ func TestSessionPlayStartsLiveVisualizerSession(t *testing.T) {
 	}
 	c := req.AudioCapture
 	if !c.Enabled || c.Format != "s16le" || c.SampleRate != 44100 || c.Channels != 2 ||
-		c.Device != "http://127.0.0.1:32500/internal/liveaudio/spotify/pcm/tok" {
+		c.Device != "http://127.0.0.1:32500/internal/liveaudio/spotify/pcm/tok" ||
+		c.ProbeDevice != "http://127.0.0.1:32500/internal/liveaudio/spotify/pcm/tok?probe=1" {
 		t.Fatalf("capture = %+v", c)
 	}
 	if req.AudioOutputMode != core.AudioOutputMonitor {

@@ -295,6 +295,7 @@ func (s *Session) request(output core.AudioOutputMode) core.SessionRequest {
 			Enabled:         true,
 			Format:          PCMFormat,
 			Device:          s.cfg.Relay.URL(s.cfg.HTTPPort),
+			ProbeDevice:     s.cfg.Relay.ProbeURL(s.cfg.HTTPPort),
 			SampleRate:      SampleRate,
 			Channels:        Channels,
 			ThreadQueueSize: 64,

@@ -89,8 +89,14 @@ func newRelayHarness(t *testing.T) *relayHarness {
 // open connects a reader and waits until its handler is ticking.
 func (h *relayHarness) open() io.ReadCloser {
 	h.t.Helper()
+	return h.openQuery("")
+}
+
+// openQuery is open with a query string, e.g. "?probe=1".
+func (h *relayHarness) openQuery(query string) io.ReadCloser {
+	h.t.Helper()
 	before := h.clock.tickerCount()
-	resp, err := http.Get(h.srv.URL + testRoute + "tok")
+	resp, err := http.Get(h.srv.URL + testRoute + "tok" + query)
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -190,6 +196,29 @@ func TestRelayNewReaderTakesOver(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("superseded reader was not ended")
+	}
+}
+
+// A restart probes the relay while the running ffmpeg still reads it; the
+// probe must neither end that reader nor take its audio.
+func TestRelayProbeReaderLeavesServingReaderAlone(t *testing.T) {
+	h := newRelayHarness(t)
+	h.relay.SetDiscard(false)
+	h.relay.push(fill(0x11, 2*bytesPer10ms))
+	reader := h.open()
+	probe := h.openQuery("?probe=1")
+
+	h.clock.Advance(10 * time.Millisecond)
+	if got := readN(t, probe, bytesPer10ms); !bytes.Equal(got, fill(0, bytesPer10ms)) {
+		t.Fatal("probe reader should get silence, not the serving reader's audio")
+	}
+	if got := readN(t, reader, bytesPer10ms); !bytes.Equal(got, fill(0x11, bytesPer10ms)) {
+		t.Fatal("serving reader lost its audio to the probe")
+	}
+	_ = probe.Close()
+	h.clock.Advance(10 * time.Millisecond)
+	if got := readN(t, reader, bytesPer10ms); !bytes.Equal(got, fill(0x11, bytesPer10ms)) {
+		t.Fatal("serving reader was ended by the probe")
 	}
 }
 
@@ -343,5 +372,8 @@ func TestRelayURL(t *testing.T) {
 	r := newRelay(testRoute, "tok", newFakeClock())
 	if got, want := r.URL(32500), "http://127.0.0.1:32500"+testRoute+"tok"; got != want {
 		t.Fatalf("URL = %q, want %q", got, want)
+	}
+	if got, want := r.ProbeURL(32500), "http://127.0.0.1:32500"+testRoute+"tok?probe=1"; got != want {
+		t.Fatalf("ProbeURL = %q, want %q", got, want)
 	}
 }
