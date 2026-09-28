@@ -19,6 +19,17 @@ const (
 	pictureMinDimensions = 2
 )
 
+// PictureGeometry is the operator's picture size and position calibration:
+// sizes in percent of the raster (0 = 100), offsets in raster pixels
+// (horizontal) and field lines (vertical). It is the persisted
+// [bridge.video] picture_* values and the calibration draft alike.
+type PictureGeometry struct {
+	HSize   float64 `json:"hSize"`
+	VSize   float64 `json:"vSize"`
+	HOffset int     `json:"hOffset"`
+	VOffset int     `json:"vOffset"`
+}
+
 // PictureRect is where the picture lands in the output raster, in raster
 // pixels and full-frame lines. X/Y may be negative and X+W / Y+H may exceed
 // the raster when an offset pushes the picture partly off-screen; Visible
@@ -27,14 +38,39 @@ type PictureRect struct {
 	X, Y, W, H int
 }
 
-// EffectivePictureHSize resolves an unset horizontal size to 100%.
-func (v VideoConfig) EffectivePictureHSize() float64 {
-	return effectivePictureSize(v.PictureHSize)
+// Picture returns the persisted picture geometry.
+func (v VideoConfig) Picture() PictureGeometry {
+	return PictureGeometry{
+		HSize:   v.PictureHSize,
+		VSize:   v.PictureVSize,
+		HOffset: v.PictureHOffset,
+		VOffset: v.PictureVOffset,
+	}
 }
 
+// EffectivePictureHSize resolves an unset horizontal size to 100%.
+func (v VideoConfig) EffectivePictureHSize() float64 { return v.Picture().EffectiveHSize() }
+
 // EffectivePictureVSize resolves an unset vertical size to 100%.
-func (v VideoConfig) EffectivePictureVSize() float64 {
-	return effectivePictureSize(v.PictureVSize)
+func (v VideoConfig) EffectivePictureVSize() float64 { return v.Picture().EffectiveVSize() }
+
+// PictureRect places the persisted picture in an outW×outH raster. See
+// PictureGeometry.Rect.
+func (v VideoConfig) PictureRect(outW, outH int, interlaced bool) PictureRect {
+	return v.Picture().Rect(outW, outH, interlaced)
+}
+
+// EffectiveHSize resolves an unset horizontal size to 100%.
+func (g PictureGeometry) EffectiveHSize() float64 { return effectivePictureSize(g.HSize) }
+
+// EffectiveVSize resolves an unset vertical size to 100%.
+func (g PictureGeometry) EffectiveVSize() float64 { return effectivePictureSize(g.VSize) }
+
+// Normalized returns g with unset sizes resolved to 100%, so two geometries
+// that place the picture identically compare equal.
+func (g PictureGeometry) Normalized() PictureGeometry {
+	g.HSize, g.VSize = g.EffectiveHSize(), g.EffectiveVSize()
+	return g
 }
 
 func effectivePictureSize(size float64) float64 {
@@ -44,26 +80,26 @@ func effectivePictureSize(size float64) float64 {
 	return size
 }
 
-// PictureRect places the picture in an outW×outH raster. The picture is
-// scaled to the configured size, centred, then shifted by the offsets.
-// Vertical offsets are field lines, so on interlaced output one step is two
-// raster lines; H and Y stay even there so each field carries the same
-// number of picture lines. The defaults return the whole raster.
-func (v VideoConfig) PictureRect(outW, outH int, interlaced bool) PictureRect {
+// Rect places the picture in an outW×outH raster. The picture is scaled to
+// the configured size, centred, then shifted by the offsets. Vertical
+// offsets are field lines, so on interlaced output one step is two raster
+// lines; H and Y stay even there so each field carries the same number of
+// picture lines. The defaults return the whole raster.
+func (g PictureGeometry) Rect(outW, outH int, interlaced bool) PictureRect {
 	lineStep := 1
 	if interlaced {
 		lineStep = 2
 	}
-	w := evenAtLeast(float64(outW)*v.EffectivePictureHSize()/100, pictureMinDimensions)
-	h := evenAtLeast(float64(outH)*v.EffectivePictureVSize()/100, pictureMinDimensions)
+	w := evenAtLeast(float64(outW)*g.EffectiveHSize()/100, pictureMinDimensions)
+	h := evenAtLeast(float64(outH)*g.EffectiveVSize()/100, pictureMinDimensions)
 	w, h = min(w, outW), min(h, outH)
 	y := (outH - h) / 2
 	if interlaced {
 		y &^= 1
 	}
 	return PictureRect{
-		X: (outW-w)/2 + v.PictureHOffset,
-		Y: y + v.PictureVOffset*lineStep,
+		X: (outW-w)/2 + g.HOffset,
+		Y: y + g.VOffset*lineStep,
 		W: w,
 		H: h,
 	}
@@ -90,13 +126,15 @@ func (r PictureRect) IsFull(outW, outH int) bool {
 	return r == PictureRect{W: outW, H: outH}
 }
 
-func validatePicture(v VideoConfig) error {
+// Validate checks the geometry against the picture bounds. Sizes of 0 mean
+// 100% and are accepted.
+func (g PictureGeometry) Validate() error {
 	for _, f := range []struct {
 		key  string
 		size float64
 	}{
-		{"picture_h_size", v.PictureHSize},
-		{"picture_v_size", v.PictureVSize},
+		{"picture_h_size", g.HSize},
+		{"picture_v_size", g.VSize},
 	} {
 		if f.size == 0 {
 			continue // unset = 100%
@@ -105,11 +143,13 @@ func validatePicture(v VideoConfig) error {
 			return fmt.Errorf("bridge.video.%s must be in %g..%g, got %g", f.key, MinPictureSize, MaxPictureSize, f.size)
 		}
 	}
-	if v.PictureHOffset < -MaxPictureHOffset || v.PictureHOffset > MaxPictureHOffset {
-		return fmt.Errorf("bridge.video.picture_h_offset must be in -%d..%d, got %d", MaxPictureHOffset, MaxPictureHOffset, v.PictureHOffset)
+	if g.HOffset < -MaxPictureHOffset || g.HOffset > MaxPictureHOffset {
+		return fmt.Errorf("bridge.video.picture_h_offset must be in -%d..%d, got %d", MaxPictureHOffset, MaxPictureHOffset, g.HOffset)
 	}
-	if v.PictureVOffset < -MaxPictureVOffset || v.PictureVOffset > MaxPictureVOffset {
-		return fmt.Errorf("bridge.video.picture_v_offset must be in -%d..%d, got %d", MaxPictureVOffset, MaxPictureVOffset, v.PictureVOffset)
+	if g.VOffset < -MaxPictureVOffset || g.VOffset > MaxPictureVOffset {
+		return fmt.Errorf("bridge.video.picture_v_offset must be in -%d..%d, got %d", MaxPictureVOffset, MaxPictureVOffset, g.VOffset)
 	}
 	return nil
 }
+
+func validatePicture(v VideoConfig) error { return v.Picture().Validate() }

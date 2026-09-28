@@ -64,6 +64,10 @@ type Config struct {
 	AudioDSPController AudioDSPController
 	// AudioDSPSaver persists committed params + manages EQ memories.
 	AudioDSPSaver AudioDSPSaver
+	// Calibration runs the CRT picture calibration (test pattern + draft
+	// size/position). When nil, the /ui/calibration/* routes answer 503
+	// and no calibration SSE event is sent.
+	Calibration CalibrationController
 
 	// AudioScopeViewer is the optional read-only source for the latest
 	// audio-analysis snapshot. When nil, the chassis emits a pending audio
@@ -178,6 +182,7 @@ type Server struct {
 	muteController     MuteController
 	audioDSPController AudioDSPController
 	audioDSPSaver      AudioDSPSaver
+	calibration        CalibrationController
 	audioScopeViewer   AudioScopeViewer
 	aux                AUXStarter
 	presetViewer       adapters.PresetViewer
@@ -250,6 +255,7 @@ func New(cfg Config) (*Server, error) {
 		muteController:       cfg.MuteController,
 		audioDSPController:   cfg.AudioDSPController,
 		audioDSPSaver:        cfg.AudioDSPSaver,
+		calibration:          cfg.Calibration,
 		audioScopeViewer:     cfg.AudioScopeViewer,
 		aux:                  cfg.AUX,
 		presetViewer:         cfg.PresetViewer,
@@ -366,6 +372,10 @@ func (s *Server) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /ui/volume/mute", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleVolumeMutePost))))
 	mux.Handle("POST /ui/audio/dsp", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleAudioDSPPost))))
 	mux.Handle("POST /ui/audio/dsp/memory", requireSameOrigin(http.HandlerFunc(s.handleAudioDSPMemoryPost)))
+	mux.Handle("POST /ui/calibration/start", transportNoStore(requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleCalibrationStart)))))
+	mux.Handle("POST /ui/calibration/preview", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleCalibrationPreview))))
+	mux.Handle("POST /ui/calibration/save", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleCalibrationSave))))
+	mux.Handle("POST /ui/calibration/cancel", transportNoStore(requireSameOrigin(http.HandlerFunc(s.handleCalibrationCancel))))
 	mux.Handle("POST /ui/aux/start", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleAUXStartPost))))
 	mux.Handle("POST /ui/aux/stop", requireSameOrigin(http.HandlerFunc(s.handleAUXStopPost)))
 	mux.Handle("POST /ui/cast", requireSameOrigin(s.requireSetupComplete(http.HandlerFunc(s.handleCastPost))))

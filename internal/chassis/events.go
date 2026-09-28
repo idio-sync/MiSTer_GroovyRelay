@@ -446,6 +446,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lastPresets := rawPresets
+	lastCalibration, calibrationWired := s.calibrationSnapshot()
+	if calibrationWired {
+		if err := emit(w, "calibration", lastCalibration); err != nil {
+			return
+		}
+	}
 	if err := emit(w, "history", historyEnvelopeFrom(last.History)); err != nil {
 		return
 	}
@@ -575,6 +581,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				lastPresets = currPresets
+			}
+			if calibrationWired {
+				if currCalibration, _ := s.calibrationSnapshot(); currCalibration != lastCalibration {
+					if err := emit(w, "calibration", currCalibration); err != nil {
+						return
+					}
+					lastCalibration = currCalibration
+				}
 			}
 			if historyChanged(curr.History, lastHistory) {
 				if err := emit(w, "history", historyEnvelopeFrom(curr.History)); err != nil {

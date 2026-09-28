@@ -232,6 +232,16 @@ type SessionRequest struct {
 	// original URL. See internal/ffmpeg/policy.go and spec §Architecture /
 	// Core Media Input Policy.
 	MediaInputPolicy MediaInputPolicy
+
+	// Frames, when non-nil, makes this a Go-generated video session (e.g.
+	// the calibration test pattern): the data plane pulls raw raster frames
+	// from it instead of running ffmpeg. There is no probe and no audio, and
+	// it excludes every media input (stream URLs, capture, visualizer).
+	Frames dataplane.FrameSource
+
+	// QuietOSD skips the channel banner and PLAY announcement at session
+	// start, for sessions whose picture must stay unobstructed.
+	QuietOSD bool
 }
 
 // Capabilities declares what operations the adapter's control surface can

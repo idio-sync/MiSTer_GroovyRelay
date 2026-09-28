@@ -36,6 +36,7 @@ import (
 	torrentadapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/torrent"
 	urladapter "github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters/url"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/artworkcache"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/calibration"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/chassis"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/companion"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
@@ -88,6 +89,18 @@ func (a *audioDSPSaverAdapter) RecallAudioDSPMemory(slot int) (config.AudioDSPMe
 }
 func (a *audioDSPSaverAdapter) CurrentAudioDSP() config.AudioDSP {
 	return a.bs.Current().Audio.DSP
+}
+
+// pictureSaverAdapter persists a calibrated picture geometry as the four
+// [bridge.video] picture_* fields in one validated save.
+type pictureSaverAdapter struct{ bs *uiserver.BridgeSaver }
+
+func (a *pictureSaverAdapter) SavePicture(g config.PictureGeometry) error {
+	_, err := a.bs.SaveTouched(func(c *config.BridgeConfig) {
+		c.Video.PictureHSize, c.Video.PictureVSize = g.HSize, g.VSize
+		c.Video.PictureHOffset, c.Video.PictureVOffset = g.HOffset, g.VOffset
+	})
+	return err
 }
 
 func main() {
@@ -543,6 +556,7 @@ func main() {
 		MuteController:            coreMgr,
 		AudioDSPController:        coreMgr,
 		AudioDSPSaver:             &audioDSPSaverAdapter{bs: saver},
+		Calibration:               calibration.NewController(coreMgr, &pictureSaverAdapter{bs: saver}, saver.Current),
 		AudioScopeViewer:          coreMgr,
 		AUX:                       auxAdapter,
 		PresetViewer:              presetViewer,

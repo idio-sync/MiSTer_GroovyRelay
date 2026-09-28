@@ -348,6 +348,11 @@ type PlaneConfig struct {
 	// inset. Zero = the whole field.
 	OSDPicture osd.Rect
 
+	// Frames, when non-nil, replaces the ffmpeg child: Run pulls raw raster
+	// frames from it instead of spawning SpawnSpec (which still supplies the
+	// output size). There is no audio; set AudioRate/AudioChans to 0.
+	Frames FrameSource
+
 	// OnInit is fired exactly once after the INIT handshake completes.
 	// nil err = success (FPGA accepted INIT, ready for frames); non-nil
 	// err = INIT timeout or socket error (Run will return this same
@@ -851,9 +856,14 @@ func (p *Plane) Done() <-chan struct{} { return p.done }
 func (p *Plane) Run(ctx context.Context) error {
 	defer close(p.done)
 
-	proc, err := spawnProcess(ctx, p.cfg.SpawnSpec)
-	if err != nil {
-		return fmt.Errorf("ffmpeg spawn: %w", err)
+	var proc processHandle
+	if p.cfg.Frames != nil {
+		proc = newFrameSourceProcess(p.cfg.Frames, p.cfg.FieldWidth*p.cfg.resolveVideoHeight()*p.cfg.BytesPerPixel)
+	} else {
+		var err error
+		if proc, err = spawnProcess(ctx, p.cfg.SpawnSpec); err != nil {
+			return fmt.Errorf("ffmpeg spawn: %w", err)
+		}
 	}
 	p.proc = proc
 	defer proc.Stop()

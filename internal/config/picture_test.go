@@ -90,3 +90,20 @@ func TestLoadSectionedPictureDefaults(t *testing.T) {
 		t.Fatalf("decoded picture fields = %+v", v)
 	}
 }
+
+func TestPictureGeometryMatchesVideoConfig(t *testing.T) {
+	v := VideoConfig{PictureHSize: 92.5, PictureVSize: 0, PictureHOffset: 3, PictureVOffset: -1}
+	g := v.Picture()
+	if g != (PictureGeometry{HSize: 92.5, HOffset: 3, VOffset: -1}) {
+		t.Fatalf("Picture() = %+v", g)
+	}
+	if got, want := g.Rect(720, 480, true), v.PictureRect(720, 480, true); got != want {
+		t.Fatalf("geometry Rect %+v != VideoConfig PictureRect %+v", got, want)
+	}
+	if n := g.Normalized(); n.VSize != DefaultPictureSize || n.HSize != 92.5 {
+		t.Fatalf("Normalized() = %+v", n)
+	}
+	if err := (PictureGeometry{HOffset: 99}).Validate(); err == nil {
+		t.Fatal("Validate accepted out-of-range offset")
+	}
+}

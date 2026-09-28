@@ -440,6 +440,13 @@ func validateVisualizerRequest(req SessionRequest) error {
 }
 
 func validateSessionRequest(req SessionRequest) error {
+	if req.Frames != nil {
+		if req.StreamURL != "" || req.StreamProbeURL != "" || req.AudioStreamURL != "" ||
+			req.AudioCapture.Enabled || req.Visualizer.Enabled {
+			return fmt.Errorf("a frame-source session takes no media input")
+		}
+		return validateAspectModeOverride(req.AspectMode)
+	}
 	if err := validateVisualizerRequest(req); err != nil {
 		return err
 	}
@@ -632,7 +639,7 @@ func ffmpegCaptureSpec(c AudioCaptureInput) ffmpeg.CaptureInputSpec {
 }
 
 func effectiveSessionAudio(req SessionRequest, bridge config.AudioConfig, probe *ffmpeg.ProbeResult) (rate, chans int, suppress bool, normalizedProbe *ffmpeg.ProbeResult) {
-	if req.AudioOutputMode == AudioOutputVisualOnly {
+	if req.AudioOutputMode == AudioOutputVisualOnly || req.Frames != nil {
 		return 0, 0, true, probe
 	}
 	rate, chans = bridge.SampleRate, bridge.Channels
@@ -659,6 +666,9 @@ func checkVisualizerFiltersForStart(ctx context.Context, ffmpegPath string, req 
 // StartSession/Play/SeekTo BEFORE acquiring Manager.mu so the mutex is
 // never held during network I/O.
 func (m *Manager) probeForStart(req SessionRequest) (*ffmpeg.ProbeResult, *ffmpeg.CropRect, string, error) {
+	if req.Frames != nil {
+		return nil, nil, "", nil // Go-generated frames: nothing to probe, no ffmpeg
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	aspectMode, err := m.effectiveAspectMode(req)
@@ -939,6 +949,7 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		OutputVolume:        m.effectiveOutputVolumeLocked(),
 		OSD:                 m.osd,
 		OSDPicture:          osdPicture(picture, modeline),
+		Frames:              req.Frames,
 		AudioDSP:           dspParamsFromConfig(m.bridge.Audio.DSP, audioRate, audioChans),
 		SeekOffsetMs:        offsetMs,
 		Generation:          generation,
@@ -1373,6 +1384,9 @@ func (m *Manager) SetOutputMuted(muted bool) error {
 // announceStartLocked shows the channel banner and PLAY for a newly started
 // session. Resume and seek announce only their transport action.
 func (m *Manager) announceStartLocked(req SessionRequest) {
+	if req.QuietOSD {
+		return
+	}
 	now := m.now()
 	label := req.ChannelLabel
 	if label == "" {
