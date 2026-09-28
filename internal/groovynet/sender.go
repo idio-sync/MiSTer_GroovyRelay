@@ -48,6 +48,10 @@ type Sender struct {
 	sndBufActual int           // populated by readSndBuf at NewSender; 0 on unsupported platforms
 	enobufCount  atomic.Uint64 // populated in Task 8
 
+	// lastSendUnix is the wall time (UnixNano) of the most recent successful
+	// write. The dataplane keepalive reads it to detect send silence.
+	lastSendUnix atomic.Int64
+
 	// paceInterval is an optional inter-chunk delay applied between
 	// consecutive WriteToUDP calls inside SendPayload. Defaults to 0
 	// (no pacing — chunks are sent back-to-back at line rate, matching
@@ -162,6 +166,9 @@ func (s *Sender) Send(pkt []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err := s.conn.WriteToUDP(pkt, s.dstAddr)
+	if err == nil {
+		s.lastSendUnix.Store(time.Now().UnixNano())
+	}
 	return err
 }
 
@@ -223,6 +230,7 @@ func (s *Sender) SendPayload(payload []byte) error {
 			pc.afterDatagram(sendStart, chunkIdx, totalChunks)
 		}
 	}
+	s.lastSendUnix.Store(time.Now().UnixNano())
 	return nil
 }
 
@@ -333,17 +341,22 @@ func (s *Sender) SendInitAwaitACK(initPacket []byte, timeout time.Duration) (gro
 	}
 	defer s.conn.SetReadDeadline(time.Time{})
 	buf := make([]byte, groovy.ACKPacketSize*2)
-	n, _, err := s.conn.ReadFromUDP(buf)
-	if err != nil {
-		if ne, ok := err.(net.Error); ok && ne.Timeout() {
-			return groovy.ACK{}, &InitACKTimeoutError{Timeout: timeout, Err: err}
+	for {
+		n, _, err := s.conn.ReadFromUDP(buf)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				return groovy.ACK{}, &InitACKTimeoutError{Timeout: timeout, Err: err}
+			}
+			return groovy.ACK{}, fmt.Errorf("read INIT ack: %w", err)
 		}
-		return groovy.ACK{}, fmt.Errorf("read INIT ack: %w", err)
+		if n != groovy.ACKPacketSize {
+			// For example a GET_VERSION reply that arrived after
+			// ProbeVersion gave up. Keep waiting for the real ACK.
+			slog.Debug("skipping non-ACK datagram while awaiting INIT ack", "n", n)
+			continue
+		}
+		return groovy.ParseACK(buf[:n])
 	}
-	if n != groovy.ACKPacketSize {
-		return groovy.ACK{}, fmt.Errorf("INIT ack wrong size: %d", n)
-	}
-	return groovy.ParseACK(buf[:n])
 }
 
 // flushStaleDatagrams drains any datagrams already queued on the socket.
@@ -398,4 +411,66 @@ func (s *Sender) SendInitAwaitACKWithRetry(initPacket []byte, timeout time.Durat
 		}
 	}
 	return ack, err
+}
+
+// LastSend returns when the Sender last wrote a datagram successfully, or
+// the zero Time if it never has. Safe for concurrent use.
+func (s *Sender) LastSend() time.Time {
+	n := s.lastSendUnix.Load()
+	if n == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, n)
+}
+
+// ProbeVersion sends GET_VERSION and waits up to timeout for the core's
+// 1-byte reply (1 = original Groovy core, >= 2 = GroovyNLC). Datagrams of
+// any other length, such as a stray 13-byte ACK, are skipped. A timeout
+// is not an error: it returns 0, which callers treat as the original core.
+//
+// Same socket contract as SendInitAwaitACK: callers must not have a
+// Drainer reading this socket. See design 2026-09-28 §3.1.
+func (s *Sender) ProbeVersion(timeout time.Duration) (byte, error) {
+	if flushed := s.flushStaleDatagrams(); flushed > 0 {
+		slog.Debug("flushed stale datagrams before GET_VERSION", "count", flushed)
+	}
+	if err := s.Send(groovy.BuildGetVersion()); err != nil {
+		return 0, err
+	}
+	if err := s.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return 0, err
+	}
+	defer s.conn.SetReadDeadline(time.Time{})
+	buf := make([]byte, 64)
+	for {
+		n, _, err := s.conn.ReadFromUDP(buf)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				return 0, nil
+			}
+			return 0, fmt.Errorf("read version reply: %w", err)
+		}
+		if n == 1 {
+			return buf[0], nil
+		}
+	}
+}
+
+// SendIfIdle writes pkt only if nothing has been written for at least
+// idle, and reports whether it wrote. The check and the write happen under
+// mu, and every header write (Send) stamps lastSendUnix under that same
+// lock. A keepalive therefore can never slip between a BLIT/AUDIO header
+// and its payload: it either runs before the header or sees the header's
+// fresh stamp. See design 2026-09-28 §3.3.
+func (s *Sender) SendIfIdle(pkt []byte, idle time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n := s.lastSendUnix.Load(); n != 0 && time.Since(time.Unix(0, n)) < idle {
+		return false, nil
+	}
+	if _, err := s.conn.WriteToUDP(pkt, s.dstAddr); err != nil {
+		return false, err
+	}
+	s.lastSendUnix.Store(time.Now().UnixNano())
+	return true, nil
 }
