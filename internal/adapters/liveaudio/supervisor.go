@@ -110,11 +110,15 @@ func (s *Supervisor) Start(spec HelperSpec) error {
 func (s *Supervisor) Restart() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cmd == nil || s.cmd.Process == nil {
+	if !s.running {
 		return
 	}
 	s.restart = true
-	_ = terminate(s.cmd.Process)
+	// While the helper is still starting there is no process yet; runOnce
+	// ends it as soon as Start returns.
+	if s.cmd != nil && s.cmd.Process != nil {
+		_ = terminate(s.cmd.Process)
+	}
 }
 
 // Stop terminates the helper and waits for supervision to end.
@@ -201,6 +205,9 @@ func (s *Supervisor) runOnce(ctx context.Context, spec HelperSpec) error {
 	}
 	s.mu.Lock()
 	s.cmd = cmd
+	if s.restart { // Restart arrived while the helper was starting
+		_ = terminate(cmd.Process)
+	}
 	s.mu.Unlock()
 
 	err := cmd.Wait()
