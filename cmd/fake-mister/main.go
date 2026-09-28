@@ -17,6 +17,8 @@ func main() {
 	addr := flag.String("addr", ":32100", "UDP listen address")
 	outDir := flag.String("out", "./fake-mister-dumps", "dump output directory")
 	pngEvery := flag.Int("png-every", 60, "write a PNG every N fields (<=0 disables)")
+	core := flag.String("core", "groovy", `core to impersonate: "groovy" (original) or "nlc" (GroovyNLC)`)
+	idleTimeout := flag.Duration("idle-timeout", 0, "close a session idle this long, like GroovyNLC (0 disables)")
 	flag.Parse()
 
 	l, err := fakemister.NewListener(*addr)
@@ -25,7 +27,22 @@ func main() {
 		os.Exit(1)
 	}
 	defer l.Close()
-	slog.Info("fake-mister listening", "addr", l.Addr().String(), "out", *outDir)
+
+	// Answer INIT / GET_STATUS / GET_VERSION like a real MiSTer so the
+	// bridge's handshake and core probe complete.
+	l.EnableACKs(true)
+	switch *core {
+	case "groovy":
+		l.SetCoreVersion(1)
+	case "nlc":
+		l.SetCoreVersion(2)
+	default:
+		slog.Error("unknown -core", "core", *core)
+		os.Exit(2)
+	}
+	l.SetIdleTimeout(*idleTimeout)
+
+	slog.Info("fake-mister listening", "addr", l.Addr().String(), "out", *outDir, "core", *core, "idle_timeout", idleTimeout.String())
 
 	rec := fakemister.NewRecorder()
 	dumper := fakemister.NewDumper(*outDir, *pngEvery)

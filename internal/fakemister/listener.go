@@ -37,6 +37,21 @@ type Listener struct {
 	// zeroSizeLZ4Blits counts BLIT headers the real core would arm as a
 	// compressed blit of size 0 (see RunWithFields).
 	zeroSizeLZ4Blits atomic.Uint64
+
+	// coreVersion is the GET_VERSION reply (0 = default 1, the original
+	// core). Version >= 2 impersonates GroovyNLC: SWITCHRES is ACKed.
+	// Version < 2 drops 6-byte INITs like the original core. Set before
+	// Run / RunWithFields; read without locking by the loop goroutine.
+	coreVersion byte
+	// idleTimeout > 0 models GroovyNLC idle reaping (design 2026-09-28
+	// §1.1f): once a session goes quiet for longer than this, it closes
+	// and BLIT/AUDIO/SWITCHRES are ignored until the next INIT.
+	// sessionOpen and lastRecv are loop-goroutine owned; reaps is read by
+	// tests.
+	idleTimeout time.Duration
+	sessionOpen bool
+	lastRecv    time.Time
+	reaps       atomic.Uint64
 }
 
 // NewListener binds a UDP socket at addr (e.g. ":32100" or ":0" for an
@@ -86,6 +101,72 @@ func (l *Listener) EnableACKs(audioReady bool) {
 	l.audioReadyBit = audioReady
 }
 
+// SetCoreVersion sets the GET_VERSION reply: 1 impersonates the original
+// Groovy core (the default), 2 impersonates GroovyNLC. Call before Run.
+func (l *Listener) SetCoreVersion(v byte) { l.coreVersion = v }
+
+// SetIdleTimeout enables GroovyNLC-style idle reaping. Call before Run.
+func (l *Listener) SetIdleTimeout(d time.Duration) { l.idleTimeout = d }
+
+// Reaps reports how many sessions the idle timeout has closed.
+func (l *Listener) Reaps() uint64 { return l.reaps.Load() }
+
+func (l *Listener) version() byte {
+	if l.coreVersion == 0 {
+		return 1
+	}
+	return l.coreVersion
+}
+
+// observeArrival records datagram activity. Any datagram counts, as on the
+// real core. A gap longer than idleTimeout closes the open session first.
+func (l *Listener) observeArrival(now time.Time) {
+	if l.idleTimeout > 0 && l.sessionOpen && !l.lastRecv.IsZero() &&
+		now.Sub(l.lastRecv) > l.idleTimeout {
+		l.sessionOpen = false
+		l.reaps.Add(1)
+	}
+	l.lastRecv = now
+}
+
+// respond mirrors the real core's replies to one command datagram. It
+// returns false when the core would discard the command.
+func (l *Listener) respond(cmd Command, src *net.UDPAddr) bool {
+	switch cmd.Type {
+	case groovy.CmdGetVersion:
+		if l.ackOnInit {
+			_, _ = l.conn.WriteToUDP([]byte{l.version()}, src)
+		}
+		return true
+	case groovy.CmdGetStatus:
+		if l.ackOnInit {
+			l.emitInitACK(src)
+		}
+		return true
+	case groovy.CmdInit:
+		if len(cmd.Raw) == 6 && l.version() < 2 {
+			return false
+		}
+		l.sessionOpen = true
+		if l.ackOnInit {
+			l.emitInitACK(src)
+		}
+		return true
+	case groovy.CmdClose:
+		l.sessionOpen = false
+		return true
+	}
+	// Session gating only applies in idle-timeout mode, so existing tests
+	// that send blits without an INIT keep working.
+	if l.idleTimeout > 0 && !l.sessionOpen {
+		return false
+	}
+	if cmd.Type == groovy.CmdSwitchres && l.ackOnInit && l.version() >= 2 {
+		l.emitInitACK(src)
+	}
+	return true
+}
+
 // emitInitACK writes a synthesized ACK back to src. Echo fields are zero —
 // the sender does not key any behavior on them across repeated INITs in v1.
 // status carries the audio-ready bit 6 when the listener was configured
@@ -116,14 +197,15 @@ func (l *Listener) Run(events chan<- Command) {
 			return
 		}
 		recvAt := time.Now()
+		l.observeArrival(recvAt)
 		cmd, err := ParseCommand(buf[:n])
 		if err != nil {
 			slog.Debug("fakemister parse error", "err", err, "n", n)
 			continue
 		}
 		cmd.ReceivedAt = recvAt
-		if l.ackOnInit && cmd.Type == groovy.CmdInit {
-			l.emitInitACK(src)
+		if !l.respond(cmd, src) {
+			continue
 		}
 		events <- cmd
 	}
@@ -198,6 +280,7 @@ func (l *Listener) RunWithFields(
 			return
 		}
 		recvAt := time.Now()
+		l.observeArrival(recvAt)
 		data := make([]byte, n)
 		copy(data, buf[:n])
 		if mode == modeZeroLZ4 {
@@ -222,14 +305,19 @@ func (l *Listener) RunWithFields(
 				continue
 			}
 			cmd.ReceivedAt = recvAt
+			if !l.respond(cmd, src) {
+				// The core discards this command (reaped session, or a
+				// 6-byte INIT on the original core). A rejected BLIT/AUDIO
+				// header's payload chunks exceed maxCommandLen and are
+				// dropped by the oversized-datagram guard above, as on the
+				// real core.
+				continue
+			}
 			if cmd.Type == groovy.CmdInit {
 				// verbst fork: codecMode = INIT[1] & 3, compression when >= 1.
 				// psakhis: INIT[1] <= 1 ? INIT[1] : 0. Both agree on 0 and 1,
 				// the only values the relay sends.
 				compression = cmd.Init.LZ4Frames&0x3 != 0
-				if l.ackOnInit {
-					l.emitInitACK(src)
-				}
 			}
 			if cmd.Type == groovy.CmdBlitFieldVSync && compression && cmd.Blit != nil && !cmd.Blit.Compressed {
 				l.zeroSizeLZ4Blits.Add(1)
@@ -351,16 +439,23 @@ type Command struct {
 }
 
 // ParseCommand decodes a single datagram into a typed Command. It handles all
-// five Groovy command IDs (INIT, SWITCHRES, AUDIO-header, BLIT_FIELD_VSYNC,
-// CLOSE). Unknown command bytes return an error. Payload datagrams that
-// follow BLIT/AUDIO headers are NOT command datagrams and must not reach this
-// function — the listener routes them through the reassembler instead.
+// seven Groovy command IDs (INIT, SWITCHRES, AUDIO-header, BLIT_FIELD_VSYNC,
+// CLOSE, GET_STATUS, GET_VERSION). Unknown command bytes return an error.
+// Payload datagrams that follow BLIT/AUDIO headers are NOT command datagrams
+// and must not reach this function — the listener routes them through the
+// reassembler instead.
 func ParseCommand(pkt []byte) (Command, error) {
 	if len(pkt) == 0 {
 		return Command{}, fmt.Errorf("empty packet")
 	}
 	c := Command{Type: pkt[0], Raw: pkt}
 	switch pkt[0] {
+	case groovy.CmdGetVersion, groovy.CmdGetStatus:
+		// 1-byte queries. Longer datagrams starting with these bytes are
+		// payload fragments that reached the stateless Run loop.
+		if len(pkt) != 1 {
+			return c, fmt.Errorf("query command %d must be 1 byte, got %d", pkt[0], len(pkt))
+		}
 	case groovy.CmdInit:
 		// INIT is 4 or 5 bytes (5th = rgbMode, optional — default RGB888).
 		if len(pkt) < 4 {
