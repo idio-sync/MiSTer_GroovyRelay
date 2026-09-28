@@ -43,7 +43,7 @@ func testBridgeConfig(t *testing.T) config.BridgeConfig {
 			InterlaceFieldOrder: "tff",
 			AspectMode:          "letterbox",
 			RGBMode:             "rgb888",
-			LZ4Enabled:          false,
+			Codec:               config.CodecRaw,
 		},
 		Audio: config.AudioConfig{
 			SampleRate:   48000,
@@ -595,7 +595,7 @@ func TestManager_StartSessionFiltersBlockedHeadersBeforePipeline(t *testing.T) {
 	}
 
 	m := newTestManager(t)
-	m.bridge.Video.LZ4Enabled = true
+	m.bridge.Video.Codec = config.CodecAuto
 	m.bridge.Video.DeltaLZ4Enabled = true
 	err := m.StartSession(SessionRequest{
 		StreamURL:         "http://example/clip.m3u8",
@@ -3435,7 +3435,7 @@ func TestManager_StatusHomeViewIncludesMeterFacts(t *testing.T) {
 	m := newTestManager(t)
 	m.bridge.Video.Modeline = "PAL_576i"
 	m.bridge.Video.InterlaceFieldOrder = "tff"
-	m.bridge.Video.LZ4Enabled = true
+	m.bridge.Video.Codec = config.CodecAuto
 	m.bridge.Video.DeltaLZ4Enabled = true
 	m.bridge.Audio.SampleRate = 48000
 	m.bridge.Audio.Channels = 2

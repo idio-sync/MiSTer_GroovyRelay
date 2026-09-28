@@ -4451,7 +4451,7 @@ func TestSettingsAVAndMisterTemplates_RenderAllFields(t *testing.T) {
 	}
 	data := SettingsData{
 		Bridge: config.BridgeConfig{
-			Video:  config.VideoConfig{Modeline: "NTSC_480i", InterlaceFieldOrder: "bff", AspectMode: "auto", LZ4Enabled: true, DeltaLZ4Enabled: true},
+			Video:  config.VideoConfig{Modeline: "NTSC_480i", InterlaceFieldOrder: "bff", AspectMode: "auto", Codec: config.CodecAuto, DeltaLZ4Enabled: true},
 			Audio:  config.AudioConfig{SampleRate: 48000, Channels: 2},
 			MiSTer: config.MisterConfig{SSHUser: "root", SSHPassword: "stored"},
 		},
@@ -4477,7 +4477,7 @@ func TestSettingsAVAndMisterTemplates_RenderAllFields(t *testing.T) {
 		`name="video_picture_v_size" value="100"`,
 		`name="video_picture_h_offset" value="0" min="-72" max="72" step="1"`,
 		`name="video_picture_v_offset" value="0" min="-28" max="28" step="1"`,
-		`data-field="video_lz4_enabled"`, // switch renders <button data-field=...>
+		`name="video_codec"`, // select renders name=, not data-field=
 		`data-field="video_delta_lz4_enabled"`,
 		`name="audio_sample_rate"`,
 		`name="audio_channels"`,

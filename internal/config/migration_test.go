@@ -130,8 +130,8 @@ func TestMigrate_FullRoundTrip(t *testing.T) {
 	if s.Bridge.Audio.OutputVolume != 100 {
 		t.Errorf("audio.output_volume = %d, want default 100 when absent from legacy config", s.Bridge.Audio.OutputVolume)
 	}
-	if s.Bridge.Video.LZ4Enabled {
-		t.Error("lz4_enabled should have round-tripped as false")
+	if s.Bridge.Video.Codec != CodecRaw {
+		t.Errorf("codec = %q, want %q (lz4_enabled=false migrated)", s.Bridge.Video.Codec, CodecRaw)
 	}
 	raw := string(out)
 	if !strings.Contains(raw, "[bridge.visualizer]") {

@@ -177,8 +177,13 @@ type VideoConfig struct {
 	InterlaceFieldOrder string `toml:"interlace_field_order"`
 	AspectMode          string `toml:"aspect_mode"`
 	RGBMode             string `toml:"rgb_mode"`
-	LZ4Enabled          bool   `toml:"lz4_enabled"`
-	DeltaLZ4Enabled     bool   `toml:"delta_lz4_enabled"`
+	// Codec selects frame compression: "auto" (default), "raw" or "lz4".
+	// Empty means auto; see EffectiveCodec.
+	Codec           string `toml:"codec"`
+	DeltaLZ4Enabled bool   `toml:"delta_lz4_enabled"` // only used when the codec resolves to LZ4
+	// LegacyLZ4Enabled reads the pre-codec lz4_enabled key for
+	// migrateVideoCodec. It is always nil after load, so saves omit it.
+	LegacyLZ4Enabled *bool `toml:"lz4_enabled,omitempty"`
 	// InterlaceFilter is the vertical low-pass against interlace twitter on
 	// interlaced modelines: "off", "light" (default), or "full". Empty is
 	// treated as the default.
@@ -389,6 +394,11 @@ func (s *Sectioned) Validate() error {
 	case "", "off", "light", "full":
 	default:
 		return fmt.Errorf("bridge.video.interlace_filter must be off, light, or full, got %q", b.Video.InterlaceFilter)
+	}
+	switch b.Video.Codec {
+	case "", CodecAuto, CodecRaw, CodecLZ4:
+	default:
+		return fmt.Errorf("bridge.video.codec must be auto, raw, or lz4, got %q", b.Video.Codec)
 	}
 	if err := validatePicture(b.Video); err != nil {
 		return err

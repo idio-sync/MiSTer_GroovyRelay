@@ -325,8 +325,8 @@ var bridgeFieldDecoders = map[string]bridgeFieldDecoder{
 		v, err := decodeIntInRange(s, -config.MaxPictureVOffset, config.MaxPictureVOffset)
 		return v, err
 	},
-	"video_lz4_enabled": func(s string) (any, error) {
-		v, err := decodeBool(s)
+	"video_codec": func(s string) (any, error) {
+		v, err := decodeCodec(s)
 		return v, err
 	},
 	"video_delta_lz4_enabled": func(s string) (any, error) {
@@ -540,6 +540,16 @@ func decodeInterlaceFilter(raw string) (string, error) {
 	return "", fmt.Errorf("must be off, light, or full")
 }
 
+// decodeCodec accepts "auto", "raw", or "lz4".
+func decodeCodec(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	switch s {
+	case config.CodecAuto, config.CodecRaw, config.CodecLZ4:
+		return s, nil
+	}
+	return "", fmt.Errorf("must be auto, raw, or lz4")
+}
+
 // decodeBool accepts exactly "true" or "false". Used by switch fields.
 // Strict matching catches form-data drift early; the legacy strconv.ParseBool
 // would accept "0"/"1"/"TRUE" which the chassis JS contract does not emit.
@@ -600,7 +610,7 @@ var bridgeFieldOverlays = map[string]bridgeFieldOverlay{
 	"video_picture_v_size":        func(c *config.BridgeConfig, v any) { c.Video.PictureVSize = v.(float64) },
 	"video_picture_h_offset":      func(c *config.BridgeConfig, v any) { c.Video.PictureHOffset = v.(int) },
 	"video_picture_v_offset":      func(c *config.BridgeConfig, v any) { c.Video.PictureVOffset = v.(int) },
-	"video_lz4_enabled":           func(c *config.BridgeConfig, v any) { c.Video.LZ4Enabled = v.(bool) },
+	"video_codec":                 func(c *config.BridgeConfig, v any) { c.Video.Codec = v.(string) },
 	"video_delta_lz4_enabled":     func(c *config.BridgeConfig, v any) { c.Video.DeltaLZ4Enabled = v.(bool) },
 	"audio_sample_rate":           func(c *config.BridgeConfig, v any) { c.Audio.SampleRate = v.(int) },
 	"audio_channels":              func(c *config.BridgeConfig, v any) { c.Audio.Channels = v.(int) },
@@ -657,7 +667,7 @@ var bridgeFieldScopes = map[string]adapters.ApplyScope{
 	"video_picture_v_size":         adapters.ScopeRestartCast,
 	"video_picture_h_offset":       adapters.ScopeRestartCast,
 	"video_picture_v_offset":       adapters.ScopeRestartCast,
-	"video_lz4_enabled":            adapters.ScopeRestartCast,
+	"video_codec":                  adapters.ScopeRestartCast,
 	"video_delta_lz4_enabled":      adapters.ScopeRestartCast,
 	"audio_sample_rate":            adapters.ScopeRestartCast,
 	"audio_channels":               adapters.ScopeRestartCast,

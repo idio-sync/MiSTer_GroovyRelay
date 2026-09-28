@@ -113,7 +113,7 @@ func Migrate(legacy []byte) ([]byte, error) {
 				InterlaceFieldOrder: old.InterlaceFieldOrder,
 				AspectMode:          old.AspectMode,
 				RGBMode:             old.RGBMode,
-				LZ4Enabled:          old.LZ4Enabled,
+				Codec:               codecFromLegacyLZ4(old.LZ4Enabled),
 				DeltaLZ4Enabled:     old.DeltaLZ4Enabled,
 				InterlaceFilter:     DefaultInterlaceFilter,
 			},
@@ -247,6 +247,7 @@ func loadSectionedFromBytes(data []byte) (*Sectioned, toml.MetaData, error) {
 	if err != nil {
 		return nil, toml.MetaData{}, fmt.Errorf("parse sectioned config: %w", err)
 	}
+	migrateVideoCodec(&s.Bridge.Video, meta)
 	return s, meta, nil
 }
 
@@ -291,7 +292,7 @@ func defaultBridge() BridgeConfig {
 			InterlaceFieldOrder: d.InterlaceFieldOrder,
 			AspectMode:          d.AspectMode,
 			RGBMode:             d.RGBMode,
-			LZ4Enabled:          d.LZ4Enabled,
+			Codec:               CodecAuto,
 			DeltaLZ4Enabled:     d.DeltaLZ4Enabled,
 			InterlaceFilter:     DefaultInterlaceFilter,
 			PictureHSize:        DefaultPictureSize,

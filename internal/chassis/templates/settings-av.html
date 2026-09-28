@@ -44,13 +44,18 @@
         (dict "Value" "off" "Label" "Off"))
       "Error" (errOf .Errors "video_interlace_filter")) }}
     {{ field (dict
-      "Name" "video_lz4_enabled" "Type" "switch" "Label" "LZ4 compression"
-      "Help" "Compresses each frame sent to the MiSTer. Strongly recommended."
-      "Value" (boolStr .Bridge.Video.LZ4Enabled)
-      "Scope" "recast") }}
+      "Name" "video_codec" "Type" "select" "Label" "Compression"
+      "Help" "How each frame is packed for the MiSTer. Auto picks the best codec the connected core supports (LZ4 today)."
+      "Value" .Bridge.Video.EffectiveCodec
+      "Scope" "recast"
+      "Options" (options
+        (dict "Value" "auto" "Label" "Auto (recommended)")
+        (dict "Value" "lz4" "Label" "LZ4")
+        (dict "Value" "raw" "Label" "Raw (uncompressed)"))
+      "Error" (errOf .Errors "video_codec")) }}
     {{ field (dict
       "Name" "video_delta_lz4_enabled" "Type" "switch" "Label" "Delta-LZ4"
-      "Help" "Sends only what changed between frames when that is smaller than a full LZ4 frame."
+      "Help" "Sends only what changed between frames when that is smaller than a full LZ4 frame. Applies only when compression is Auto or LZ4."
       "Value" (boolStr .Bridge.Video.DeltaLZ4Enabled)
       "Scope" "recast") }}
   </div>

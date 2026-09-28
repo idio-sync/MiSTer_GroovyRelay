@@ -119,6 +119,22 @@ func TestScopeForBridgeField_DeltaLZ4RestartCast(t *testing.T) {
 	}
 }
 
+func TestScopeForBridgeField_CodecRestartCast(t *testing.T) {
+	if got := scopeForBridgeField("video.codec"); got != adapters.ScopeRestartCast {
+		t.Errorf("scopeForBridgeField(video.codec) = %v, want ScopeRestartCast", got)
+	}
+}
+
+func TestDiffBridgeConfig_EmptyCodecEqualsAuto(t *testing.T) {
+	old := config.BridgeConfig{Video: config.VideoConfig{Codec: ""}}
+	newCfg := config.BridgeConfig{Video: config.VideoConfig{Codec: config.CodecAuto}}
+	for _, k := range diffBridgeConfig(old, newCfg) {
+		if k == "video.codec" {
+			t.Fatal("\"\" -> \"auto\" reported as a codec change")
+		}
+	}
+}
+
 func TestDiffBridgeConfig_HLSBufferFieldsRestartCast(t *testing.T) {
 	old := config.BridgeConfig{HLSBuffer: config.HLSBufferConfig{
 		Enabled:                true,
@@ -563,7 +579,7 @@ func testBridgeConfig(t *testing.T, modeline string) config.BridgeConfig {
 			InterlaceFieldOrder: "bff",
 			AspectMode:          "auto",
 			RGBMode:             "rgb888",
-			LZ4Enabled:          true,
+			Codec:               config.CodecAuto,
 		},
 		Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100, DSP: config.DefaultAudioDSP()},
 		Visualizer: config.VisualizerConfig{Mode: config.VisualizerModeRetroAnalyzer},

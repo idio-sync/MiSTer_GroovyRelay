@@ -54,7 +54,7 @@ func buildMeterHomeView(req SessionRequest, probe *ffmpeg.ProbeResult, crop *ffm
 			Standard:            standardForModeline(preset.Name),
 			FieldOrder:          bridge.Video.InterlaceFieldOrder,
 			RGBMode:             rgbMode,
-			LZ4Enabled:          bridge.Video.LZ4Enabled,
+			LZ4Enabled:          bridge.Video.EffectiveCodec() != config.CodecRaw,
 			DeltaLZ4Enabled:     bridge.Video.DeltaLZ4Enabled,
 			AudioSampleRate:     audioRate,
 			AudioChannels:       audioChans,

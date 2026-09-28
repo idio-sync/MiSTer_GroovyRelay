@@ -2156,7 +2156,7 @@ func testSettingsBridgeConfig(dataDir string) config.BridgeConfig {
 			InterlaceFieldOrder: "tff",
 			AspectMode:          "auto",
 			RGBMode:             "rgb888",
-			LZ4Enabled:          true,
+			Codec:          config.CodecAuto,
 		},
 		Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100, DSP: config.DefaultAudioDSP()},
 		Visualizer: config.VisualizerConfig{Mode: config.VisualizerModeRetroAnalyzer},
@@ -2473,19 +2473,19 @@ func TestChassisSettings_PipelineInterlaceFieldOrder_Hot(t *testing.T) {
 	}
 }
 
-func TestChassisSettings_PipelineLZ4Switch_Recast(t *testing.T) {
+func TestChassisSettings_PipelineCodec_Recast(t *testing.T) {
 	t.Parallel()
 	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
 	defer env.Close()
 
-	resp := env.PostForm("/ui/settings/bridge", url.Values{"video_lz4_enabled": {"false"}})
+	resp := env.PostForm("/ui/settings/bridge", url.Values{"video_codec": {"raw"}})
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
 	}
-	if got := env.bridgeSaver.Current().Video.LZ4Enabled; got != false {
-		t.Errorf("after save: LZ4Enabled = %v, want false", got)
+	if got := env.bridgeSaver.Current().Video.Codec; got != config.CodecRaw {
+		t.Errorf("after save: Codec = %q, want raw", got)
 	}
 	var body map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&body)
