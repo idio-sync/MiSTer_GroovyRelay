@@ -21,6 +21,9 @@
 - `ScopeRestartCast` for `video.codec`.
 - Commit on the current branch (`main`); no new branch. Commit only your paths: `git commit -m "..." -- <paths>`, then check `git show --stat HEAD`.
 - Some Go files are CRLF inside the blob (for example `internal/chassis/chassis_test.go`). After committing, `git show --stat HEAD` must not show a whole-file rewrite; if it does, restore CRLF (`perl -pi -e 's/\n/\r\n/'`), then `git -c core.autocrlf=false add --renormalize <file>` and amend.
+- **Clean-tree gate (every task, Step 0).** Before starting a task, run `git status --porcelain -- internal cmd tests`. It must print nothing. If another session has uncommitted edits there, stop and wait for them to land. Commit steps use directory paths and `$(git diff --name-only ...)` lists, and those are only safe on a tree that holds nothing but your changes.
+- Plan revision 2 (2026-09-28) is anchored on commit `57d87f0b` (LZ4 zero-size-blit fix). That commit added `holdField` to `plane.go`, `compression`/`modeZeroLZ4` handling to `fakemister.RunWithFields`, and `tests/integration/lz4_underrun_test.go`.
+- Verification in every task that touches Go includes `go vet -tags=integration ./...`, because plain `go vet ./...` skips the `//go:build integration` files.
 - Commit steps name directories for brevity. Before each commit, run `git diff --stat -- <those paths>` and confirm that every changed file is yours; another session may have uncommitted edits in the same directories (especially `internal/dataplane/plane.go`). If someone else's file shows up, list your files explicitly instead.
 - Commit trailer: `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
 - Another session may be fixing the LZ4 zero-size-blit bug in `internal/dataplane/plane.go` (`sendField` / `sendDuplicate`). Before Tasks 4 and 5, run `git log --oneline -5 -- internal/dataplane/plane.go` and re-read the functions you edit; anchor edits on code, not on the line numbers quoted here.
@@ -55,7 +58,7 @@
 - Test: `internal/groovynet/probe_test.go` (new)
 
 **Interfaces:**
-- Produces: `groovy.Core` (`CoreUnknown`, `CoreGroovy`, `CoreGroovyNLC`), `groovy.CoreFromVersion(v byte) Core`, `(Core) String() string`, `groovy.BuildGetVersion() []byte`, `groovy.BuildGetStatus() []byte`, `(*groovynet.Sender).ProbeVersion(timeout time.Duration) (byte, error)`, `(*groovynet.Sender).LastSend() time.Time`.
+- Produces: `groovy.Core` (`CoreUnknown`, `CoreGroovy`, `CoreGroovyNLC`), `groovy.CoreFromVersion(v byte) Core`, `(Core) String() string`, `groovy.BuildGetVersion() []byte`, `groovy.BuildGetStatus() []byte`, `(*groovynet.Sender).ProbeVersion(timeout time.Duration) (byte, error)`, `(*groovynet.Sender).LastSend() time.Time`, `(*groovynet.Sender).SendIfIdle(pkt []byte, idle time.Duration) (sent bool, err error)`. It checks and writes under `Sender.mu`, so a keepalive can never land between a blit/audio header and its payload. `SendInitAwaitACK` now skips datagrams that aren't 13 bytes (for example a GET_VERSION reply arriving after the probe timed out) instead of failing.
 
 - [ ] **Step 1: Write the failing groovy test**
 
@@ -264,11 +267,59 @@ func TestSender_LastSendTracksWrites(t *testing.T) {
 		t.Fatal("LastSend not updated by SendPayload")
 	}
 }
+
+func TestSender_SendIfIdle(t *testing.T) {
+	s, err := NewSender("127.0.0.1", 12345, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	sent, err := s.SendIfIdle([]byte{groovy.CmdGetStatus}, time.Hour)
+	if err != nil || !sent {
+		t.Fatalf("first SendIfIdle = %v, %v; want sent (never written before)", sent, err)
+	}
+	sent, err = s.SendIfIdle([]byte{groovy.CmdGetStatus}, time.Hour)
+	if err != nil || sent {
+		t.Fatalf("SendIfIdle right after a write = %v, %v; want skipped", sent, err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	sent, err = s.SendIfIdle([]byte{groovy.CmdGetStatus}, 10*time.Millisecond)
+	if err != nil || !sent {
+		t.Fatalf("SendIfIdle after idle = %v, %v; want sent", sent, err)
+	}
+}
+
+// A GET_VERSION reply that arrives after ProbeVersion timed out must not
+// fail the INIT handshake that follows.
+func TestSendInitAwaitACK_SkipsLateVersionReply(t *testing.T) {
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	go func() {
+		buf := make([]byte, 64)
+		n, src, err := conn.ReadFromUDP(buf)
+		if err != nil || n == 0 || buf[0] != groovy.CmdInit {
+			return
+		}
+		_, _ = conn.WriteToUDP([]byte{2}, src) // late version reply
+		_, _ = conn.WriteToUDP(make([]byte, groovy.ACKPacketSize), src)
+	}()
+	s, err := NewSender("127.0.0.1", conn.LocalAddr().(*net.UDPAddr).Port, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.SendInitAwaitACK(groovy.BuildInit(groovy.LZ4ModeDefault, groovy.AudioRate48000, 2, groovy.RGBMode888), 300*time.Millisecond); err != nil {
+		t.Fatalf("SendInitAwaitACK = %v, want the ACK after the stray byte", err)
+	}
+}
 ```
 
 - [ ] **Step 6: Run and confirm they fail**
 
-Run: `go test ./internal/groovynet -run 'TestProbeVersion|TestSender_LastSend'`
+Run: `go test ./internal/groovynet -run 'TestProbeVersion|TestSender_LastSend|TestSender_SendIfIdle|TestSendInitAwaitACK_SkipsLateVersionReply'`
 Expected: FAIL, `s.ProbeVersion undefined`.
 
 - [ ] **Step 7: Implement in `internal/groovynet/sender.go`**
@@ -342,7 +393,67 @@ func (s *Sender) ProbeVersion(timeout time.Duration) (byte, error) {
 		}
 	}
 }
+
+// SendIfIdle writes pkt only if nothing has been written for at least
+// idle, and reports whether it wrote. The check and the write happen under
+// mu, and every header write (Send) stamps lastSendUnix under that same
+// lock. A keepalive therefore can never slip between a BLIT/AUDIO header
+// and its payload: it either runs before the header or sees the header's
+// fresh stamp. See design 2026-09-28 §3.3.
+func (s *Sender) SendIfIdle(pkt []byte, idle time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n := s.lastSendUnix.Load(); n != 0 && time.Since(time.Unix(0, n)) < idle {
+		return false, nil
+	}
+	if _, err := s.conn.WriteToUDP(pkt, s.dstAddr); err != nil {
+		return false, err
+	}
+	s.lastSendUnix.Store(time.Now().UnixNano())
+	return true, nil
+}
 ```
+
+In `SendInitAwaitACK`, replace the single read
+
+```go
+	buf := make([]byte, groovy.ACKPacketSize*2)
+	n, _, err := s.conn.ReadFromUDP(buf)
+	if err != nil {
+		if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			return groovy.ACK{}, &InitACKTimeoutError{Timeout: timeout, Err: err}
+		}
+		return groovy.ACK{}, fmt.Errorf("read INIT ack: %w", err)
+	}
+	if n != groovy.ACKPacketSize {
+		return groovy.ACK{}, fmt.Errorf("INIT ack wrong size: %d", n)
+	}
+	return groovy.ParseACK(buf[:n])
+```
+
+with a loop that skips datagrams of the wrong size until the deadline:
+
+```go
+	buf := make([]byte, groovy.ACKPacketSize*2)
+	for {
+		n, _, err := s.conn.ReadFromUDP(buf)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				return groovy.ACK{}, &InitACKTimeoutError{Timeout: timeout, Err: err}
+			}
+			return groovy.ACK{}, fmt.Errorf("read INIT ack: %w", err)
+		}
+		if n != groovy.ACKPacketSize {
+			// For example a GET_VERSION reply that arrived after
+			// ProbeVersion gave up. Keep waiting for the real ACK.
+			slog.Debug("skipping non-ACK datagram while awaiting INIT ack", "n", n)
+			continue
+		}
+		return groovy.ParseACK(buf[:n])
+	}
+```
+
+If an existing sender test asserts the old `"INIT ack wrong size"` error, change it to expect an `InitACKTimeoutError` (`IsInitACKTimeout(err)`), because a wrong-sized datagram is now skipped and the wait runs out.
 
 - [ ] **Step 8: Run and confirm it passes**
 
@@ -565,7 +676,7 @@ Add fields to the `Listener` struct after `audioReadyBit`:
 	reaps       atomic.Uint64
 ```
 
-Add `"sync/atomic"` to the imports. Add these methods after `EnableACKs`:
+`sync/atomic` is already imported (it is used for `zeroSizeLZ4Blits`). Add these methods after `EnableACKs`:
 
 ```go
 // SetCoreVersion sets the GET_VERSION reply: 1 impersonates the original
@@ -659,29 +770,44 @@ with
 
 and call `l.observeArrival(recvAt)` immediately after the successful `ReadFromUDP` (before `ParseCommand`, so unparsable datagrams still count as activity).
 
-In `RunWithFields`, call `l.observeArrival(recvAt)` right after each successful read, for every mode. In the `modeCommand` branch, replace the `if l.ackOnInit && cmd.Type == groovy.CmdInit { ... }` block with:
+In `RunWithFields` (as of `57d87f0b`), call `l.observeArrival(recvAt)` directly after `recvAt := time.Now()`, before the `modeZeroLZ4` check, so every datagram counts as activity.
+
+In the `modeCommand` branch, replace this block:
 
 ```go
-			accepted := l.respond(cmd, src)
-			if accepted {
-				cmds <- cmd
-			}
-```
-
-and remove the unconditional `cmds <- cmd` that followed it. Keep the `switch cmd.Type` that enters blit/audio mode, but give a rejected blit or audio header a discarding reassembler, so its payload datagrams are swallowed instead of being parsed as commands. Declare `discard := false` next to `blitHeader`. In the BLIT case, after `reass = NewReassembler(size)`, add `discard = !accepted`; do the same in the AUDIO case. In the `modeBlit` and `modeAudio` completion branches, send the event only when `!discard`:
-
-```go
-		case modeBlit:
-			if reass.Write(data) {
-				if !discard {
-					fields <- FieldEvent{Header: blitHeader, Payload: reass.Bytes()}
+			cmd.ReceivedAt = recvAt
+			if cmd.Type == groovy.CmdInit {
+				// verbst fork: codecMode = INIT[1] & 3, compression when >= 1.
+				// psakhis: INIT[1] <= 1 ? INIT[1] : 0. Both agree on 0 and 1,
+				// the only values the relay sends.
+				compression = cmd.Init.LZ4Frames&0x3 != 0
+				if l.ackOnInit {
+					l.emitInitACK(src)
 				}
-				reass = nil
-				mode = modeCommand
 			}
 ```
 
-(Apply the same `if !discard` guard to the audio completion that sends `AudioEvent`.)
+with:
+
+```go
+			cmd.ReceivedAt = recvAt
+			if !l.respond(cmd, src) {
+				// The core discards this command (reaped session, or a
+				// 6-byte INIT on the original core). A rejected BLIT/AUDIO
+				// header's payload chunks exceed maxCommandLen and are
+				// dropped by the oversized-datagram guard above, as on the
+				// real core.
+				continue
+			}
+			if cmd.Type == groovy.CmdInit {
+				// verbst fork: codecMode = INIT[1] & 3, compression when >= 1.
+				// psakhis: INIT[1] <= 1 ? INIT[1] : 0. Both agree on 0 and 1,
+				// the only values the relay sends.
+				compression = cmd.Init.LZ4Frames&0x3 != 0
+			}
+```
+
+Leave everything after it unchanged: the zero-size-LZ4 branch, `cmds <- cmd`, and the blit/audio mode switch. `respond` now sends the INIT ACK, so it must not also be sent here.
 
 - [ ] **Step 6: Run and confirm it passes**
 
@@ -719,8 +845,8 @@ and add `"core", *core, "idle_timeout", idleTimeout.String()` to the existing `s
 
 - [ ] **Step 8: Build and vet**
 
-Run: `go build ./cmd/fake-mister && go vet ./internal/fakemister ./cmd/fake-mister`
-Expected: no output. Delete the built binary afterwards (`rm -f fake-mister fake-mister.exe`).
+Run: `go build -o /dev/null ./cmd/fake-mister && go vet ./internal/fakemister ./cmd/fake-mister && go vet -tags=integration ./...`
+Expected: no output.
 
 - [ ] **Step 9: Commit**
 
@@ -753,6 +879,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>" -- interna
 package config
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -819,7 +946,8 @@ func TestMigrate_FlatLZ4DisabledBecomesRaw(t *testing.T) {
 	if !strings.Contains(string(out), `codec = "raw"`) {
 		t.Fatalf("migrated config lacks codec = \"raw\":\n%s", out)
 	}
-	if strings.Contains(string(out), "lz4_enabled") {
+	// Match the key itself, not delta_lz4_enabled (always encoded).
+	if regexp.MustCompile(`(?m)^\s*lz4_enabled\s*=`).MatchString(string(out)) {
 		t.Fatalf("migrated config still has lz4_enabled:\n%s", out)
 	}
 }
@@ -930,7 +1058,14 @@ and change the delta comment to `# Adaptive delta-LZ4 BLITs (recommended; LZ4 on
 - [ ] **Step 7: Run the config tests**
 
 Run: `go test ./internal/config`
-Expected: the new tests PASS. Existing tests that reference `Video.LZ4Enabled` fail to compile: change `LZ4Enabled: true` to `Codec: CodecAuto` (or delete the line) and `LZ4Enabled: false` to `Codec: CodecRaw`. Update assertions that compare example.toml or migrated output to expect `codec`. Re-run until PASS.
+Expected: the new tests PASS. Fix the existing config tests:
+- `internal/config/migration_test.go:133` (`if s.Bridge.Video.LZ4Enabled {`) becomes `if s.Bridge.Video.Codec != CodecAuto {`, matching whatever `lz4_enabled` value that test's legacy input sets (`true` → `CodecAuto`, `false` → `CodecRaw`; read the input to decide).
+- Any other `VideoConfig{... LZ4Enabled: ...}` in `internal/config` tests follows the same rule: `true` becomes `Codec: CodecAuto`, `false` becomes `Codec: CodecRaw`.
+
+  **Never just delete an `LZ4Enabled: false` line from a `VideoConfig`.** An empty codec means auto, which is LZ4.
+- Update assertions that compare example.toml or migrated output to expect `codec`.
+
+Re-run until PASS. (`TestDefaultBridge_DeltaLZ4Enabled` and `TestSectioned_RoundTripDeltaLZ4Enabled` are about the delta flag and stay unchanged.)
 
 - [ ] **Step 8: Replace the settings switch with a codec select**
 
@@ -1010,12 +1145,66 @@ These keep the tree building until Task 4 replaces them.
 
 - [ ] **Step 11: Fix the remaining test references and run everything**
 
-Run: `grep -rn "Video.LZ4Enabled\|video_lz4_enabled\|video.lz4_enabled" --include=*.go internal cmd tests`
-Update every hit (chassis, uiserver and core tests): `Video.LZ4Enabled = true` becomes `Video.Codec = config.CodecAuto`, `false` becomes `config.CodecRaw`, and form posts of `video_lz4_enabled=true` become `video_codec=auto`. Expected afterwards: no hits except `dataplane.PlaneConfig` / `PipelineMeterView` `LZ4Enabled` fields, which Task 4 handles.
+`VideoConfig` has both composite literals (`LZ4Enabled: true,`) and field assignments (`.Video.LZ4Enabled = true`), and a narrow grep misses the literals. Every one of these must change. Rule: `true` becomes `Codec: config.CodecAuto` (or `config.CodecAuto` in an assignment), `false` becomes `config.CodecRaw`, and a `false` is never deleted:
 
-Add to `internal/uiserver/bridge_saver_test.go` a test that a codec change is ScopeRestartCast. Follow the file's existing pattern for the `video.delta_lz4_enabled` scope test and assert the scope for `video.codec` is `adapters.ScopeRestartCast`.
+| File:line (at `57d87f0b`) | Change |
+|---|---|
+| `internal/core/manager_test.go:46` | `LZ4Enabled: false,` → `Codec: config.CodecRaw,` |
+| `internal/core/manager_test.go:598`, `:3438` | `m.bridge.Video.LZ4Enabled = true` → `m.bridge.Video.Codec = config.CodecAuto` |
+| `internal/chassis/chassis_test.go:4454` | `LZ4Enabled: true` → `Codec: config.CodecAuto` |
+| `internal/chassis/chassis_test.go:4480` | `` `data-field="video_lz4_enabled"`, `` → `` `name="video_codec"`, `` (a select renders `name=`, not `data-field=`) |
+| `internal/chassis/settings_test.go:1066` | `LZ4Enabled: true` → `Codec: config.CodecAuto` |
+| `internal/uiserver/bridge_saver_test.go:566` | `LZ4Enabled: true,` → `Codec: config.CodecAuto,` |
+| `tests/integration/calibration_test.go:108`, `chassis_test.go:2159`, `liveaudio_test.go:61`, `osd_test.go:114`, `scenarios_test.go:112`, `variance_test.go:147` | `LZ4Enabled: true,` → `Codec: config.CodecAuto,` |
+| `tests/integration/url_test.go:41`, `user_provider_test.go:141` | `LZ4Enabled: false,` → `Codec: config.CodecRaw,` |
 
-Run: `go vet ./... && go test ./internal/config ./internal/chassis ./internal/uiserver ./internal/core`
+Leave `internal/chassis/meter_test.go:36` (`PipelineMeterView`) and the `PlaneConfig` literals (`tests/integration/plane_test.go:150`, `modeline_*_test.go:135`, `lz4_underrun_test.go:91`, and dataplane tests) for Task 4.
+
+Replace the integration settings test `TestChassisSettings_PipelineLZ4Switch_Recast` (`tests/integration/chassis_test.go` around line 2476) with a codec version:
+
+```go
+func TestChassisSettings_PipelineCodec_Recast(t *testing.T) {
+	t.Parallel()
+	env := newChassisIntegrationEnvForSettings(t, settingsEnvOptions{})
+	defer env.Close()
+
+	resp := env.PostForm("/ui/settings/bridge", url.Values{"video_codec": {"raw"}})
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("StatusCode = %d, body = %s", resp.StatusCode, body)
+	}
+	if got := env.bridgeSaver.Current().Video.Codec; got != config.CodecRaw {
+		t.Errorf("after save: Codec = %q, want raw", got)
+	}
+```
+
+Keep the rest of the original function body (the JSON decode and the `scope == "recast"` assertion) unchanged.
+
+Add to `internal/uiserver/bridge_saver_test.go`, next to `TestScopeForBridgeField_DeltaLZ4RestartCast`:
+
+```go
+func TestScopeForBridgeField_CodecRestartCast(t *testing.T) {
+	if got := scopeForBridgeField("video.codec"); got != adapters.ScopeRestartCast {
+		t.Errorf("scopeForBridgeField(video.codec) = %v, want ScopeRestartCast", got)
+	}
+}
+
+func TestDiffBridgeConfig_EmptyCodecEqualsAuto(t *testing.T) {
+	old := config.BridgeConfig{Video: config.VideoConfig{Codec: ""}}
+	newCfg := config.BridgeConfig{Video: config.VideoConfig{Codec: config.CodecAuto}}
+	for _, k := range diffBridgeConfig(old, newCfg) {
+		if k == "video.codec" {
+			t.Fatal("\"\" -> \"auto\" reported as a codec change")
+		}
+	}
+}
+```
+
+Then run: `grep -rn "LZ4Enabled" --include=*.go internal cmd tests | grep -v DeltaLZ4Enabled`
+Expected: only the flat legacy `internal/config` `Config.LZ4Enabled` (plus its `defaults()`/`migration.go` uses), the `dataplane.PlaneConfig`/`PipelineMeterView` fields and their users, and the Task 3 shims.
+
+Run: `go vet ./... && go vet -tags=integration ./... && go test ./internal/config ./internal/chassis ./internal/uiserver ./internal/core`
 Expected: PASS.
 
 If you touched `internal/chassis/static/*.js`, also run `node --test internal/chassis/testdata/*.behavior.test.js`. This task shouldn't need to.
@@ -1087,7 +1276,7 @@ func TestInitCompressionByte(t *testing.T) {
 }
 ```
 
-Add to `internal/dataplane/plane_test.go`, next to the tests that call `runPlaneUntilInit(t, cfg PlaneConfig)` (it already merges defaults into `cfg`):
+Append to the same new `internal/dataplane/codec_test.go`. This keeps the task out of the busy `plane_test.go`; `runPlaneUntilInit(t, cfg PlaneConfig)` lives in `plane_test.go` in the same package and already merges defaults into `cfg`:
 
 ```go
 func TestPlane_InitCompressionFollowsCodec(t *testing.T) {
@@ -1232,7 +1421,8 @@ In the `"dataplane session started"` log, replace `"lz4_enabled", p.cfg.LZ4Enabl
 
 6. In `sendField`, replace `if p.cfg.LZ4Enabled {` with `if p.codec == CodecLZ4 {`, and update its doc comment ("if LZ4 is enabled" → "if the codec is LZ4").
 
-7. Run `grep -n "cfg.LZ4Enabled" internal/dataplane/*.go`. Replace every remaining production hit with `p.codec == CodecLZ4`. Log keys named `"lz4_enabled"` become `"codec", string(p.codec)`.
+7. In `holdField` (added by `57d87f0b`), replace `if p.cfg.LZ4Enabled {` with `if p.codec != CodecRaw {`, and update its comment to say "any compressed codec". Both cores misread a dup header whenever compression is on (spec §1.3), and Part 2's NLC needs the same hold.
+8. Run `grep -n "cfg.LZ4Enabled" internal/dataplane/*.go`. Replace every remaining production hit with `p.codec == CodecLZ4`. Log keys named `"lz4_enabled"` become `"codec", string(p.codec)`.
 
 - [ ] **Step 5: Core and chassis**
 
@@ -1265,17 +1455,18 @@ func provisionalCodec(bridge config.BridgeConfig) dataplane.Codec {
 - [ ] **Step 6: Update test references**
 
 Run: `grep -rn "LZ4Enabled" --include=*.go internal cmd tests | grep -v DeltaLZ4Enabled`
-Then:
-- in `dataplane` package tests, `LZ4Enabled: true` becomes `Codec: CodecLZ4`;
-- in integration and core tests, it becomes `Codec: dataplane.CodecLZ4`;
-- in chassis meter tests, `PipelineMeterView{LZ4Enabled: true}` becomes `PipelineMeterView{Codec: "lz4"}`;
-- `LZ4Enabled: false` lines are deleted.
+Task 3 already converted every `config.VideoConfig` literal. The remaining hits are `dataplane.PlaneConfig` and `core.PipelineMeterView` literals:
+- In `PlaneConfig` literals in `dataplane` package tests (including `deltapolicy_test.go`, `deltaresync_test.go`, `hold_test.go`, `lz4mode_test.go`, `plane_test.go`), `LZ4Enabled: true` becomes `Codec: CodecLZ4`. For `PlaneConfig` **only**, delete `LZ4Enabled: false` lines: the `PlaneConfig` zero value `""` is raw.
+- Tests that set the field after construction (`cfg.LZ4Enabled = true`, `p.cfg.LZ4Enabled = ...`) become `cfg.Codec = CodecLZ4`. If such a test builds a bare `&Plane{cfg: ...}` without `NewPlane`, also set `p.codec = CodecLZ4`, because `sendField` and `holdField` read `p.codec`.
+- In `PlaneConfig` literals in `tests/integration` (`plane_test.go:150`, `modeline_ntsc240p_test.go:135`, `modeline_pal288p_test.go:135`, `modeline_pal576i_test.go:135`, `lz4_underrun_test.go:91`), `LZ4Enabled: true` becomes `Codec: dataplane.CodecLZ4`.
+- In `internal/chassis/meter_test.go:36`, `PipelineMeterView{... LZ4Enabled: true ...}` becomes `Codec: "lz4"`.
+- In `internal/core/manager_test.go` near line 627, an assertion on `captured.LZ4Enabled` (if present) becomes `captured.Codec != dataplane.CodecAuto`.
 
 The only remaining hits should be the flat legacy `config.Config.LZ4Enabled` in `internal/config`.
 
 - [ ] **Step 7: Run tests**
 
-Run: `go vet ./... && go test ./internal/dataplane ./internal/core ./internal/chassis ./internal/config`
+Run: `go vet ./... && go vet -tags=integration ./... && go test ./internal/dataplane ./internal/core ./internal/chassis ./internal/config`
 Expected: PASS.
 Run: `go test -tags=integration ./tests/integration/... -run 'Plane|NTSC240p|PAL'`
 Expected: PASS (this needs ffmpeg).
@@ -1300,7 +1491,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>" -- interna
 - Modify: `tests/integration/helper_test.go`, `tests/integration/plane_test.go`, `tests/integration/modeline_ntsc240p_test.go`, `tests/integration/modeline_pal288p_test.go`, `tests/integration/modeline_pal576i_test.go`
 
 **Interfaces:**
-- Consumes: `(*groovynet.Sender).ProbeVersion`, `.LastSend`, `groovy.CoreFromVersion`, `groovy.BuildGetStatus`, `ResolveCodec`, fake-mister `SetCoreVersion`, `SetIdleTimeout`, `Reaps`.
+- Consumes: `(*groovynet.Sender).ProbeVersion`, `.SendIfIdle`, `groovy.CoreFromVersion`, `groovy.BuildGetStatus`, `ResolveCodec`, fake-mister `SetCoreVersion`, `SetIdleTimeout`, `Reaps`.
 - Produces: `PlaneConfig.KeepaliveIdle time.Duration` (0 = 2 s), `echoAdvanced(a groovy.ACK, lastEcho uint32) bool`, `runKeepalive(s keepaliveSender, idle time.Duration, stop <-chan struct{})`, the prebuffer signature `prebuffer(ctx, procDone, videoCh, audioCh, acks <-chan groovy.ACK, onACK func(groovy.ACK), target, timeout)`, and the integration helper `answerInitHandshake(conn *net.UDPConn, status byte) (ok bool)`.
 
 - [ ] **Step 1: Write the failing unit tests**
@@ -1324,18 +1515,17 @@ type recordingSender struct {
 	sent [][]byte
 }
 
-func (r *recordingSender) Send(p []byte) error {
+// SendIfIdle mirrors groovynet.Sender.SendIfIdle: check and write under
+// one lock.
+func (r *recordingSender) SendIfIdle(p []byte, idle time.Duration) (bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if !r.last.IsZero() && time.Since(r.last) < idle {
+		return false, nil
+	}
 	r.sent = append(r.sent, append([]byte(nil), p...))
 	r.last = time.Now()
-	return nil
-}
-
-func (r *recordingSender) LastSend() time.Time {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.last
+	return true, nil
 }
 
 func (r *recordingSender) touch() {
@@ -1562,15 +1752,17 @@ import (
 const defaultKeepaliveIdle = 2 * time.Second
 
 // keepaliveSender is the part of groovynet.Sender the keepalive uses.
+// SendIfIdle checks and writes under the Sender's lock, so a keepalive can
+// never land between a BLIT/AUDIO header and its payload.
 type keepaliveSender interface {
-	Send([]byte) error
-	LastSend() time.Time
+	SendIfIdle(pkt []byte, idle time.Duration) (bool, error)
 }
 
 // runKeepalive sends a 1-byte GET_STATUS whenever nothing has been sent
-// for idle, polling at idle/4, until stop closes. In practice it fires only
-// in the prebuffer (design §1.2): the tick loop sends every field. Both
-// cores answer with a FrameEcho==0 ACK, which echoAdvanced ignores.
+// for idle, polling at idle/4, until stop closes. It fires in the prebuffer
+// (design §1.2), and during LZ4 underrun holds, where holdField sends
+// nothing. Both cores answer with a FrameEcho==0 ACK, which echoAdvanced
+// ignores.
 func runKeepalive(s keepaliveSender, idle time.Duration, stop <-chan struct{}) {
 	poll := idle / 4
 	if poll <= 0 {
@@ -1583,10 +1775,7 @@ func runKeepalive(s keepaliveSender, idle time.Duration, stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-t.C:
-			if time.Since(s.LastSend()) < idle {
-				continue
-			}
-			if err := s.Send(groovy.BuildGetStatus()); err != nil {
+			if _, err := s.SendIfIdle(groovy.BuildGetStatus(), idle); err != nil {
 				slog.Debug("keepalive send failed", "err", err)
 			}
 		}
@@ -1758,7 +1947,7 @@ func answerInitHandshake(conn *net.UDPConn, status byte) bool {
 		answerInitHandshake(l.Conn(), 1<<6)
 ```
 
-keeping each file's original status byte (check whether it sets bit 6).
+keeping each file's original status byte (check whether it sets bit 6). The replaced block was the only user of `encoding/binary` in those four files (`plane_test.go:104-107`, `modeline_*_test.go:90-93`), so delete the `"encoding/binary"` import from each, or the package won't compile. Confirm with `go vet -tags=integration ./tests/integration/...`.
 
 - [ ] **Step 11: Run the integration suite**
 
@@ -1786,11 +1975,11 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>" -- interna
 
 **Interfaces:**
 - Consumes: `(*dataplane.Plane).Core()`, `.EffectiveCodec()`.
-- Produces: `planeRunner.Core() groovy.Core`, `planeRunner.EffectiveCodec() dataplane.Codec`, `PipelineMeterView.MisterCore string`, `StatusHomeView.MisterCore string`, `ReadoutIdleData.Core string` (JSON `core`), `formatCore(core string) string`.
+- Produces: `planeRunner.Core() groovy.Core`, `planeRunner.EffectiveCodec() dataplane.Codec`, `PipelineMeterView.MisterCore string`, `ReadoutIdleData.Core string` (JSON `core`), `formatCore(core string) string`.
 
 - [ ] **Step 1: Write the failing tests**
 
-In `internal/core/manager_test.go`, add a fake that reports a core and codec, then a test:
+In `internal/core/manager_test.go`, add `"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"` to the imports (the file doesn't import it yet), then add a fake that reports a core and codec, and a test:
 
 ```go
 type identityPlane struct {
@@ -1808,8 +1997,8 @@ func TestStatusHomeView_ReportsPlaneCoreAndCodec(t *testing.T) {
 	m.plane = &identityPlane{core: groovy.CoreGroovyNLC, codec: dataplane.CodecRaw}
 	m.mu.Unlock()
 	view := m.StatusHomeView()
-	if view.MisterCore != "groovynlc" || view.Meter.Pipeline.MisterCore != "groovynlc" {
-		t.Fatalf("MisterCore = %q / %q, want groovynlc", view.MisterCore, view.Meter.Pipeline.MisterCore)
+	if view.Meter.Pipeline.MisterCore != "groovynlc" {
+		t.Fatalf("Pipeline.MisterCore = %q, want groovynlc", view.Meter.Pipeline.MisterCore)
 	}
 	if view.Meter.Pipeline.Codec != "raw" {
 		t.Fatalf("Pipeline.Codec = %q, want raw (from the plane)", view.Meter.Pipeline.Codec)
@@ -1845,7 +2034,7 @@ Expected: FAIL (compile errors: `MisterCore` and `formatCore` undefined).
 ```
 
   and add both methods to each fake in `manager_test.go` (`func (f *fakePlane) Core() groovy.Core { return groovy.CoreUnknown }` and `func (f *fakePlane) EffectiveCodec() dataplane.Codec { return "" }`; same for the other fakes). Fakes that embed `fakePlane` inherit them.
-- `types.go`: in `PipelineMeterView` add `MisterCore string // "groovy" | "groovynlc"; empty until the plane has probed`. In `StatusHomeView` add `MisterCore string // detected MiSTer core; empty when idle or not yet probed`.
+- `types.go`: in `PipelineMeterView` add `MisterCore string // "groovy" | "groovynlc"; empty until the plane has probed`. (No separate `StatusHomeView` field: Part 1 surfaces the core through the meter readout and logs only; see the spec §3.5 amendment in Task 7.)
 - `manager.go` `StatusHomeView()`, inside `if m.plane != nil {`, after `linkHealth := m.plane.LinkHealth()`:
 
 ```go
@@ -1853,14 +2042,13 @@ Expected: FAIL (compile errors: `MisterCore` and `formatCore` undefined).
 			view.Meter.Pipeline.Codec = string(codec)
 		}
 		if core := m.plane.Core(); core != groovy.CoreUnknown {
-			view.MisterCore = core.String()
-			view.Meter.Pipeline.MisterCore = view.MisterCore
+			view.Meter.Pipeline.MisterCore = core.String()
 		}
 ```
 
 - [ ] **Step 4: Chassis readout**
 
-- `ReadoutIdleData` (in `data.go` or wherever it is declared): add `Core string`.
+- `ReadoutIdleData` (`internal/chassis/data.go:197`): add `Core string`.
 - `meter.go`, after `base.Readout.Pipe = formatPipe(pipe)`: `base.Readout.Core = formatCore(pipe.MisterCore)`. Add:
 
 ```go
@@ -1883,11 +2071,11 @@ func formatCore(core string) string {
 - `static/meter.js`, after `setText('[data-meter-pipe]', readout.pipe);`:
 
 ```js
-    var pipeEl = document.querySelector('[data-meter-pipe]');
+    const pipeEl = document.querySelector('[data-meter-pipe]');
     if (pipeEl) pipeEl.title = readout.core ? 'MiSTer core: ' + readout.core : '';
 ```
 
-  If `meter.js` wraps this code in a scope that uses a different query helper, use that helper instead.
+  (`meter.js` uses `const`. If `setText` takes a root element rather than `document`, query from that same root.)
 
 - [ ] **Step 5: Run tests**
 
@@ -1934,8 +2122,11 @@ To use GroovyNLC:
 2. Launch GroovyNLC from the MiSTer menu. The UI's "Launch Groovy" button always starts the
    stock core.
 
-While a cast starts up, the bridge sends a status ping every 2 s. This stops GroovyNLC
-v1.1–v1.3 from closing the session during a slow start.
+3. Leave the core's OSD **Volatile framebuffer** option **Off**. GroovyNLC's NLC codec needs it
+   off, and it does no harm with LZ4.
+
+While a cast starts up, or while it waits out a stall, the bridge sends a status ping after
+every 2 s of silence. This stops GroovyNLC v1.1–v1.3 from closing the session.
 
 `bridge.video.codec` controls frame compression:
 
@@ -1957,7 +2148,9 @@ In `## License`, replace "several GPL-3 references (plexdlnaplayer, plex-mpv-shi
 In the spec:
 - §4.5: add "Part 1: the delta switch stays enabled for every codec, and its help text states it only applies to LZ4. Live enable/disable is deferred."
 - §6.4: add "Part 1 implemented the core-detection and prebuffer-keepalive checks as ffmpeg-free `internal/dataplane` tests (`core_session_test.go`) using fake-mister, not in `tests/integration`."
-- §3.5: add "The meter JSON uses the existing camelCase convention: `readout.core`."
+- §3.5: replace the "status snapshot and the SSE status event, as `mister_core` and `video_codec`" bullet with: "Part 1 surfaces the detected core in the plane start log and in the meter (`PipelineMeterView.MisterCore`, and the meter SSE JSON `readout.core`, shown as the pipe readout's tooltip). The effective codec reaches the meter's pipe label through `PipelineMeterView.Codec`. No separate status-snapshot field was added."
+- §3.1: change the signature to `ProbeVersion(timeout) (byte, error)`. Add: "`SendInitAwaitACK` skips non-13-byte datagrams, so a GET_VERSION reply that arrives late cannot fail the handshake."
+- §3.3: replace "records the time of every datagram it sends … sends a 1-byte `GET_STATUS`" with: "The Sender stamps every successful write. The keepalive calls `Sender.SendIfIdle(GET_STATUS, 2s)`, which checks the stamp and writes under the Sender's mutex, so a keepalive can never land between a BLIT/AUDIO header and its payload. Since `57d87f0b`, LZ4 underrun holds send nothing, and the keepalive covers those too."
 
 - [ ] **Step 3: Full verification**
 
