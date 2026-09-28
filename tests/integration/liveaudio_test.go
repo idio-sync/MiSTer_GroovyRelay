@@ -58,7 +58,7 @@ func TestLiveAudioSessionEndToEnd(t *testing.T) {
 			InterlaceFieldOrder: "tff",
 			AspectMode:          "letterbox",
 			RGBMode:             "rgb888",
-			Codec:          config.CodecAuto,
+			Codec:               config.CodecAuto,
 		},
 		Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2},
 		Visualizer: config.VisualizerConfig{Mode: config.VisualizerModeCoverVU},

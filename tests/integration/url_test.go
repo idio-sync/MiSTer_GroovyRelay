@@ -38,7 +38,7 @@ func urlBridgeConfig(t *testing.T) config.BridgeConfig {
 			RGBMode:             "rgb888",
 			InterlaceFieldOrder: "tff",
 			AspectMode:          "letterbox",
-			Codec:          config.CodecRaw,
+			Codec:               config.CodecRaw,
 		},
 		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2},
 	}

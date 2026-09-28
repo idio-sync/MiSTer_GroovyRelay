@@ -138,7 +138,7 @@ func newStreamsHarness(t *testing.T) (*streams.Adapter, *scenarioHarness) {
 			RGBMode:             "rgb888",
 			InterlaceFieldOrder: "tff",
 			AspectMode:          "letterbox",
-			Codec:          config.CodecRaw,
+			Codec:               config.CodecRaw,
 		},
 		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2},
 	}

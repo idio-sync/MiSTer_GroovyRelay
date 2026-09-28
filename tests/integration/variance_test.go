@@ -144,7 +144,7 @@ func TestScenario_PixelVariance(t *testing.T) {
 			InterlaceFieldOrder: "tff",
 			AspectMode:          "letterbox",
 			RGBMode:             "rgb888",
-			Codec:          config.CodecAuto,
+			Codec:               config.CodecAuto,
 		},
 		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2},
 	}

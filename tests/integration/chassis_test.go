@@ -2156,7 +2156,7 @@ func testSettingsBridgeConfig(dataDir string) config.BridgeConfig {
 			InterlaceFieldOrder: "tff",
 			AspectMode:          "auto",
 			RGBMode:             "rgb888",
-			Codec:          config.CodecAuto,
+			Codec:               config.CodecAuto,
 		},
 		Audio:      config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100, DSP: config.DefaultAudioDSP()},
 		Visualizer: config.VisualizerConfig{Mode: config.VisualizerModeRetroAnalyzer},

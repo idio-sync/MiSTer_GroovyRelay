@@ -111,7 +111,7 @@ func TestOSD_OverlayReachesTheWireIntactAndExpires(t *testing.T) {
 			InterlaceFieldOrder: "tff",
 			AspectMode:          "letterbox",
 			RGBMode:             "rgb888",
-			Codec:          config.CodecAuto,
+			Codec:               config.CodecAuto,
 			DeltaLZ4Enabled:     true,
 		},
 		Audio: config.AudioConfig{SampleRate: 48000, Channels: 2, OutputVolume: 100},
