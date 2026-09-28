@@ -1,8 +1,11 @@
 # CRT Picture Calibration (Test Pattern + Adjustment Pad) Design
 
 **Date:** 2026-09-28
-**Status:** Draft. Builds on the picture size/position settings shipped in
-`0713beb8` (`[bridge.video] picture_*`). Not implemented.
+**Status:** Implemented (phases 1–7). Builds on the picture size/position
+settings shipped in `0713beb8` (`[bridge.video] picture_*`). Verified with
+unit, JS behaviour and fake-MiSTer integration tests plus a local UI render;
+not yet verified on a real CRT (preview latency, pattern legibility). See
+**As built** for small departures from this design.
 **Scope:** A **Calibrate on CRT** mode in the settings drawer. It puts a
 geometry test pattern on the CRT and lets the operator adjust picture size
 and position with a service-menu style pad. Each change shows on the tube
@@ -313,6 +316,24 @@ with `node --test`.
 - The existing real-ffmpeg placement test already pins the content side.
 - Hardware (manual): pattern legibility, preview latency, and that Save
   applies to the next real cast.
+
+## As built
+
+Small departures from the design above, all in the direction of simpler:
+
+- `Saver.SavePicture` returns only an error (the scope is always
+  `ScopeRestartCast`), and `POST /ui/calibration/save` answers
+  `200 {ok, calibration}` with the new snapshot instead of `{scope}`. Start
+  answers the same shape.
+- `Snapshot` also carries `rasterWidth` and `fieldLines` for the configured
+  modeline, so the UI diagram draws offsets to scale.
+- `Start` on an ended calibration resumes its unsaved draft, which is what the
+  pad's **Resume on CRT** button does.
+- Holding a D-pad key auto-repeats one step at a time after 400 ms instead of
+  jumping ×4. Shift still multiplies a press by 4.
+- The four `picture_*` settings rows moved into their own **Picture size &
+  position** section. They stay as autosaving fields when not calibrating
+  and are hidden while the pad is open.
 
 ## Phases
 

@@ -7959,3 +7959,166 @@ body.receiver .remote-pad {
     align-self: stretch;
   }
 }
+
+/* ===== Picture calibration pad (Settings → Video & Audio) =====
+   A small service-menu module: mode keys and a D-pad on the left, a CRT
+   diagram of the draft picture on the right. Reuses .panel-key and
+   .action-btn so it reads as part of the same faceplate. */
+body.receiver .calib-note {
+  margin-top: 6px;
+  font: 400 11px/1.4 'Inter', sans-serif;
+  color: #8e8e96;
+}
+body.receiver .calib-pad[hidden],
+body.receiver .calib-fields[hidden],
+body.receiver .calib-note[hidden] {
+  display: none;
+}
+body.receiver .calib-pad {
+  margin: 6px 0 4px;
+  padding: 12px 14px 14px;
+  border: 1px solid oklch(0.22 0.012 80);
+  border-radius: 3px;
+  background: linear-gradient(180deg, #141417 0%, #0e0e10 100%);
+  box-shadow: var(--edge-hi), var(--edge-lo);
+}
+body.receiver .calib-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  margin-bottom: 12px;
+}
+body.receiver .calib-title {
+  font: 700 10px 'Inter', sans-serif;
+  letter-spacing: var(--silk-track-legend);
+  text-transform: uppercase;
+  color: var(--silk);
+}
+body.receiver .calib-title::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: #3a3a3e;
+}
+body.receiver .calib.calibrating .calib-title::before {
+  background: var(--lock-amber);
+  box-shadow: 0 0 6px var(--lock-amber-glow);
+}
+body.receiver .calib-status {
+  font: 400 12px/1.4 'Inter', sans-serif;
+  color: #c4c4ca;
+}
+body.receiver .calib-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 32px;
+}
+body.receiver .calib-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+body.receiver .calib-mode {
+  display: flex;
+  gap: 4px;
+}
+body.receiver .calib-mode .panel-key[aria-pressed="true"] {
+  color: var(--vfd);
+  text-shadow: 0 0 3px var(--vfd-glow-soft);
+}
+body.receiver .calib-dpad {
+  display: grid;
+  grid-template-columns: repeat(3, 38px);
+  grid-template-rows: repeat(3, 38px);
+  grid-template-areas:
+    ". up ."
+    "left centre right"
+    ". down .";
+  gap: 4px;
+}
+body.receiver .calib-dpad .calib-key {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  font-size: 11px;
+  letter-spacing: 0;
+  touch-action: manipulation;
+}
+body.receiver .calib-dpad .calib-up { grid-area: up; }
+body.receiver .calib-dpad .calib-left { grid-area: left; }
+body.receiver .calib-dpad .calib-centre { grid-area: centre; font-size: 8px; letter-spacing: 0.08em; }
+body.receiver .calib-dpad .calib-right { grid-area: right; }
+body.receiver .calib-dpad .calib-down { grid-area: down; }
+body.receiver .calib-pad .panel-key[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+body.receiver .calib-diagram {
+  position: relative;
+  width: 168px;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  background: #050507;
+  border: 1px solid oklch(0.26 0.012 80);
+  border-radius: 8px / 10px;
+  box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.8);
+}
+body.receiver .calib-picture {
+  position: absolute;
+  left: var(--calib-left, 0%);
+  top: var(--calib-top, 0%);
+  width: var(--calib-width, 100%);
+  height: var(--calib-height, 100%);
+  box-sizing: border-box;
+  border: 1px solid var(--vfd);
+  background: oklch(0.85 0.22 175 / 0.08);
+  box-shadow: 0 0 6px var(--vfd-glow-soft);
+  transition: left 120ms ease-out, top 120ms ease-out, width 120ms ease-out, height 120ms ease-out;
+}
+body.receiver .calib-values {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px 24px;
+  margin-top: 14px;
+}
+body.receiver .calib-value {
+  display: grid;
+  grid-template-columns: 70px 5.5rem auto;
+  align-items: center;
+  gap: 6px;
+  font: 500 12px/1.35 'Inter', sans-serif;
+  color: #c4c4ca;
+}
+body.receiver .settings-panel .calib-value .field-input.num {
+  width: 5.5rem;
+}
+body.receiver .calib-hint {
+  margin: 12px 0 0;
+  font: 400 11px/1.4 'Inter', sans-serif;
+  color: #8e8e96;
+}
+body.receiver .calib-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+body.receiver .calib-spacer {
+  flex: 1 1 auto;
+}
+body.receiver .calib-actions .action-btn[hidden] {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  body.receiver .calib-picture {
+    transition: none;
+  }
+}

@@ -44,34 +44,6 @@
         (dict "Value" "off" "Label" "Off"))
       "Error" (errOf .Errors "video_interlace_filter")) }}
     {{ field (dict
-      "Name" "video_picture_h_size" "Type" "number" "Label" "Picture width"
-      "Help" "Shrink the picture if your CRT cuts off the left and right edges."
-      "Value" (ftoa .Bridge.Video.EffectivePictureHSize)
-      "Scope" "recast" "InputWidth" "90px" "Unit" "%"
-      "Min" "80" "Max" "100" "Step" "0.5"
-      "Error" (errOf .Errors "video_picture_h_size")) }}
-    {{ field (dict
-      "Name" "video_picture_v_size" "Type" "number" "Label" "Picture height"
-      "Help" "Shrink the picture if your CRT cuts off the top and bottom edges."
-      "Value" (ftoa .Bridge.Video.EffectivePictureVSize)
-      "Scope" "recast" "InputWidth" "90px" "Unit" "%"
-      "Min" "80" "Max" "100" "Step" "0.5"
-      "Error" (errOf .Errors "video_picture_v_size")) }}
-    {{ field (dict
-      "Name" "video_picture_h_offset" "Type" "number" "Label" "Horizontal position"
-      "Help" "Moves the picture right (+) or left (−) to centre it on your CRT."
-      "Value" (itoa .Bridge.Video.PictureHOffset)
-      "Scope" "recast" "InputWidth" "90px" "Unit" "px"
-      "Min" "-72" "Max" "72" "Step" "1"
-      "Error" (errOf .Errors "video_picture_h_offset")) }}
-    {{ field (dict
-      "Name" "video_picture_v_offset" "Type" "number" "Label" "Vertical position"
-      "Help" "Moves the picture down (+) or up (−) to centre it on your CRT."
-      "Value" (itoa .Bridge.Video.PictureVOffset)
-      "Scope" "recast" "InputWidth" "90px" "Unit" "lines"
-      "Min" "-28" "Max" "28" "Step" "1"
-      "Error" (errOf .Errors "video_picture_v_offset")) }}
-    {{ field (dict
       "Name" "video_lz4_enabled" "Type" "switch" "Label" "LZ4 compression"
       "Help" "Compresses each frame sent to the MiSTer. Strongly recommended."
       "Value" (boolStr .Bridge.Video.LZ4Enabled)
@@ -81,6 +53,83 @@
       "Help" "Sends only what changed between frames when that is smaller than a full LZ4 frame."
       "Value" (boolStr .Bridge.Video.DeltaLZ4Enabled)
       "Scope" "recast") }}
+  </div>
+
+  <div class="settings-section calib" data-calibration>
+    <h4>Picture size &amp; position</h4>
+    <div class="field-row action-field">
+      <label>Calibrate <span class="help">Puts a test pattern on the CRT so you can shrink and centre the picture by eye. Available while nothing is playing.</span></label>
+      <div>
+        <button class="action-btn primary" type="button" data-calib-start>&#9656; Calibrate on CRT</button>
+        <div class="calib-note" data-calib-busy hidden>Stop the current cast to calibrate.</div>
+      </div>
+    </div>
+    <div class="calib-fields" data-calib-fields>
+      {{ field (dict
+        "Name" "video_picture_h_size" "Type" "number" "Label" "Picture width"
+        "Help" "Shrink the picture if your CRT cuts off the left and right edges."
+        "Value" (ftoa .Bridge.Video.EffectivePictureHSize)
+        "Scope" "recast" "InputWidth" "90px" "Unit" "%"
+        "Min" "80" "Max" "100" "Step" "0.5"
+        "Error" (errOf .Errors "video_picture_h_size")) }}
+      {{ field (dict
+        "Name" "video_picture_v_size" "Type" "number" "Label" "Picture height"
+        "Help" "Shrink the picture if your CRT cuts off the top and bottom edges."
+        "Value" (ftoa .Bridge.Video.EffectivePictureVSize)
+        "Scope" "recast" "InputWidth" "90px" "Unit" "%"
+        "Min" "80" "Max" "100" "Step" "0.5"
+        "Error" (errOf .Errors "video_picture_v_size")) }}
+      {{ field (dict
+        "Name" "video_picture_h_offset" "Type" "number" "Label" "Horizontal position"
+        "Help" "Moves the picture right (+) or left (−) to centre it on your CRT."
+        "Value" (itoa .Bridge.Video.PictureHOffset)
+        "Scope" "recast" "InputWidth" "90px" "Unit" "px"
+        "Min" "-72" "Max" "72" "Step" "1"
+        "Error" (errOf .Errors "video_picture_h_offset")) }}
+      {{ field (dict
+        "Name" "video_picture_v_offset" "Type" "number" "Label" "Vertical position"
+        "Help" "Moves the picture down (+) or up (−) to centre it on your CRT."
+        "Value" (itoa .Bridge.Video.PictureVOffset)
+        "Scope" "recast" "InputWidth" "90px" "Unit" "lines"
+        "Min" "-28" "Max" "28" "Step" "1"
+        "Error" (errOf .Errors "video_picture_v_offset")) }}
+    </div>
+    <div class="calib-pad" data-calib-pad role="group" aria-labelledby="calib-pad-title" hidden>
+      <div class="calib-head">
+        <span class="calib-title" id="calib-pad-title">Calibrating</span>
+        <span class="calib-status" data-calib-status role="status" aria-live="polite">Test pattern is on the CRT.</span>
+      </div>
+      <div class="calib-body">
+        <div class="calib-controls">
+          <div class="calib-mode" role="group" aria-label="Adjust">
+            <button class="panel-key" type="button" data-calib-mode="position" aria-pressed="true">Position</button>
+            <button class="panel-key" type="button" data-calib-mode="size" aria-pressed="false">Size</button>
+          </div>
+          <div class="calib-dpad" data-calib-dpad>
+            <button class="panel-key calib-key calib-up" type="button" data-calib-dir="up">&#9650;</button>
+            <button class="panel-key calib-key calib-left" type="button" data-calib-dir="left">&#9664;</button>
+            <button class="panel-key calib-key calib-centre" type="button" data-calib-centre>CTR</button>
+            <button class="panel-key calib-key calib-right" type="button" data-calib-dir="right">&#9654;</button>
+            <button class="panel-key calib-key calib-down" type="button" data-calib-dir="down">&#9660;</button>
+          </div>
+        </div>
+        <div class="calib-diagram" aria-hidden="true"><div class="calib-picture" data-calib-picture></div></div>
+      </div>
+      <div class="calib-values">
+        <label class="calib-value"><span>Width</span><input class="field-input num" type="number" data-calib-value="hSize" min="80" max="100" step="0.5"><span class="field-unit">%</span></label>
+        <label class="calib-value"><span>Height</span><input class="field-input num" type="number" data-calib-value="vSize" min="80" max="100" step="0.5"><span class="field-unit">%</span></label>
+        <label class="calib-value"><span>Horizontal</span><input class="field-input num" type="number" data-calib-value="hOffset" min="-72" max="72" step="1"><span class="field-unit">px</span></label>
+        <label class="calib-value"><span>Vertical</span><input class="field-input num" type="number" data-calib-value="vOffset" min="-28" max="28" step="1"><span class="field-unit">lines</span></label>
+      </div>
+      <p class="calib-hint">Adjust until the white border just shows on all four edges and the circle looks round. Arrow keys work too; hold Shift for bigger steps.</p>
+      <div class="calib-actions">
+        <button class="action-btn ghost" type="button" data-calib-reset>Reset</button>
+        <span class="calib-spacer"></span>
+        <button class="action-btn" type="button" data-calib-resume hidden>&#9656; Resume on CRT</button>
+        <button class="action-btn ghost" type="button" data-calib-cancel>Cancel</button>
+        <button class="action-btn primary" type="button" data-calib-save>Save</button>
+      </div>
+    </div>
   </div>
 
   <div class="settings-section">

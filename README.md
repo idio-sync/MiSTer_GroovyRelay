@@ -108,7 +108,9 @@ Every consumer CRT crops the edges of the picture differently, and some sit off-
 - `picture_h_size` / `picture_v_size` (default `100`, range `80`–`100`) shrink the picture, in percent, until the edges your CRT was cutting off come into view. The freed border is black.
 - `picture_h_offset` (pixels, `-72`–`72`) and `picture_v_offset` (field lines, `-28`–`28`) move the picture right/down (+) or left/up (−).
 
-Changes apply on the next cast; saving restarts the current one. There is no test pattern yet, so line it up against something with detail near the edges, such as a 4:3 show with on-screen text.
+Changes apply on the next cast; saving restarts the current one.
+
+To line the picture up by eye, press **Calibrate on CRT** while nothing is playing. The bridge puts a test pattern on the CRT: a white border on the picture's outer edge, a crosshatch, a centre circle, and the 95% / 90% safe areas. Use the Position and Size keys (or the arrow keys; Shift for bigger steps) until the white border just shows on all four edges and the circle looks round. Each change reaches the CRT in a fraction of a second, without restarting anything. **Save** stores the values; **Cancel** discards them. A cast that starts mid-calibration takes over, and your unsaved values stay in the panel. An untouched calibration ends by itself after 5 minutes.
 
 ## Hardware requirements
 
