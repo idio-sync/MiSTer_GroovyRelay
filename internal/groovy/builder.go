@@ -299,6 +299,9 @@ type BlitOpts struct {
 //	 9 bytes — duplicate-of-previous (no payload follows)
 //	12 bytes — LZ4, full field
 //	13 bytes — LZ4 delta (current - previous, modulo 256)
+//
+// The 8- and 9-byte variants are valid only while INIT has compression off:
+// under LZ4 the core reads either as a compressed blit of size 0.
 func BuildBlitHeader(o BlitOpts) []byte {
 	var length int
 	switch {

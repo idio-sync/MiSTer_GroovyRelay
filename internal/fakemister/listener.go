@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
@@ -32,6 +33,10 @@ type Listener struct {
 	// the sender's drift-correction path exercises realistically."
 	ackOnInit     bool
 	audioReadyBit bool
+
+	// zeroSizeLZ4Blits counts BLIT headers the real core would arm as a
+	// compressed blit of size 0 (see RunWithFields).
+	zeroSizeLZ4Blits atomic.Uint64
 }
 
 // NewListener binds a UDP socket at addr (e.g. ":32100" or ":0" for an
@@ -50,6 +55,13 @@ func NewListener(addr string) (*Listener, error) {
 	}
 	return &Listener{conn: conn}, nil
 }
+
+// ZeroSizeLZ4Blits reports how many BLIT_FIELD_VSYNC headers arrived as the
+// 8-byte RAW or 9-byte duplicate variant while INIT had compression on. The
+// Groovy core reads those as a compressed blit of size 0 (setBlit ignores the
+// dup flag under LZ4), so each one is a corrupted or lost field on real
+// hardware. A healthy LZ4 session keeps this at 0.
+func (l *Listener) ZeroSizeLZ4Blits() uint64 { return l.zeroSizeLZ4Blits.Load() }
 
 // Addr returns the local UDP address the listener is bound to.
 func (l *Listener) Addr() net.Addr { return l.conn.LocalAddr() }
@@ -139,7 +151,15 @@ const (
 	modeCommand payloadMode = iota
 	modeBlit
 	modeAudio
+	// modeZeroLZ4 follows a header the core armed as a compressed blit of
+	// size 0 (see RunWithFields); the next datagram resolves it.
+	modeZeroLZ4
 )
+
+// maxCommandLen is the longest Groovy command datagram (SWITCHRES). The core
+// length-checks every command, so a longer datagram in command mode — a
+// stray payload chunk after a desync — is ignored rather than parsed.
+const maxCommandLen = 26
 
 // RunWithFields is the full listener loop. After a BLIT_FIELD_VSYNC header
 // it reassembles the next N bytes (where N = fieldSizeFn() for RAW, or cSize
@@ -150,6 +170,15 @@ const (
 //
 // fieldSizeFn is invoked only for RAW-full BLIT headers (8-byte variant);
 // LZ4 headers carry their size at [8..11] and dup headers have no payload.
+//
+// Header meaning follows the last INIT, as on the real core: while INIT has
+// compression on, the core (groovy.cpp setBlit / CMD_BLIT_FIELD_VSYNC in
+// both psakhis and the verbst fork) honours the dup flag only when
+// !blitCompression and reads the 8- and 9-byte variants as a compressed blit
+// of size 0. The next datagram then trips its lost-packet check: a short one
+// (<= 26 bytes) is re-read as a command, anything else is swallowed. Such a
+// header is reported on cmds as Compressed with CompressedSize 0, produces no
+// FieldEvent, and is counted by ZeroSizeLZ4Blits.
 func (l *Listener) RunWithFields(
 	cmds chan<- Command,
 	fields chan<- FieldEvent,
@@ -158,9 +187,10 @@ func (l *Listener) RunWithFields(
 ) {
 	buf := make([]byte, groovy.MaxDatagram*2)
 	var (
-		mode       payloadMode
-		reass      *Reassembler
-		blitHeader BlitHeader
+		mode        payloadMode
+		reass       *Reassembler
+		blitHeader  BlitHeader
+		compression bool // blitCompression as set by the last INIT
 	)
 	for {
 		n, src, err := l.conn.ReadFromUDP(buf)
@@ -170,16 +200,47 @@ func (l *Listener) RunWithFields(
 		recvAt := time.Now()
 		data := make([]byte, n)
 		copy(data, buf[:n])
+		if mode == modeZeroLZ4 {
+			mode = modeCommand
+			if n > maxCommandLen {
+				// A full chunk completes the size-0 blit as LZ4 data; any
+				// other long datagram fails the lost-packet check and is
+				// dropped. Either way the payload is lost.
+				continue
+			}
+			// Short datagram: lost-packet abort, then re-read as a command.
+		}
 		switch mode {
 		case modeCommand:
+			if n > maxCommandLen {
+				slog.Debug("fakemister ignoring oversized command datagram", "n", n)
+				continue
+			}
 			cmd, err := ParseCommand(data)
 			if err != nil {
 				slog.Debug("fakemister parse error", "err", err, "n", n)
 				continue
 			}
 			cmd.ReceivedAt = recvAt
-			if l.ackOnInit && cmd.Type == groovy.CmdInit {
-				l.emitInitACK(src)
+			if cmd.Type == groovy.CmdInit {
+				// verbst fork: codecMode = INIT[1] & 3, compression when >= 1.
+				// psakhis: INIT[1] <= 1 ? INIT[1] : 0. Both agree on 0 and 1,
+				// the only values the relay sends.
+				compression = cmd.Init.LZ4Frames&0x3 != 0
+				if l.ackOnInit {
+					l.emitInitACK(src)
+				}
+			}
+			if cmd.Type == groovy.CmdBlitFieldVSync && compression && cmd.Blit != nil && !cmd.Blit.Compressed {
+				l.zeroSizeLZ4Blits.Add(1)
+				slog.Warn("fakemister: RAW/dup BLIT header during an LZ4 session; real core arms a zero-size compressed blit",
+					"frame", cmd.Blit.Frame, "header_len", n)
+				cmd.Blit.Duplicate = false
+				cmd.Blit.Compressed = true
+				cmd.Blit.CompressedSize = 0
+				cmds <- cmd
+				mode = modeZeroLZ4
+				continue
 			}
 			cmds <- cmd
 			switch cmd.Type {

@@ -43,24 +43,24 @@ func TestDeltaResync_SanityDeltaFlowsWithoutEvents(t *testing.T) {
 	}
 }
 
-// A duplicate-field tick (underrun) resyncs both polarities: if the FPGA
-// keys its delta base on its own frame counter rather than the header field
-// bit, a dup would otherwise misalign every following delta.
-func TestDeltaResync_DuplicateForcesFullFieldsForBothPolarities(t *testing.T) {
+// An underrun (hold) tick resyncs both polarities: if the FPGA keys its
+// delta base on its own frame counter rather than the header field bit, a
+// held tick would otherwise misalign every following delta.
+func TestDeltaResync_HoldForcesFullFieldsForBothPolarities(t *testing.T) {
 	p, s, f0, f1 := newDeltaTestPlane(t)
-	p.sendDuplicate(3, 0)
-	p.sendDuplicate(4, 1)
-	p.sendDuplicate(5, 0)
+	p.holdField(3, 0)
+	p.holdField(4, 1)
+	p.holdField(5, 0)
 
 	if _, typ := sendNextAndType(p, s, 6, 1, f1, 1); typ != groovy.BlitHeaderLZ4 {
-		t.Fatalf("field 1 after dup run: type %d, want full LZ4", typ)
+		t.Fatalf("field 1 after hold run: type %d, want full LZ4", typ)
 	}
 	f0, typ := sendNextAndType(p, s, 7, 0, f0, 2)
 	if typ != groovy.BlitHeaderLZ4 {
-		t.Fatalf("field 0 after dup run: type %d, want full LZ4", typ)
+		t.Fatalf("field 0 after hold run: type %d, want full LZ4", typ)
 	}
 	if p.deltaResyncs != 1 {
-		t.Fatalf("delta resyncs = %d, want 1 per dup run", p.deltaResyncs)
+		t.Fatalf("delta resyncs = %d, want 1 per hold run", p.deltaResyncs)
 	}
 	if _, typ := sendNextAndType(p, s, 9, 0, f0, 3); typ != groovy.BlitHeaderLZ4Delta {
 		t.Fatalf("after resync: type %d, want delta to resume", typ)
@@ -123,7 +123,7 @@ func TestDeltaResync_NoopWhenDeltaDisabled(t *testing.T) {
 	t.Setenv("GROOVY_DELTA_LZ4", "0")
 	p := NewPlane(PlaneConfig{LZ4Enabled: true, FieldWidth: 8, FieldHeight: 2, BytesPerPixel: 3})
 	p.fieldSender = &scriptedFieldSender{}
-	p.sendDuplicate(1, 0)
+	p.holdField(1, 0)
 	p.noteEchoAdvance(1, 5, 10)
 	if p.deltaResyncs != 0 {
 		t.Fatalf("delta resyncs = %d with delta disabled, want 0", p.deltaResyncs)

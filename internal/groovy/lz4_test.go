@@ -142,3 +142,57 @@ func TestLZ4CompressInto_IncompressibleReturnsFalse(t *testing.T) {
 		t.Errorf("incompressible input returned ok=true (n=%d)", n)
 	}
 }
+
+// An LZ4-mode session must never fall back to a RAW BLIT (the core arms a
+// zero-size compressed blit for an 8-byte header while LZ4 is on), so the
+// incompressible case needs a valid — merely expanded — LZ4 block.
+func TestLZ4CompressBlockInto_IncompressibleStillDecodes(t *testing.T) {
+	src := make([]byte, 720*240*3)
+	if _, err := rand.Read(src); err != nil {
+		t.Fatal(err)
+	}
+	dst := make([]byte, lz4.CompressBlockBound(len(src)))
+	var c lz4.Compressor
+	n := LZ4CompressBlockInto(&c, dst, src)
+	if n < len(src) {
+		t.Fatalf("random input compressed to %d < %d bytes; test needs incompressible data", n, len(src))
+	}
+	got, err := LZ4Decompress(dst[:n], len(src))
+	if err != nil {
+		t.Fatalf("expanded block does not decode: %v", err)
+	}
+	if !bytes.Equal(got, src) {
+		t.Fatal("expanded block round-trip mismatch")
+	}
+}
+
+func TestLZ4CompressBlockInto_MatchesCompressInto(t *testing.T) {
+	src := make([]byte, 518400)
+	for i := range src {
+		src[i] = byte(i % 97)
+	}
+	dst := make([]byte, lz4.CompressBlockBound(len(src)))
+	var c lz4.Compressor
+	want, ok := LZ4CompressInto(&c, dst, src)
+	if !ok {
+		t.Fatal("compressible input returned ok=false")
+	}
+	wantBytes := append([]byte(nil), dst[:want]...)
+	if n := LZ4CompressBlockInto(&c, dst, src); n != want || !bytes.Equal(dst[:n], wantBytes) {
+		t.Fatalf("LZ4CompressBlockInto = %d bytes, want the LZ4CompressInto block (%d bytes)", n, want)
+	}
+}
+
+func TestLZ4CompressBlockInto_PanicsOnUndersizedDst(t *testing.T) {
+	src := make([]byte, 4096)
+	if _, err := rand.Read(src); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("undersized dst did not panic")
+		}
+	}()
+	var c lz4.Compressor
+	LZ4CompressBlockInto(&c, make([]byte, len(src)), src)
+}

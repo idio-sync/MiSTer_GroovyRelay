@@ -438,7 +438,7 @@ type Plane struct {
 	// also exposes INIT, SWITCHRES, CLOSE, ACK draining). The narrow
 	// interface exists so tests can substitute a scriptedFieldSender
 	// without re-implementing the full groovynet.Sender surface; production
-	// code outside sendField/sendDuplicate/sendAudio uses cfg.Sender
+	// code outside sendField/holdField/sendAudio uses cfg.Sender
 	// directly for handshake and lifecycle packets.
 	fieldSender    fieldSender
 	proc           processHandle
@@ -482,14 +482,14 @@ type Plane struct {
 	// mid-session resolution changes are not supported.
 	framePool    *FramePool
 	fieldScratch []byte // len == cfg.FieldWidth * cfg.FieldHeight * cfg.BytesPerPixel
-	lz4Scratch   []byte // len == lz4.CompressBlockBound(fieldBytes)
+	lz4Scratch   []byte // len == lz4.CompressBlockBound(largest BLIT payload)
 	// lz4Compressor is reused across every BLIT to amortize lz4.Compressor's
 	// ~136 KB inline hash table; a fresh one per call would escape to the
 	// heap. Owned by the tick goroutine; same single-writer discipline as
 	// the scratch slices above. CompressBlock resets the in-use bitmap on
 	// entry, so reuse produces identical output to a fresh Compressor.
 	lz4Compressor lz4.Compressor
-	// headerScratch is shared by sendField and sendDuplicate. Safe because
+	// headerScratch is shared by sendField and holdField. Safe because
 	// they are called from the same goroutine in mutually-exclusive branches
 	// of the tick `select` — never concurrently. Any future change that
 	// invokes either from a different goroutine must add a separate scratch
@@ -514,11 +514,11 @@ type Plane struct {
 	// counters for the stats line. Tick-goroutine owned.
 	deltaLosses      [2]int // consecutive delta losses
 	deltaBackoff     [2]int // remaining fields to skip delta attempts
-	lastFullLZ4Bytes [2]int // last full-LZ4 size; 0 = unknown/incompressible
+	lastFullLZ4Bytes [2]int // last full-LZ4 size; 0 = unknown
 	fullLZ4Attempts  uint64
 	deltaLZ4Attempts uint64
 
-	// deltaResyncs counts forced full-field resyncs after a duplicate run
+	// deltaResyncs counts forced full-field resyncs after a hold run
 	// or an ACK echo gap (see resyncDeltaHistory). lastEchoResyncFrame
 	// rate-limits the echo-gap trigger once echoResyncArmed. Tick-goroutine
 	// owned.
@@ -540,7 +540,7 @@ type Plane struct {
 	// access (which never happens by construction).
 	lastBudgetWarn time.Time
 
-	// LZ4 fallback debug logging is also tick-goroutine owned. Some
+	// Incompressible-field debug logging is also tick-goroutine owned. Some
 	// high-detail scenes can be incompressible for many consecutive fields,
 	// so aggregate the hot-path debug line instead of printing per field.
 	lastLZ4FallbackDebug       time.Time
@@ -565,6 +565,13 @@ func NewPlane(cfg PlaneConfig) *Plane {
 	videoHeight := cfg.resolveVideoHeight()
 	frameBytes := cfg.FieldWidth * videoHeight * cfg.BytesPerPixel
 	fieldBytes := cfg.FieldWidth * cfg.FieldHeight * cfg.BytesPerPixel
+	// Largest BLIT payload: one field when interlaced, the whole frame when
+	// progressive. lz4Scratch must hold the CompressBlockBound of it, since
+	// an LZ4 session sends even an incompressible payload as LZ4.
+	payloadBytes := fieldBytes
+	if !cfg.Modeline.Interlaced() && frameBytes > payloadBytes {
+		payloadBytes = frameBytes
+	}
 	fieldDiagEnabled := envFieldDiagnostics()
 	deltaLZ4Requested := resolveDeltaLZ4Enabled(cfg.DeltaLZ4Enabled)
 	deltaLZ4Enabled := cfg.LZ4Enabled && deltaLZ4Requested
@@ -583,7 +590,7 @@ func NewPlane(cfg PlaneConfig) *Plane {
 		done:             make(chan struct{}),
 		framePool:        NewFramePool(framePoolSlots, frameBytes),
 		fieldScratch:     make([]byte, fieldBytes),
-		lz4Scratch:       make([]byte, lz4.CompressBlockBound(fieldBytes)),
+		lz4Scratch:       make([]byte, lz4.CompressBlockBound(payloadBytes)),
 		headerScratch:    make([]byte, groovy.BlitHeaderLZ4Delta),
 		deltaLZ4Enabled:  deltaLZ4Enabled,
 		fieldDiagEnabled: fieldDiagEnabled,
@@ -999,7 +1006,7 @@ func (p *Plane) Run(ctx context.Context) error {
 		return fmt.Errorf("video pipe closed during prebuffer")
 	}
 	// "timeout" or "" — proceed to the tick loop. On timeout, the tick
-	// loop's existing underrun → sendDuplicate path covers the gap until
+	// loop's existing underrun → holdField path covers the gap until
 	// ffmpeg catches up, so the prebuffer can never deadlock playback.
 
 	fieldPeriod := fieldPeriodFromModeline(p.cfg.Modeline)
@@ -1271,12 +1278,12 @@ func (p *Plane) Run(ctx context.Context) error {
 				consecutiveUnderruns++
 				p.underruns.Add(1)
 				if consecutiveUnderruns == 30 || consecutiveUnderruns%120 == 0 {
-					slog.Warn("video pipe underrun; duplicating fields to hold raster",
+					slog.Warn("video pipe underrun; holding last field on raster",
 						"fields", consecutiveUnderruns,
 						"duration_ms", time.Since(consecutiveUnderrunFrom).Milliseconds(),
 						"audio_ready", p.audioReady.Load())
 				}
-				p.sendDuplicate(frameNum, emitField)
+				p.holdField(frameNum, emitField)
 				statWindow.duplicates++
 				sessionTotalDuplicates++
 			}
@@ -1491,12 +1498,13 @@ func (p *Plane) stampOSD(payload []byte, now time.Time) {
 // afterwards so the next call can honor the reference ~11 ms wait after any
 // >500 KB blit.
 //
-// Compression policy: if LZ4 is enabled AND the field is compressible
-// (LZ4CompressInto returns ok=true), the LZ4 BLIT variant is emitted.
-// Otherwise — either LZ4 is disabled in config, OR the field is
-// incompressible — a RAW BLIT variant is emitted with the uncompressed
-// bytes. Emitting an LZ4 header with CompressedSize=0 would desync the
-// receiver.
+// Compression policy: with LZ4 enabled every field goes out as an LZ4 BLIT,
+// even an incompressible one (as a slightly expanded block). INIT turned
+// compression on, and from then on the Groovy core reads every
+// BLIT_FIELD_VSYNC header as compressed: an 8-byte RAW header arms a
+// compressed blit of size 0 and the RAW payload that follows is fed to the
+// LZ4 decoder (groovy.cpp setBlit). With LZ4 disabled the RAW variant is
+// emitted.
 func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats {
 	fieldStart := time.Now()
 	stats := fieldSendStats{rawBytes: len(raw)}
@@ -1516,8 +1524,9 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats 
 			if choice.delta {
 				p.deltaSelectedTotal++
 			}
-		} else {
-			p.logLZ4RawFallback(len(raw), time.Now())
+			if choice.expanded && !choice.delta {
+				p.logLZ4Incompressible(len(raw), time.Now())
+			}
 		}
 		stats.lz4 = time.Since(t)
 	}
@@ -1622,6 +1631,7 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats 
 type fieldPayloadChoice struct {
 	payload           []byte
 	compressed        bool // payload is LZ4 (full or delta); false = RAW
+	expanded          bool // full LZ4 block no smaller than the raw field
 	delta             bool
 	fullLZ4Bytes      int // this field's full-LZ4 size, or the remembered one when fullSkipped
 	fullSkipped       bool
@@ -1657,8 +1667,9 @@ func shouldUseDeltaLZ4(fullBytes, deltaBytes int) bool {
 
 // compressField picks the LZ4 payload for one field: full LZ4, or (delta-LZ4
 // enabled, same-polarity history available, no forced resync due) delta LZ4
-// when it is under 95% of the full size. RAW (compressed=false) when the
-// full field is incompressible.
+// when it is under 95% of the full size. The result is always compressed: an
+// incompressible field yields an expanded full block (see sendField for why
+// an LZ4 session can never fall back to RAW).
 //
 // Each compression costs ~1.5-2.5 ms per 720x240 field on a laptop and
 // several times that on Atom-class hosts, so the policy only computes the
@@ -1707,15 +1718,12 @@ func (p *Plane) compressField(field uint8, raw []byte) fieldPayloadChoice {
 	}
 
 	p.fullLZ4Attempts++
-	n, ok := groovy.LZ4CompressInto(&p.lz4Compressor, p.lz4Scratch, raw)
-	if !ok {
-		p.lastFullLZ4Bytes[slot] = 0
-		return choice
-	}
+	n := groovy.LZ4CompressBlockInto(&p.lz4Compressor, p.lz4Scratch, raw)
 	p.lastFullLZ4Bytes[slot] = n
 	choice.fullLZ4Bytes = n
 	choice.payload = p.lz4Scratch[:n]
 	choice.compressed = true
+	choice.expanded = n >= len(raw)
 
 	if tryDelta && !deltaDone {
 		p.compressDeltaInto(&choice, slot, raw)
@@ -1922,7 +1930,7 @@ func datagramChunks(n int) int {
 	return (n + groovy.MaxDatagram - 1) / groovy.MaxDatagram
 }
 
-func (p *Plane) logLZ4RawFallback(size int, now time.Time) {
+func (p *Plane) logLZ4Incompressible(size int, now time.Time) {
 	if !p.lastLZ4FallbackDebug.IsZero() && now.Sub(p.lastLZ4FallbackDebug) < lz4FallbackDebugInterval {
 		p.lz4FallbackDebugSuppressed++
 		return
@@ -1933,21 +1941,35 @@ func (p *Plane) logLZ4RawFallback(size int, now time.Time) {
 		attrs = append(attrs, "suppressed_fields", p.lz4FallbackDebugSuppressed)
 		p.lz4FallbackDebugSuppressed = 0
 	}
-	slog.Debug("lz4 incompressible frame; falling back to RAW BLIT", attrs...)
+	slog.Debug("lz4 incompressible field; sending expanded LZ4 block", attrs...)
 	p.lastLZ4FallbackDebug = now
 }
 
-// sendDuplicate emits a 9-byte dup-BLIT header with no payload. Used on pipe
-// under-run to hold the raster: the FPGA re-scans the last field, and our
-// frame counter still advances so timing doesn't drift. MarkBlitSent(0)
-// resets the congestion window so the next real field isn't delayed.
+// holdField holds the raster on an underrun tick. The caller has already
+// advanced frameNum, so the next real field still carries a newer frame
+// number than anything the FPGA has; meanwhile the FPGA re-scans its last
+// field. MarkBlitSent(0) resets the congestion window so the next real field
+// isn't delayed.
 //
-// With delta-LZ4 on, a dup run also forces a full-field resync: if the FPGA
-// keys its delta base on its own frame counter rather than the header field
-// bit (unverified), a dup would misalign every following delta. Cheap
-// insurance — underruns are rare and cost two full fields.
-func (p *Plane) sendDuplicate(frame uint32, field uint8) {
+// Only a codec with a header-only duplicate sends anything. The RAW codec
+// has one: a 9-byte dup header. A compressed session (LZ4 today) has none —
+// the Groovy core honours the dup flag only while INIT has compression off
+// and otherwise arms a compressed blit of size 0, which trips its
+// lost-packet abort on the next datagram (groovy.cpp setBlit and
+// CMD_BLIT_FIELD_VSYNC, psakhis 109908c and verbst e60f52a). There the hold
+// sends nothing: to the core a silent tick is indistinguishable from a
+// dropped blit, which it already rides out by scanning the last field.
+//
+// With delta-LZ4 on, a hold run also forces a full-field resync. A silent
+// tick leaves the receiver's buffers untouched, but the next ACK echo skips
+// a frame and noteEchoAdvance would resync anyway; doing it here keeps the
+// count deterministic. Underruns are rare and cost two full fields.
+func (p *Plane) holdField(frame uint32, field uint8) {
 	p.resyncDeltaHistory()
+	if p.cfg.LZ4Enabled {
+		p.fieldSender.MarkBlitSent(0)
+		return
+	}
 	opts := groovy.BlitOpts{Frame: frame, Field: field, Duplicate: true}
 	header := groovy.BuildBlitHeaderInto(p.headerScratch, opts)
 	if err := p.fieldSender.Send(header); err != nil {
@@ -2031,7 +2053,7 @@ func scalePCMVolumeInPlace(pcm []byte, volume int) {
 //     return a startup error and release captured frames.
 //   - "video_pipe_eof" — videoCh closed mid-wait; same as ffmpeg_exit.
 //   - "timeout" — hard timeout fired with partial buffer; caller
-//     proceeds to the tick loop, which will sendDuplicate until ffmpeg
+//     proceeds to the tick loop, which will holdField until ffmpeg
 //     catches up. The captured frames (if any) still feed the loop.
 //
 // audioCh may be nil (the production state when audio is disabled). Go's
@@ -2090,7 +2112,7 @@ func (p *Plane) prebuffer(
 // Return modes:
 //   - fb!=nil, ok=true, closed=false: real frame; caller must Put it.
 //   - fb=nil, ok=false, closed=false: underrun (channel empty);
-//     caller should sendDuplicate.
+//     caller should holdField.
 //   - fb=nil, ok=false, closed=true: videoCh closed; caller must
 //     exit Run.
 func pullVideoFrame(prebuf *[]*FrameBuf, ch <-chan *FrameBuf) (fb *FrameBuf, ok, closed bool) {
@@ -2200,7 +2222,7 @@ func envAudioDelayFields(ml groovy.Modeline) int {
 // envPrebufferTimeout returns the maximum wall-clock time prebuffer
 // will wait. Tunable via GROOVY_PREBUFFER_TIMEOUT_MS. On timeout the
 // tick loop starts with whatever frames were captured and the existing
-// underrun→sendDuplicate path takes over.
+// underrun→holdField path takes over.
 func envPrebufferTimeout() time.Duration {
 	ms := defaultPrebufferTimeoutMs
 	if v := os.Getenv("GROOVY_PREBUFFER_TIMEOUT_MS"); v != "" {

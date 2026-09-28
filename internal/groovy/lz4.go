@@ -9,9 +9,10 @@ import (
 // LZ4Compress compresses src using the LZ4 block format (NOT frame format).
 // Returns the compressed bytes and ok=true when compression reduced the size.
 // Returns (nil, false) when CompressBlock reports the input as incompressible
-// (n == 0) or when the output would be no smaller than the input. Callers
-// emit the RAW BLIT header variant in the ok=false case — never an LZ4 header
-// with zero-length payload (the receiver cannot decode that).
+// (n == 0) or when the output would be no smaller than the input. Never emit
+// an LZ4 header with a zero-length payload (the receiver cannot decode it),
+// and never fall back to a RAW header while INIT has compression on — use
+// LZ4CompressBlockInto for a block that is always sendable.
 //
 // A genuine lz4 library error still panics: the library only errors on
 // programmer mistakes (e.g. dst too small), and the dst sizing below is
@@ -65,4 +66,22 @@ func LZ4CompressInto(c *lz4.Compressor, dst, src []byte) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// LZ4CompressBlockInto compresses src into dst and always returns a valid
+// LZ4 block: when src is incompressible the block is slightly larger than
+// src (literal runs), never absent. Use it where the wire already promised
+// LZ4 — while INIT has compression on, the Groovy core reads every
+// BLIT_FIELD_VSYNC as a compressed blit, so a RAW fallback is not an option.
+// dst MUST have len >= lz4.CompressBlockBound(len(src)); the library
+// guarantees a non-empty block at that size, and anything smaller panics.
+func LZ4CompressBlockInto(c *lz4.Compressor, dst, src []byte) int {
+	if bound := lz4.CompressBlockBound(len(src)); len(dst) < bound {
+		panic(fmt.Errorf("lz4 compress: dst %d bytes < CompressBlockBound %d", len(dst), bound))
+	}
+	n, err := c.CompressBlock(src, dst)
+	if err != nil || n == 0 {
+		panic(fmt.Errorf("lz4 compress (bound-sized dst): n=%d err=%v", n, err))
+	}
+	return n
 }
