@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1862,18 +1863,54 @@ func TestHandleEvents_LiveAudioEmitsAtCadence(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
-	w := newFlushRecorder()
+	w := &audioStampRecorder{flushRecorder: newFlushRecorder()}
 	req := httptest.NewRequest(http.MethodGet, "/ui/events", nil).WithContext(ctx)
 	go func() {
 		time.Sleep(1 * time.Second)
 		cancel()
 	}()
 	s.handleEvents(w, req)
-	total := strings.Count(w.Body.String(), "event: audio\n")
-	tickCount := total - 1
-	if tickCount < 29 || tickCount > 31 {
-		t.Errorf("audio tick count over 1 s = %d (total=%d), want 30 ± 1", tickCount, total)
+
+	// A tick count over a fixed window is not stable: even idle, tick 30
+	// races the cancel at 1 s, and a runner stall (-race on shared CI)
+	// drops a tick outright. The median gap between audio events pins
+	// the 30 Hz ticker — versus the chassis diff tick — and shrugs off a
+	// late or dropped tick.
+	stamps := w.audioStamps()
+	if len(stamps) < 20 {
+		t.Fatalf("audio events over 1 s = %d, want ~30 (one per 30 Hz tick while live)", len(stamps))
 	}
+	gaps := make([]time.Duration, 0, len(stamps)-1)
+	for i := 1; i < len(stamps); i++ {
+		gaps = append(gaps, stamps[i].Sub(stamps[i-1]))
+	}
+	slices.Sort(gaps)
+	if median := gaps[len(gaps)/2]; median < 25*time.Millisecond || median > 45*time.Millisecond {
+		t.Errorf("median audio event gap = %v over %d events, want ~%v (%d Hz)", median, len(stamps), time.Second/audioEventHz, audioEventHz)
+	}
+}
+
+// audioStampRecorder records when each `audio` SSE event is written.
+// emit writes every event in one call, so the prefix check sees each.
+type audioStampRecorder struct {
+	*flushRecorder
+	stampMu sync.Mutex
+	stamps  []time.Time
+}
+
+func (a *audioStampRecorder) Write(b []byte) (int, error) {
+	if bytes.HasPrefix(b, []byte("event: audio\n")) {
+		a.stampMu.Lock()
+		a.stamps = append(a.stamps, time.Now())
+		a.stampMu.Unlock()
+	}
+	return a.flushRecorder.Write(b)
+}
+
+func (a *audioStampRecorder) audioStamps() []time.Time {
+	a.stampMu.Lock()
+	defer a.stampMu.Unlock()
+	return slices.Clone(a.stamps)
 }
 
 func TestHandleEvents_PendingSuppressedAtCadence(t *testing.T) {
