@@ -33,7 +33,7 @@ func TestMeterSamplerFormatsLiveLowRateFields(t *testing.T) {
 			Pipeline: core.PipelineMeterView{
 				ModelineName: "NTSC_480i", OutputWidth: 720, OutputHeight: 480, FieldHeight: 240,
 				FieldRateHz: 59.94, HorizontalKHz: 15.734, InterlacedOutput: true, Standard: "ntsc",
-				FieldOrder: "tff", RGBMode: "bt601", LZ4Enabled: true, DeltaLZ4Enabled: true,
+				FieldOrder: "tff", RGBMode: "bt601", Codec: "lz4", DeltaLZ4Enabled: true,
 				AudioSampleRate: 48000, AudioChannels: 2,
 			},
 			Runtime: core.RuntimeMeterView{

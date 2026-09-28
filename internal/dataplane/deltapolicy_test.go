@@ -15,7 +15,7 @@ func newPolicyPlane(t *testing.T) (*Plane, *scriptedFieldSender) {
 	t.Setenv("GROOVY_DELTA_LZ4", "1")
 	sender := &scriptedFieldSender{}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,

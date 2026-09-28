@@ -65,7 +65,7 @@ func TestNewPlane_PreservesConfig(t *testing.T) {
 		FieldHeight:   240,
 		BytesPerPixel: 3,
 		RGBMode:       groovy.RGBMode888,
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		AudioRate:     48000,
 		AudioChans:    2,
 		SeekOffsetMs:  12345,
@@ -95,7 +95,7 @@ func TestSendField_IncompressibleUnderLZ4SendsExpandedLZ4Block(t *testing.T) {
 	t.Setenv("GROOVY_DELTA_LZ4", "0")
 	sender := &scriptedFieldSender{}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -149,7 +149,7 @@ func TestSendField_DoesNotEmitDeltaLZ4ByDefault(t *testing.T) {
 	const fieldBytes = 720 * 240 * 3
 	sender := &scriptedFieldSender{}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -197,7 +197,7 @@ func TestSendField_AdaptiveDeltaOptInEmitsDeltaWhenUseful(t *testing.T) {
 	const fieldBytes = 720 * 240 * 3
 	sender := &scriptedFieldSender{}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -241,7 +241,7 @@ func TestSendField_DeltaEnabledForcesPeriodicFullLZ4Resync(t *testing.T) {
 	const fieldBytes = 720 * 240 * 3
 	sender := &scriptedFieldSender{}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -282,7 +282,6 @@ func TestSendField_DeltaEnvWithLZ4DisabledSendsRaw(t *testing.T) {
 	const fieldBytes = 720 * 240 * 3
 	sender := &scriptedFieldSender{}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    false,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -304,7 +303,7 @@ func TestSendField_ReturnsDetailedTelemetry(t *testing.T) {
 	const fieldBytes = 720 * 240 * 3
 	sender := &scriptedFieldSender{}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -398,7 +397,7 @@ func TestSendField_DoesNotRememberHistoryWhenSendFails(t *testing.T) {
 	const fieldBytes = 720 * 240 * 3
 	sender := &scriptedFieldSender{failPayloadSend: 1}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -434,7 +433,7 @@ func TestSendField_PayloadSendFailureInvalidatesDeltaHistory(t *testing.T) {
 	const fieldBytes = 720 * 240 * 3
 	sender := &scriptedFieldSender{failPayloadSend: 3}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -474,7 +473,7 @@ func TestPlane_TornPayloadSendsCountsMidFieldAborts(t *testing.T) {
 	const fieldBytes = 720 * 240 * 3
 	sender := &scriptedFieldSender{failPayloadSend: 1}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -506,7 +505,7 @@ func TestSendAudio_PayloadSendFailureInvalidatesDeltaHistory(t *testing.T) {
 	const fieldBytes = 720 * 240 * 3
 	sender := &scriptedFieldSender{failPayloadSend: 2}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -592,7 +591,7 @@ func TestSendField_FieldDiagnosticsLogsDeltaComparisonWhenEnabled(t *testing.T) 
 
 	p := NewPlane(PlaneConfig{
 		Sender:        sender,
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -638,7 +637,7 @@ func TestSendField_DeltaEnabledSlowWarningLogsSelectionFields(t *testing.T) {
 	const fieldBytes = 720 * 240 * 3
 	sender := &scriptedFieldSender{congestionDelay: time.Millisecond}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -697,7 +696,7 @@ func TestSendField_DeltaEnabledSlowWarningLogsUnavailableDelta(t *testing.T) {
 	const fieldBytes = 720 * 240 * 3
 	sender := &scriptedFieldSender{congestionDelay: time.Millisecond}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -750,7 +749,7 @@ func TestShouldUseDeltaLZ4_UsesStrictNinetyFivePercentThreshold(t *testing.T) {
 
 func TestFieldHistoryInvalidatesOnLengthMismatch(t *testing.T) {
 	t.Setenv("GROOVY_DELTA_LZ4", "1")
-	p := NewPlane(PlaneConfig{LZ4Enabled: true, FieldWidth: 4, FieldHeight: 1, BytesPerPixel: 1, RGBMode: groovy.RGBMode888})
+	p := NewPlane(PlaneConfig{Codec: CodecLZ4, FieldWidth: 4, FieldHeight: 1, BytesPerPixel: 1, RGBMode: groovy.RGBMode888})
 	raw := []byte{1, 2, 3, 4}
 	p.rememberFieldHistory(0, raw)
 	if !p.hasFieldHistory(0, raw) {
@@ -802,7 +801,7 @@ func TestFieldHistoryInvalidatesOnIdentityMismatch(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("GROOVY_DELTA_LZ4", "1")
-			p := NewPlane(PlaneConfig{LZ4Enabled: true, FieldWidth: 4, FieldHeight: 1, BytesPerPixel: 1, RGBMode: groovy.RGBMode888})
+			p := NewPlane(PlaneConfig{Codec: CodecLZ4, FieldWidth: 4, FieldHeight: 1, BytesPerPixel: 1, RGBMode: groovy.RGBMode888})
 			raw := []byte{1, 2, 3, 4}
 			p.rememberFieldHistory(0, raw)
 			if !p.hasFieldHistory(0, raw) {
@@ -895,7 +894,7 @@ func TestNewPlane_AllocatesFieldHistoryOnlyWhenNeeded(t *testing.T) {
 	t.Setenv("GROOVY_FIELD_DIAG", "")
 
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:      true,
+		Codec:           CodecLZ4,
 		DeltaLZ4Enabled: false,
 		FieldWidth:      720,
 		FieldHeight:     240,
@@ -907,7 +906,7 @@ func TestNewPlane_AllocatesFieldHistoryOnlyWhenNeeded(t *testing.T) {
 	}
 
 	p = NewPlane(PlaneConfig{
-		LZ4Enabled:      true,
+		Codec:           CodecLZ4,
 		DeltaLZ4Enabled: true,
 		FieldWidth:      720,
 		FieldHeight:     240,
@@ -934,7 +933,7 @@ func TestNewPlane_DeltaEnvOverridesConfig(t *testing.T) {
 	t.Run("explicit-off-disables-config", func(t *testing.T) {
 		t.Setenv("GROOVY_DELTA_LZ4", "0")
 		p := NewPlane(PlaneConfig{
-			LZ4Enabled:      true,
+			Codec:           CodecLZ4,
 			DeltaLZ4Enabled: true,
 			FieldWidth:      720,
 			FieldHeight:     240,
@@ -948,7 +947,7 @@ func TestNewPlane_DeltaEnvOverridesConfig(t *testing.T) {
 	t.Run("explicit-on-enables-config", func(t *testing.T) {
 		t.Setenv("GROOVY_DELTA_LZ4", "1")
 		p := NewPlane(PlaneConfig{
-			LZ4Enabled:      true,
+			Codec:           CodecLZ4,
 			DeltaLZ4Enabled: false,
 			FieldWidth:      720,
 			FieldHeight:     240,
@@ -969,7 +968,6 @@ func TestNewPlane_DeltaEnvDoesNotEnableWhenLZ4Disabled(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    false,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -980,7 +978,7 @@ func TestNewPlane_DeltaEnvDoesNotEnableWhenLZ4Disabled(t *testing.T) {
 	if strings.Contains(logBuf.String(), "adaptive delta-LZ4 enabled") {
 		t.Fatalf("delta-LZ4 logged as enabled with LZ4 disabled\n%s", logBuf.String())
 	}
-	if !strings.Contains(logBuf.String(), "adaptive delta-LZ4 requested but LZ4 disabled") {
+	if !strings.Contains(logBuf.String(), "adaptive delta-LZ4 requested but codec is not LZ4") {
 		t.Fatalf("missing disabled-by-LZ4 log\n%s", logBuf.String())
 	}
 }
@@ -2332,7 +2330,7 @@ func TestPlane_AllocationBudget(t *testing.T) {
 	defer func() { spawnProcess = origSpawn }()
 
 	// Build the Plane. NTSC480i60 + 720x240/field BGR24 mirrors the
-	// integration test's real-ffmpeg shape; LZ4Enabled=true exercises
+	// integration test's real-ffmpeg shape; Codec: CodecLZ4 exercises
 	// the full LZ4CompressInto + BuildBlitHeaderInto hot path. Audio
 	// is disabled so the test focuses on the video tick loop, which is
 	// what Tasks 1–12 actually optimized.
@@ -2349,7 +2347,7 @@ func TestPlane_AllocationBudget(t *testing.T) {
 		FieldHeight:   240,
 		BytesPerPixel: 3,
 		RGBMode:       groovy.RGBMode888,
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		AudioRate:     0, // belt & braces: effectiveAudioConfig disables audio
 		AudioChans:    0,
 	})
@@ -2431,7 +2429,7 @@ func TestPlane_LinkHealth_ReportsTornPayloadSends(t *testing.T) {
 	const fieldBytes = 720 * 240 * 3
 	sender := &scriptedFieldSender{failPayloadSend: 1}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,

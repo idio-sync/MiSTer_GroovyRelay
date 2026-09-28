@@ -337,7 +337,7 @@ type PipelineMeterView struct {
 	Standard            string
 	FieldOrder          string
 	RGBMode             string
-	LZ4Enabled          bool
+	Codec               string // effective codec: "raw" | "lz4"
 	DeltaLZ4Enabled     bool
 	AudioSampleRate     int
 	AudioChannels       int

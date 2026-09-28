@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 )
@@ -54,7 +55,7 @@ func buildMeterHomeView(req SessionRequest, probe *ffmpeg.ProbeResult, crop *ffm
 			Standard:            standardForModeline(preset.Name),
 			FieldOrder:          bridge.Video.InterlaceFieldOrder,
 			RGBMode:             rgbMode,
-			LZ4Enabled:          bridge.Video.EffectiveCodec() != config.CodecRaw,
+			Codec:               string(provisionalCodec(bridge)),
 			DeltaLZ4Enabled:     bridge.Video.DeltaLZ4Enabled,
 			AudioSampleRate:     audioRate,
 			AudioChannels:       audioChans,
@@ -62,6 +63,13 @@ func buildMeterHomeView(req SessionRequest, probe *ffmpeg.ProbeResult, crop *ffm
 			EffectiveAspectMode: aspectMode,
 		},
 	}
+}
+
+// provisionalCodec is the codec a session will use before the core probe
+// can refine it. In Part 1 the core never changes the answer (§4.2).
+func provisionalCodec(bridge config.BridgeConfig) dataplane.Codec {
+	c, _ := dataplane.ResolveCodec(dataplane.Codec(bridge.Video.EffectiveCodec()), groovy.CoreUnknown)
+	return c
 }
 
 func horizontalKHz(m groovy.Modeline) float64 {

@@ -406,9 +406,9 @@ func formatOutput(pipe core.PipelineMeterView) string {
 func formatPipe(pipe core.PipelineMeterView) string {
 	codec := "RAW"
 	switch {
-	case pipe.LZ4Enabled && pipe.DeltaLZ4Enabled:
+	case pipe.Codec == "lz4" && pipe.DeltaLZ4Enabled:
 		codec = "LZ4+D"
-	case pipe.LZ4Enabled:
+	case pipe.Codec == "lz4":
 		codec = "LZ4"
 	}
 	order := strings.ToUpper(pipe.FieldOrder)

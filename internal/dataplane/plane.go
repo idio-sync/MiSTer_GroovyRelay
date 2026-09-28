@@ -327,8 +327,8 @@ type PlaneConfig struct {
 	FieldWidth          int             // hActive
 	FieldHeight         int             // per-field vActive (e.g. 240 for 480i)
 	BytesPerPixel       int
-	RGBMode             byte // groovy.RGBMode888 etc.
-	LZ4Enabled          bool
+	RGBMode             byte  // groovy.RGBMode888 etc.
+	Codec               Codec // configured codec; "" = raw. Resolved per session by ResolveCodec.
 	DeltaLZ4Enabled     bool
 	AudioRate           int // Go-side integer (48000)
 	AudioChans          int // 2 for stereo
@@ -496,6 +496,14 @@ type Plane struct {
 	// buffer or a copy.
 	headerScratch []byte // len == groovy.BlitHeaderLZ4Delta
 
+	// codec is the session's effective codec. It is provisional from
+	// NewPlane (resolved against CoreUnknown) and final once Run has
+	// probed the core. Tick-goroutine owned; effCodec and core publish
+	// it for cross-goroutine readers.
+	codec    Codec
+	effCodec atomic.Value  // Codec
+	core     atomic.Uint32 // groovy.Core
+
 	// Optional delta/diagnostic state. Owned by the tick goroutine. Allocated
 	// only when delta-LZ4 or GROOVY_FIELD_DIAG is enabled so the default
 	// hot path keeps the existing buffer profile.
@@ -573,13 +581,14 @@ func NewPlane(cfg PlaneConfig) *Plane {
 		payloadBytes = frameBytes
 	}
 	fieldDiagEnabled := envFieldDiagnostics()
+	codec, _ := ResolveCodec(cfg.Codec, groovy.CoreUnknown)
 	deltaLZ4Requested := resolveDeltaLZ4Enabled(cfg.DeltaLZ4Enabled)
-	deltaLZ4Enabled := cfg.LZ4Enabled && deltaLZ4Requested
+	deltaLZ4Enabled := codec == CodecLZ4 && deltaLZ4Requested
 	if deltaLZ4Enabled {
 		slog.Info("adaptive delta-LZ4 enabled",
 			"env", deltaLZ4Env)
-	} else if deltaLZ4Requested && !cfg.LZ4Enabled {
-		slog.Info("adaptive delta-LZ4 requested but LZ4 disabled",
+	} else if deltaLZ4Requested && codec != CodecLZ4 {
+		slog.Info("adaptive delta-LZ4 requested but codec is not LZ4",
 			"env", deltaLZ4Env)
 	}
 	fieldHistoryEnabled := fieldDiagEnabled || deltaLZ4Enabled
@@ -592,9 +601,11 @@ func NewPlane(cfg PlaneConfig) *Plane {
 		fieldScratch:     make([]byte, fieldBytes),
 		lz4Scratch:       make([]byte, lz4.CompressBlockBound(payloadBytes)),
 		headerScratch:    make([]byte, groovy.BlitHeaderLZ4Delta),
+		codec:            codec,
 		deltaLZ4Enabled:  deltaLZ4Enabled,
 		fieldDiagEnabled: fieldDiagEnabled,
 	}
+	p.effCodec.Store(codec)
 	p.outputVolume.Store(int32(clampOutputVolume(cfg.OutputVolume)))
 	p.initAudioDSP()
 	if fieldHistoryEnabled {
@@ -857,6 +868,17 @@ func fieldPeriodFromModeline(ml groovy.Modeline) time.Duration {
 // Done returns a channel closed when Run exits (EOF, ctx cancel, or error).
 func (p *Plane) Done() <-chan struct{} { return p.done }
 
+// EffectiveCodec returns the session's codec: provisional until Run has
+// probed the core, then final. Safe for concurrent use.
+func (p *Plane) EffectiveCodec() Codec {
+	c, _ := p.effCodec.Load().(Codec)
+	return c
+}
+
+// Core returns the MiSTer core detected by Run's GET_VERSION probe, or
+// groovy.CoreUnknown before the probe. Safe for concurrent use.
+func (p *Plane) Core() groovy.Core { return groovy.Core(p.core.Load()) }
+
 // Run is the orchestration spine. Blocks until ctx is cancelled, the FFmpeg
 // child exits, or the video pipe closes. Returns ctx.Err() on cancellation
 // and nil on a clean EOF; propagates spawn / handshake errors directly.
@@ -886,11 +908,7 @@ func (p *Plane) Run(ctx context.Context) error {
 	//    Drainer goroutine starts reading from the socket — otherwise it
 	//    swallows the ACK.
 	soundRate := rateCodeForHz(audioRate)
-	lz4Mode := groovy.LZ4ModeOff
-	if p.cfg.LZ4Enabled {
-		lz4Mode = groovy.LZ4ModeDefault
-	}
-	initPkt := groovy.BuildInit(lz4Mode, soundRate, byte(audioChans), p.cfg.RGBMode)
+	initPkt := groovy.BuildInit(initCompressionByte(p.codec), soundRate, byte(audioChans), p.cfg.RGBMode)
 	// 3 attempts × 60 ms: INIT is the one ACK-gated exchange, and a single
 	// lost datagram on a busy host should not fail the whole session.
 	// SendInitAwaitACK flushes stale ACKs from the shared socket before
@@ -912,7 +930,7 @@ func (p *Plane) Run(ctx context.Context) error {
 	// against what was actually configured.
 	sessionStart := time.Now()
 	slog.Info("dataplane session started",
-		"lz4_enabled", p.cfg.LZ4Enabled,
+		"codec", string(p.codec),
 		"rgb_mode", p.cfg.RGBMode,
 		"audio_rate", audioRate,
 		"audio_chans", audioChans,
@@ -1498,7 +1516,7 @@ func (p *Plane) stampOSD(payload []byte, now time.Time) {
 // afterwards so the next call can honor the reference ~11 ms wait after any
 // >500 KB blit.
 //
-// Compression policy: with LZ4 enabled every field goes out as an LZ4 BLIT,
+// Compression policy: if the codec is LZ4 every field goes out as an LZ4 BLIT,
 // even an incompressible one (as a slightly expanded block). INIT turned
 // compression on, and from then on the Groovy core reads every
 // BLIT_FIELD_VSYNC header as compressed: an 8-byte RAW header arms a
@@ -1512,7 +1530,7 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats 
 	opts := groovy.BlitOpts{Frame: frame, Field: field}
 	payload := raw
 	choice := fieldPayloadChoice{payload: raw}
-	if p.cfg.LZ4Enabled {
+	if p.codec == CodecLZ4 {
 		t := time.Now()
 		if choice = p.compressField(field, raw); choice.compressed {
 			payload = choice.payload
@@ -1581,7 +1599,7 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats 
 			"send_ms", stats.send.Milliseconds(),
 			"raw_bytes", stats.rawBytes,
 			"compressed_bytes", stats.compressedBytes,
-			"lz4_enabled", p.cfg.LZ4Enabled,
+			"codec", string(p.codec),
 		}
 		if p.deltaLZ4Enabled {
 			deltaSavingsBytes := 0
@@ -1952,7 +1970,7 @@ func (p *Plane) logLZ4Incompressible(size int, now time.Time) {
 // isn't delayed.
 //
 // Only a codec with a header-only duplicate sends anything. The RAW codec
-// has one: a 9-byte dup header. A compressed session (LZ4 today) has none —
+// has one: a 9-byte dup header. Any compressed codec (LZ4 today) has none —
 // the Groovy core honours the dup flag only while INIT has compression off
 // and otherwise arms a compressed blit of size 0, which trips its
 // lost-packet abort on the next datagram (groovy.cpp setBlit and
@@ -1966,7 +1984,7 @@ func (p *Plane) logLZ4Incompressible(size int, now time.Time) {
 // count deterministic. Underruns are rare and cost two full fields.
 func (p *Plane) holdField(frame uint32, field uint8) {
 	p.resyncDeltaHistory()
-	if p.cfg.LZ4Enabled {
+	if p.codec != CodecRaw {
 		p.fieldSender.MarkBlitSent(0)
 		return
 	}

@@ -147,7 +147,7 @@ func TestPlane_StreamsFieldsToFake(t *testing.T) {
 		FieldHeight:   240,
 		BytesPerPixel: 3,
 		RGBMode:       groovy.RGBMode888,
-		LZ4Enabled:    true,
+		Codec:         dataplane.CodecLZ4,
 		AudioRate:     48000,
 		AudioChans:    2,
 	})

@@ -132,7 +132,7 @@ func TestModeline_PAL576i(t *testing.T) {
 		FieldHeight:   groovy.PAL576i50.FieldHeight(),
 		BytesPerPixel: 3,
 		RGBMode:       groovy.RGBMode888,
-		LZ4Enabled:    true,
+		Codec:         dataplane.CodecLZ4,
 		AudioRate:     48000,
 		AudioChans:    2,
 	})

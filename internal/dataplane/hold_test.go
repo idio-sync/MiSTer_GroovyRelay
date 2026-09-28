@@ -18,7 +18,7 @@ import (
 // FPGA keeps scanning its last field and the frame counter still advances.
 func TestHoldField_LZ4SendsNothing(t *testing.T) {
 	sender := &scriptedFieldSender{}
-	p := NewPlane(PlaneConfig{LZ4Enabled: true, FieldWidth: 8, FieldHeight: 2, BytesPerPixel: 3})
+	p := NewPlane(PlaneConfig{Codec: CodecLZ4, FieldWidth: 8, FieldHeight: 2, BytesPerPixel: 3})
 	p.fieldSender = sender
 	p.holdField(3, 0)
 	p.holdField(4, 1)
@@ -99,7 +99,7 @@ func TestPlane_LZ4UnderrunKeepsFieldsDecodable(t *testing.T) {
 		FieldHeight:   h,
 		BytesPerPixel: bpp,
 		RGBMode:       groovy.RGBMode888,
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	runErr := make(chan error, 1)
@@ -142,7 +142,7 @@ func TestPlane_LZ4UnderrunKeepsFieldsDecodable(t *testing.T) {
 func TestSendField_ProgressiveIncompressibleFrameFitsScratch(t *testing.T) {
 	sender := &scriptedFieldSender{}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		Modeline:      groovy.NTSC240p60,
 		FieldWidth:    64,
 		FieldHeight:   8,

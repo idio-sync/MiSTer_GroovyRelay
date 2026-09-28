@@ -14,7 +14,7 @@ func newDeltaTestPlane(t *testing.T) (*Plane, *scriptedFieldSender, []byte, []by
 	const fieldBytes = 720 * 240 * 3
 	sender := &scriptedFieldSender{}
 	p := NewPlane(PlaneConfig{
-		LZ4Enabled:    true,
+		Codec:         CodecLZ4,
 		FieldWidth:    720,
 		FieldHeight:   240,
 		BytesPerPixel: 3,
@@ -121,7 +121,7 @@ func TestDeltaResync_EchoGapResyncsAreRateLimited(t *testing.T) {
 
 func TestDeltaResync_NoopWhenDeltaDisabled(t *testing.T) {
 	t.Setenv("GROOVY_DELTA_LZ4", "0")
-	p := NewPlane(PlaneConfig{LZ4Enabled: true, FieldWidth: 8, FieldHeight: 2, BytesPerPixel: 3})
+	p := NewPlane(PlaneConfig{Codec: CodecLZ4, FieldWidth: 8, FieldHeight: 2, BytesPerPixel: 3})
 	p.fieldSender = &scriptedFieldSender{}
 	p.holdField(1, 0)
 	p.noteEchoAdvance(1, 5, 10)
