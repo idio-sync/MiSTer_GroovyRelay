@@ -244,11 +244,6 @@ func TestBuildFilterChain_AutoCropUsesLockedRect(t *testing.T) {
 }
 
 func TestEscapeFilterText(t *testing.T) {
-	// Inside drawtext `text='...'`: filtergraph's single-quoted zone is
-	// literal, so `,`, `;`, `[`, `]` pass through untouched. `'` must be
-	// escaped for the filtergraph parser, while `:`, `\`, and `%` must be
-	// escaped for drawtext's option parser / post-extraction expansion.
-	// `'` uses the close-escape-reopen idiom `'\''`.
 	in := "Bob's [12\"]: 50%, line\nnext\\tail;end"
 	got := escapeFilterText(in)
 	for _, bad := range []string{"\n", "\r", "\t"} {
@@ -256,15 +251,89 @@ func TestEscapeFilterText(t *testing.T) {
 			t.Fatalf("escaped text contains control character %q: %q", bad, got)
 		}
 	}
-	for _, want := range []string{`Bob'\''s`, `[12"]`, `\:`, `,`, `\%`, `\\tail`, `;`} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("escaped text missing %q: %q", want, got)
+}
+
+// ffmpegGetToken mirrors libavutil's av_get_token, which both the
+// filtergraph parser and a filter's option parser use: a backslash
+// escapes the next byte, a single-quoted run is copied literally with
+// its quotes dropped, and an unquoted byte from term ends the token.
+func ffmpegGetToken(s, term string) (tok, rest string) {
+	var b strings.Builder
+	i := 0
+	for i < len(s) && !strings.ContainsRune(term, rune(s[i])) {
+		c := s[i]
+		i++
+		switch {
+		case c == '\\' && i < len(s):
+			b.WriteByte(s[i])
+			i++
+		case c == '\'':
+			for i < len(s) && s[i] != '\'' {
+				b.WriteByte(s[i])
+				i++
+			}
+			if i < len(s) {
+				i++
+			}
+		default:
+			b.WriteByte(c)
 		}
 	}
-	// Regression: the previous implementation produced `\'` for `'`,
-	// which is malformed inside single-quoted filtergraph values.
-	if strings.Contains(got, `\'`) && !strings.Contains(got, `'\''`) {
-		t.Fatalf("escaped text uses broken `\\'` for apostrophe: %q", got)
+	return b.String(), s[i:]
+}
+
+// drawtextExpandLiteral mirrors drawtext's text expansion for text with
+// no %{...} functions: a backslash escapes the next byte and any other
+// `%` is FFmpeg's "Stray %" error.
+func drawtextExpandLiteral(s string) (string, error) {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '\\' && i+1 < len(s):
+			i++
+			b.WriteByte(s[i])
+		case s[i] == '%':
+			return "", fmt.Errorf("stray %% near %q", s[i+1:])
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String(), nil
+}
+
+// TestEscapeFilterText_SurvivesFFmpegParseLayers runs escaped text through
+// the three layers a drawtext `text='...'` value crosses — filtergraph,
+// the filter's option parser, drawtext expansion — and requires the
+// original text back with the following option still intact.
+func TestEscapeFilterText_SurvivesFFmpegParseLayers(t *testing.T) {
+	for _, in := range []string{
+		`Don't Stop Believin'`,
+		`An Album Name: Long Enough For 25% Back\Slash Contained Marquee`,
+		`100%`,
+		`\`,
+		`''`,
+		`a:b\:c\\d%%e`,
+		`[x], y; z`,
+	} {
+		args := fmt.Sprintf("text='%s':fontsize=18", escapeFilterText(in))
+		graphArgs, rest := ffmpegGetToken(args, "[],;")
+		if rest != "" {
+			t.Errorf("%q: filtergraph args ended early; unparsed %q", in, rest)
+			continue
+		}
+		value, rest := ffmpegGetToken(strings.TrimPrefix(graphArgs, "text="), ":")
+		if rest != ":fontsize=18" {
+			t.Errorf("%q: text value swallowed the next option; rest after text = %q", in, rest)
+			continue
+		}
+		got, err := drawtextExpandLiteral(value)
+		if err != nil {
+			t.Errorf("%q: drawtext expansion: %v (option value %q)", in, err, value)
+			continue
+		}
+		if got != in {
+			t.Errorf("%q: rendered as %q (option value %q)", in, got, value)
+		}
 	}
 }
 
@@ -292,8 +361,10 @@ func TestBuildVisualizerFilterChain_ApostropheInTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildVisualizerFilterChain: %v", err)
 	}
-	if !strings.Contains(graph, `text='DON'\''T STOP BELIEVIN'\'''`) {
-		t.Fatalf("apostrophes not escaped via close-reopen idiom:\n%s", graph)
+	// `\'` for drawtext's option parser, wrapped in the filtergraph's
+	// close-escape-reopen idiom `'\''`.
+	if !strings.Contains(graph, `text='DON\'\''T STOP BELIEVIN\'\'''`) {
+		t.Fatalf("apostrophes not escaped for both filtergraph and option parser:\n%s", graph)
 	}
 	if !strings.Contains(graph, `text='LIVE\: 1999'`) {
 		t.Fatalf("metadata colon not escaped for drawtext option parsing:\n%s", graph)
@@ -722,8 +793,14 @@ func TestBuildVisualizerFilterChain_MarqueeGraphSmokeWithFFmpeg(t *testing.T) {
 				"-f", "null",
 				"-",
 			)
-			if out, err := cmd.CombinedOutput(); err != nil {
+			out, err := cmd.CombinedOutput()
+			if err != nil {
 				t.Fatalf("ffmpeg marquee graph smoke failed with %q: %v (context err: %v)\n%s\ngraph:\n%s", ffmpegPath, err, runCtx.Err(), string(out), graph)
+			}
+			// Some FFmpeg builds log a drawtext expansion error and still
+			// exit 0 with blank text; others fail the graph.
+			if strings.Contains(string(out), "[Parsed_drawtext") {
+				t.Fatalf("ffmpeg %q logged a drawtext error:\n%s\ngraph:\n%s", ffmpegPath, string(out), graph)
 			}
 		})
 	}

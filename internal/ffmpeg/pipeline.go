@@ -359,16 +359,18 @@ func escapeFilterPathFor(goos, p string) string {
 }
 
 // escapeFilterText escapes user-supplied metadata for inclusion inside a
-// drawtext `text='...'` value. FFmpeg's filtergraph parser treats the
-// single-quoted region as literal (backslash escapes are NOT processed
-// inside it), so the only character that needs special handling at the
-// filtergraph layer is `'` itself, which must close the quote, emit an
-// escaped apostrophe, and reopen with `'`, `\`, `'`, `'`. After the filtergraph parser
-// hands the extracted value to drawtext, drawtext runs its own `%{...}`
-// expansion and consumes backslash escapes, so `:`, `%`, and `\` must be
-// escaped as `\:`, `\%`, and `\\` to render literally. Bracket / comma /
-// semicolon are filtergraph metacharacters but are inert inside single
-// quotes, so they pass through unchanged.
+// drawtext `text='...'` value, which crosses three parsers in turn:
+//
+//  1. The filtergraph parser copies the single-quoted region literally and
+//     drops the quotes, so `'` must close the quote, emit `\'`, and reopen:
+//     `'\''`. Bracket / comma / semicolon are inert inside the quotes.
+//  2. drawtext's option parser then consumes backslash escapes, ends the
+//     value at `:`, and treats a bare `'` as a quote, so `\`, `:`, and `'`
+//     each need a backslash here.
+//  3. drawtext's text expansion consumes backslash escapes again and reads
+//     `%` as the start of `%{...}`, so `\` and `%` need one more.
+//
+// Hence `\` → `\\\\`, `%` → `\\%`, `:` → `\:`, and `'` → `\'\''`.
 func escapeFilterText(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -376,13 +378,13 @@ func escapeFilterText(s string) string {
 		case '\r', '\n', '\t':
 			b.WriteByte(' ')
 		case '\'':
-			b.WriteString(`'\''`)
+			b.WriteString(`\'\''`)
 		case '\\':
-			b.WriteString(`\\`)
+			b.WriteString(`\\\\`)
 		case ':':
 			b.WriteString(`\:`)
 		case '%':
-			b.WriteString(`\%`)
+			b.WriteString(`\\%`)
 		default:
 			if r < 0x20 {
 				b.WriteByte(' ')
