@@ -442,6 +442,59 @@ func TestHandleSettingsBridgePost_MultipleFieldErrors(t *testing.T) {
 	}
 }
 
+func TestHandleSettingsBridgePost_NLCFieldsSaveTogether(t *testing.T) {
+	t.Parallel()
+	var got config.BridgeConfig
+	saver := fakeBridgeSettingsSaver{
+		saveFn: func(c config.BridgeConfig) (adapters.ApplyScope, error) {
+			got = c
+			return adapters.ScopeRestartCast, nil
+		},
+	}
+	srv := newTestServerWithSaver(t, saver)
+	rec := postBridge(t, srv, url.Values{
+		"video_codec":    {"nlc"},
+		"video_nlc_near": {"2"},
+		"video_nlc_pack": {"rice"},
+	})
+	if rec.Code != 200 {
+		t.Fatalf("Code = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if got.Video.Codec != "nlc" {
+		t.Errorf("Video.Codec = %q, want nlc", got.Video.Codec)
+	}
+	if got.Video.NLCNear != 2 {
+		t.Errorf("Video.NLCNear = %d, want 2", got.Video.NLCNear)
+	}
+	if got.Video.NLCPack != "rice" {
+		t.Errorf("Video.NLCPack = %q, want rice", got.Video.NLCPack)
+	}
+}
+
+func TestHandleSettingsBridgePost_NLCNearOutOfRangeRejected(t *testing.T) {
+	t.Parallel()
+	saver := fakeBridgeSettingsSaver{
+		saveFn: func(_ config.BridgeConfig) (adapters.ApplyScope, error) {
+			t.Fatalf("saver must not be called on field-validation error")
+			return 0, nil
+		},
+	}
+	srv := newTestServerWithSaver(t, saver)
+	rec := postBridge(t, srv, url.Values{"video_nlc_near": {"4"}})
+	if rec.Code != 400 {
+		t.Fatalf("Code = %d, want 400", rec.Code)
+	}
+	var body map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	errs, ok := body["errors"].(map[string]any)
+	if !ok {
+		t.Fatalf("errors not present in body: %s", rec.Body.String())
+	}
+	if _, ok := errs["video_nlc_near"]; !ok {
+		t.Errorf("missing video_nlc_near error")
+	}
+}
+
 func TestHandleSettingsBridgePost_EmptyBodyReturns400BadInput(t *testing.T) {
 	t.Parallel()
 	srv := newTestServerWithSaver(t, fakeBridgeSettingsSaver{})

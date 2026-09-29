@@ -8,6 +8,13 @@ const (
 	CodecAuto = "auto" // bridge picks per core; LZ4 today (§4.2)
 	CodecRaw  = "raw"
 	CodecLZ4  = "lz4"
+	CodecNLC  = "nlc" // GroovyNLC near-lossless codec; falls back to LZ4 on the original core
+)
+
+// NLC entropy packing modes for bridge.video.nlc_pack. See design §1.4.
+const (
+	NLCPackTiled = "tiled" // default; safe on any GroovyNLC build
+	NLCPackRice  = "rice"  // needs a Rice-capable GroovyNLC build
 )
 
 // EffectiveCodec resolves an unset Codec to CodecAuto.
@@ -16,6 +23,14 @@ func (v VideoConfig) EffectiveCodec() string {
 		return CodecAuto
 	}
 	return v.Codec
+}
+
+// EffectiveNLCPack resolves an unset NLCPack to NLCPackTiled.
+func (v VideoConfig) EffectiveNLCPack() string {
+	if v.NLCPack == "" {
+		return NLCPackTiled
+	}
+	return v.NLCPack
 }
 
 // codecFromLegacyLZ4 maps the pre-codec lz4_enabled boolean.

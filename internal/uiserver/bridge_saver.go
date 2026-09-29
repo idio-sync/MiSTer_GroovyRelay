@@ -527,6 +527,12 @@ func diffBridgeConfig(oldCfg, newCfg config.BridgeConfig) []string {
 	if oldCfg.Video.EffectiveCodec() != newCfg.Video.EffectiveCodec() {
 		keys = append(keys, "video.codec")
 	}
+	if oldCfg.Video.NLCNear != newCfg.Video.NLCNear {
+		keys = append(keys, "video.nlc_near")
+	}
+	if oldCfg.Video.EffectiveNLCPack() != newCfg.Video.EffectiveNLCPack() {
+		keys = append(keys, "video.nlc_pack")
+	}
 	if oldCfg.Video.DeltaLZ4Enabled != newCfg.Video.DeltaLZ4Enabled {
 		keys = append(keys, "video.delta_lz4_enabled")
 	}
@@ -650,6 +656,8 @@ func scopeForBridgeField(key string) adapters.ApplyScope {
 		"video.picture_v_offset",
 		"video.rgb_mode",
 		"video.codec",
+		"video.nlc_near",
+		"video.nlc_pack",
 		"video.delta_lz4_enabled",
 		"audio.sample_rate",
 		"audio.channels",

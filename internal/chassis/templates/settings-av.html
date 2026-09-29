@@ -45,14 +45,35 @@
       "Error" (errOf .Errors "video_interlace_filter")) }}
     {{ field (dict
       "Name" "video_codec" "Type" "select" "Label" "Compression"
-      "Help" "How each frame is packed for the MiSTer. Auto picks the best codec the connected core supports (LZ4 today)."
+      "Help" "How each frame is packed for the MiSTer. Auto uses LZ4 today. NLC needs the GroovyNLC core and falls back to LZ4 on the original core."
       "Value" .Bridge.Video.EffectiveCodec
       "Scope" "recast"
       "Options" (options
         (dict "Value" "auto" "Label" "Auto (recommended)")
         (dict "Value" "lz4" "Label" "LZ4")
-        (dict "Value" "raw" "Label" "Raw (uncompressed)"))
+        (dict "Value" "raw" "Label" "Raw (uncompressed)")
+        (dict "Value" "nlc" "Label" "NLC (GroovyNLC core only)"))
       "Error" (errOf .Errors "video_codec")) }}
+    {{ field (dict
+      "Name" "video_nlc_near" "Type" "select" "Label" "NLC quality"
+      "Help" "Only used when compression is NLC. Higher levels use less bandwidth but alter the picture slightly."
+      "Value" (itoa .Bridge.Video.NLCNear)
+      "Scope" "recast"
+      "Options" (options
+        (dict "Value" "0" "Label" "Lossless (0)")
+        (dict "Value" "1" "Label" "Near-lossless 1")
+        (dict "Value" "2" "Label" "Near-lossless 2")
+        (dict "Value" "3" "Label" "Near-lossless 3"))
+      "Error" (errOf .Errors "video_nlc_near")) }}
+    {{ field (dict
+      "Name" "video_nlc_pack" "Type" "select" "Label" "NLC packing"
+      "Help" "Only used when compression is NLC."
+      "Value" .Bridge.Video.EffectiveNLCPack
+      "Scope" "recast"
+      "Options" (options
+        (dict "Value" "tiled" "Label" "Tiled (recommended)")
+        (dict "Value" "rice" "Label" "Rice (needs a Rice-capable GroovyNLC build)"))
+      "Error" (errOf .Errors "video_nlc_pack")) }}
     {{ field (dict
       "Name" "video_delta_lz4_enabled" "Type" "switch" "Label" "Delta-LZ4"
       "Help" "Sends only what changed between frames when that is smaller than a full LZ4 frame. Applies only when compression is Auto or LZ4."

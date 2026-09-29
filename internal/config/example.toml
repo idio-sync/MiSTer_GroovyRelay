@@ -13,7 +13,9 @@ modeline = "NTSC_480i"            # NTSC_480i, NTSC_240p, PAL_576i (experimental
 interlace_field_order = "bff"     # "tff" | "bff" — flip if you see shimmer on CRT
 aspect_mode = "auto"              # "letterbox" | "zoom" | "auto"
 rgb_mode = "rgb888"               # v1: rgb888 only (rgba8888 / rgb565 reserved for v2+)
-codec = "auto"                    # "auto" | "raw" | "lz4" — frame compression; auto = LZ4 today (recommended)
+codec = "auto"                    # "auto" | "raw" | "lz4" | "nlc" — frame compression; auto = LZ4 today (recommended); nlc (GroovyNLC core only; falls back to LZ4 on the original core)
+nlc_near = 0                      # 0..3 — GroovyNLC only: 0 = lossless, higher = smaller but lossy
+nlc_pack = "tiled"                # "tiled" | "rice" — GroovyNLC only; rice needs a Rice-capable GroovyNLC build
 delta_lz4_enabled = true          # Adaptive delta-LZ4 BLITs (recommended; LZ4 only)
 interlace_filter = "light"        # "off" | "light" | "full" — vertical low-pass against interlace flicker (interlaced modes only)
 picture_h_size = 100              # 80..100 — shrink the picture if your CRT cuts off the left/right edges (percent)

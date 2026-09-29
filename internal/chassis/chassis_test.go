@@ -4478,6 +4478,8 @@ func TestSettingsAVAndMisterTemplates_RenderAllFields(t *testing.T) {
 		`name="video_picture_h_offset" value="0" min="-72" max="72" step="1"`,
 		`name="video_picture_v_offset" value="0" min="-28" max="28" step="1"`,
 		`name="video_codec"`, // select renders name=, not data-field=
+		`name="video_nlc_near"`,
+		`name="video_nlc_pack"`,
 		`data-field="video_delta_lz4_enabled"`,
 		`name="audio_sample_rate"`,
 		`name="audio_channels"`,

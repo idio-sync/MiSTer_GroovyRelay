@@ -7,9 +7,17 @@ import (
 )
 
 func TestEffectiveCodec(t *testing.T) {
-	for in, want := range map[string]string{"": "auto", "auto": "auto", "raw": "raw", "lz4": "lz4"} {
+	for in, want := range map[string]string{"": "auto", "auto": "auto", "raw": "raw", "lz4": "lz4", "nlc": "nlc"} {
 		if got := (VideoConfig{Codec: in}).EffectiveCodec(); got != want {
 			t.Errorf("EffectiveCodec(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestEffectiveNLCPack(t *testing.T) {
+	for in, want := range map[string]string{"": "tiled", "tiled": "tiled", "rice": "rice"} {
+		if got := (VideoConfig{NLCPack: in}).EffectiveNLCPack(); got != want {
+			t.Errorf("EffectiveNLCPack(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -49,7 +57,7 @@ func TestSectionedLoad_LegacyLZ4Migrates(t *testing.T) {
 func TestSectionedValidate_RejectsUnknownCodec(t *testing.T) {
 	s := &Sectioned{Bridge: defaultBridge()}
 	s.Bridge.MiSTer.Host = "10.0.0.2"
-	s.Bridge.Video.Codec = "nlc" // not valid until Part 2
+	s.Bridge.Video.Codec = "bogus"
 	err := s.Validate()
 	if err == nil || !strings.Contains(err.Error(), "bridge.video.codec") {
 		t.Fatalf("Validate() = %v, want bridge.video.codec error", err)
@@ -57,6 +65,60 @@ func TestSectionedValidate_RejectsUnknownCodec(t *testing.T) {
 	s.Bridge.Video.Codec = ""
 	if err := s.Validate(); err != nil {
 		t.Fatalf("empty codec should validate as auto: %v", err)
+	}
+}
+
+func TestSectionedValidate_AcceptsNLCCodec(t *testing.T) {
+	s := &Sectioned{Bridge: defaultBridge()}
+	s.Bridge.MiSTer.Host = "10.0.0.2"
+	s.Bridge.Video.Codec = "nlc"
+	if err := s.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nlc codec to be accepted", err)
+	}
+}
+
+func TestSectionedValidate_RejectsBadNLCNear(t *testing.T) {
+	for _, bad := range []int{4, -1} {
+		s := &Sectioned{Bridge: defaultBridge()}
+		s.Bridge.MiSTer.Host = "10.0.0.2"
+		s.Bridge.Video.NLCNear = bad
+		err := s.Validate()
+		if err == nil || !strings.Contains(err.Error(), "bridge.video.nlc_near") {
+			t.Errorf("NLCNear=%d: Validate() = %v, want bridge.video.nlc_near error", bad, err)
+		}
+	}
+}
+
+func TestSectionedValidate_RejectsBadNLCPack(t *testing.T) {
+	s := &Sectioned{Bridge: defaultBridge()}
+	s.Bridge.MiSTer.Host = "10.0.0.2"
+	s.Bridge.Video.NLCPack = "global"
+	err := s.Validate()
+	if err == nil || !strings.Contains(err.Error(), "bridge.video.nlc_pack") {
+		t.Fatalf("Validate() = %v, want bridge.video.nlc_pack error", err)
+	}
+}
+
+func TestSectionedLoad_NLCFieldsRoundTrip(t *testing.T) {
+	v := loadVideo(t, "codec = \"nlc\"\nnlc_near = 2\nnlc_pack = \"rice\"\n")
+	if v.Codec != "nlc" {
+		t.Errorf("Codec = %q, want nlc", v.Codec)
+	}
+	if v.NLCNear != 2 {
+		t.Errorf("NLCNear = %d, want 2", v.NLCNear)
+	}
+	if v.NLCPack != "rice" {
+		t.Errorf("NLCPack = %q, want rice", v.NLCPack)
+	}
+}
+
+func TestDefaultBridge_NLCDefaults(t *testing.T) {
+	b := defaultBridge()
+	if b.Video.NLCNear != 0 {
+		t.Errorf("default NLCNear = %d, want 0", b.Video.NLCNear)
+	}
+	if b.Video.NLCPack != NLCPackTiled {
+		t.Errorf("default NLCPack = %q, want %q", b.Video.NLCPack, NLCPackTiled)
 	}
 }
 

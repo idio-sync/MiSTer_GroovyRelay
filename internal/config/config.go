@@ -179,7 +179,14 @@ type VideoConfig struct {
 	RGBMode             string `toml:"rgb_mode"`
 	// Codec selects frame compression: "auto" (default), "raw" or "lz4".
 	// Empty means auto; see EffectiveCodec.
-	Codec           string `toml:"codec"`
+	Codec string `toml:"codec"`
+	// NLCNear is GroovyNLC's near-lossless level, 0 (lossless) to 3. Only used
+	// when the codec resolves to NLC.
+	NLCNear int `toml:"nlc_near"`
+	// NLCPack is the NLC entropy packing: "tiled" (default) or "rice". Rice
+	// needs a GroovyNLC rbf built with Rice support, which the bridge cannot
+	// detect (design §1.4), so tiled is the safe default.
+	NLCPack         string `toml:"nlc_pack"`
 	DeltaLZ4Enabled bool   `toml:"delta_lz4_enabled"` // only used when the codec resolves to LZ4
 	// LegacyLZ4Enabled reads the pre-codec lz4_enabled key for
 	// migrateVideoCodec. It is always nil after load, so saves omit it.
@@ -396,9 +403,17 @@ func (s *Sectioned) Validate() error {
 		return fmt.Errorf("bridge.video.interlace_filter must be off, light, or full, got %q", b.Video.InterlaceFilter)
 	}
 	switch b.Video.Codec {
-	case "", CodecAuto, CodecRaw, CodecLZ4:
+	case "", CodecAuto, CodecRaw, CodecLZ4, CodecNLC:
 	default:
-		return fmt.Errorf("bridge.video.codec must be auto, raw, or lz4, got %q", b.Video.Codec)
+		return fmt.Errorf("bridge.video.codec must be auto, raw, lz4, or nlc, got %q", b.Video.Codec)
+	}
+	if b.Video.NLCNear < 0 || b.Video.NLCNear > 3 {
+		return fmt.Errorf("bridge.video.nlc_near must be 0..3, got %d", b.Video.NLCNear)
+	}
+	switch b.Video.NLCPack {
+	case "", NLCPackTiled, NLCPackRice:
+	default:
+		return fmt.Errorf("bridge.video.nlc_pack must be tiled or rice, got %q", b.Video.NLCPack)
 	}
 	if err := validatePicture(b.Video); err != nil {
 		return err

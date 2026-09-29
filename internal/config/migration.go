@@ -293,6 +293,8 @@ func defaultBridge() BridgeConfig {
 			AspectMode:          d.AspectMode,
 			RGBMode:             d.RGBMode,
 			Codec:               CodecAuto,
+			NLCNear:             0,
+			NLCPack:             NLCPackTiled,
 			DeltaLZ4Enabled:     d.DeltaLZ4Enabled,
 			InterlaceFilter:     DefaultInterlaceFilter,
 			PictureHSize:        DefaultPictureSize,

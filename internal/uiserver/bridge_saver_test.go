@@ -135,6 +135,43 @@ func TestDiffBridgeConfig_EmptyCodecEqualsAuto(t *testing.T) {
 	}
 }
 
+func TestScopeForBridgeField_NLCFieldsRestartCast(t *testing.T) {
+	for _, key := range []string{"video.nlc_near", "video.nlc_pack"} {
+		if got := scopeForBridgeField(key); got != adapters.ScopeRestartCast {
+			t.Errorf("scopeForBridgeField(%q) = %v, want ScopeRestartCast", key, got)
+		}
+	}
+}
+
+func TestDiffBridgeConfig_NLCNear(t *testing.T) {
+	old := config.BridgeConfig{Video: config.VideoConfig{NLCNear: 0}}
+	newCfg := old
+	newCfg.Video.NLCNear = 2
+
+	keys := diffBridgeConfig(old, newCfg)
+	if !containsStr(keys, "video.nlc_near") {
+		t.Errorf("expected video.nlc_near in diff keys, got %v", keys)
+	}
+}
+
+func TestDiffBridgeConfig_EmptyNLCPackEqualsTiled(t *testing.T) {
+	old := config.BridgeConfig{Video: config.VideoConfig{NLCPack: ""}}
+	newCfg := config.BridgeConfig{Video: config.VideoConfig{NLCPack: config.NLCPackTiled}}
+	for _, k := range diffBridgeConfig(old, newCfg) {
+		if k == "video.nlc_pack" {
+			t.Fatal("\"\" -> \"tiled\" reported as an nlc_pack change")
+		}
+	}
+}
+
+func TestDiffBridgeConfig_NLCPackChange(t *testing.T) {
+	old := config.BridgeConfig{Video: config.VideoConfig{NLCPack: config.NLCPackTiled}}
+	newCfg := config.BridgeConfig{Video: config.VideoConfig{NLCPack: config.NLCPackRice}}
+	if !containsStr(diffBridgeConfig(old, newCfg), "video.nlc_pack") {
+		t.Errorf("expected video.nlc_pack in diff keys")
+	}
+}
+
 func TestDiffBridgeConfig_HLSBufferFieldsRestartCast(t *testing.T) {
 	old := config.BridgeConfig{HLSBuffer: config.HLSBufferConfig{
 		Enabled:                true,
