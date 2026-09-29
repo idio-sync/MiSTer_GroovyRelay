@@ -21,6 +21,9 @@ func TestParamsValidate(t *testing.T) {
 	if err := good.Validate(); err != nil {
 		t.Fatalf("valid params rejected: %v", err)
 	}
+	if err := (Params{Width: MaxWidth, Height: MaxHeight}).Validate(); err != nil {
+		t.Fatalf("params at the size caps rejected: %v", err)
+	}
 	bad := []Params{
 		{Width: 0, Height: 240},
 		{Width: 720, Height: 0},
@@ -30,6 +33,8 @@ func TestParamsValidate(t *testing.T) {
 		{Width: 720, Height: 240, Near: 4},
 		{Width: 720, Height: 240, Pack: 2},
 		{Width: 720, Height: 240, Pack: 255},
+		{Width: MaxWidth + 1, Height: 240},  // a bogus modeline must not OOM
+		{Width: 720, Height: MaxHeight + 1}, // (review follow-up)
 	}
 	for _, p := range bad {
 		if err := p.Validate(); err == nil {

@@ -10,7 +10,7 @@ import (
 // Wire layout (groovy_mister.md:41-49, mistercast.md:28-34):
 //
 //	[0] cmd       = 0x02
-//	[1] lz4Frames (LZ4ModeOff | LZ4ModeDefault)
+//	[1] lz4Frames (LZ4ModeOff | LZ4ModeDefault | NLCCompressionByte(...))
 //	[2] soundRate (AudioRateOff | AudioRate22050 | AudioRate44100 | AudioRate48000)
 //	[3] soundChan (0=off, 1=mono, 2=stereo)
 //	[4] rgbMode   (RGBMode888 | RGBMode8888 | RGBMode565)
@@ -18,8 +18,9 @@ import (
 // INIT is the ONE ACK-gated handshake: caller must wait for a 13-byte status
 // reply within ~60ms after sending INIT. See groovynet.Sender.SendInitAwaitACK.
 func BuildInit(lz4Frames, soundRate, soundChan, rgbMode byte) []byte {
-	switch lz4Frames {
-	case LZ4ModeOff, LZ4ModeDefault:
+	switch {
+	case lz4Frames == LZ4ModeOff, lz4Frames == LZ4ModeDefault:
+	case lz4Frames&3 == nlcCodecMode: // GroovyNLC; see NLCCompressionByte
 	default:
 		panic(fmt.Sprintf("groovy: invalid lz4Frames %d", lz4Frames))
 	}

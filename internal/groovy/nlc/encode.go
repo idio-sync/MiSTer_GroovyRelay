@@ -37,10 +37,18 @@ type Params struct {
 	Pack          Pack
 }
 
-// Validate reports whether p is usable: positive dimensions, 0 <= Near <= 3
-// and a known Pack.
+// MaxWidth and MaxHeight cap Params dimensions so a bogus modeline yields a
+// Validate error instead of an out-of-memory panic in NewEncoder. They are
+// far above any 15 kHz / 31 kHz Groovy mode.
+const (
+	MaxWidth  = 4096
+	MaxHeight = 2048
+)
+
+// Validate reports whether p is usable: dimensions in 1..MaxWidth and
+// 1..MaxHeight, 0 <= Near <= 3 and a known Pack.
 func (p Params) Validate() error {
-	if p.Width <= 0 || p.Height <= 0 {
+	if p.Width <= 0 || p.Height <= 0 || p.Width > MaxWidth || p.Height > MaxHeight {
 		return fmt.Errorf("nlc: invalid dimensions %dx%d", p.Width, p.Height)
 	}
 	if p.Near < 0 || p.Near > 3 {

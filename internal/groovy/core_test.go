@@ -33,3 +33,43 @@ func TestQueryBuilders(t *testing.T) {
 		t.Fatalf("BuildGetStatus = %v", got)
 	}
 }
+
+func TestNLCCompressionByte(t *testing.T) {
+	// 2 | near<<2 | 1<<4 | 2<<5 | rice<<7 (design §4.3):
+	//   (0,false) = 0x02|0x10|0x40      = 0x52
+	//   (0,true)  = 0x52|0x80           = 0xD2
+	//   (3,false) = 0x52|0x0C           = 0x5E
+	//   (2,true)  = 0x52|0x08|0x80      = 0xDA
+	cases := []struct {
+		near int
+		rice bool
+		want byte
+	}{
+		{0, false, 0x52},
+		{0, true, 0xD2},
+		{3, false, 0x5E},
+		{2, true, 0xDA},
+	}
+	for _, c := range cases {
+		if got := NLCCompressionByte(c.near, c.rice); got != c.want {
+			t.Errorf("NLCCompressionByte(%d, %v) = %#x, want %#x", c.near, c.rice, got, c.want)
+		}
+	}
+}
+
+func TestBuildInit_AcceptsNLCCompressionByte(t *testing.T) {
+	b := NLCCompressionByte(2, true)
+	got := BuildInit(b, AudioRate48000, 2, RGBMode888)
+	if got[1] != b {
+		t.Fatalf("INIT[1] = %#x, want %#x", got[1], b)
+	}
+}
+
+func TestBuildInit_PanicsOnInvalidCodecByte(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic on INIT[1] codec 3")
+		}
+	}()
+	BuildInit(3, AudioRate48000, 2, RGBMode888)
+}
