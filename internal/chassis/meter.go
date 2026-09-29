@@ -423,6 +423,8 @@ func formatPipe(pipe core.PipelineMeterView) string {
 		codec = "LZ4+D"
 	case pipe.Codec == "lz4":
 		codec = "LZ4"
+	case pipe.Codec == "nlc":
+		codec = "NLC" // delta-LZ4 never applies to NLC
 	}
 	order := strings.ToUpper(pipe.FieldOrder)
 	if order == "" {

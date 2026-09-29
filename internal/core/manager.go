@@ -25,6 +25,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy/nlc"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/osd"
 )
@@ -318,6 +319,15 @@ func (m *Manager) logPlaneExit(runErr error) {
 	slog.Warn("data plane exited", "err", runErr)
 }
 
+// nlcPackFromConfig maps bridge.video.nlc_pack to the encoder's pack:
+// "rice" is Rice, anything else is tiled (the safe default, design §1.4).
+func nlcPackFromConfig(pack string) nlc.Pack {
+	if pack == config.NLCPackRice {
+		return nlc.PackRice
+	}
+	return nlc.PackTiled
+}
+
 func (m *Manager) handlePlaneExit(plane planeRunner, runErr error) {
 	m.logPlaneExit(runErr)
 
@@ -329,6 +339,17 @@ func (m *Manager) handlePlaneExit(plane planeRunner, runErr error) {
 	if m.plane != plane {
 		m.mu.Unlock()
 		return
+	}
+	// Keep the probed codec and core visible after the plane is gone (a
+	// paused session has no plane). Without this, StatusHomeView falls back
+	// to the provisional codec, which reads LZ4 for an NLC session.
+	if m.active != nil {
+		if codec := plane.EffectiveCodec(); codec != "" {
+			m.active.meter.Pipeline.Codec = string(codec)
+		}
+		if core := plane.Core(); core != groovy.CoreUnknown {
+			m.active.meter.Pipeline.MisterCore = core.String()
+		}
 	}
 	m.plane = nil
 	switch {
@@ -945,6 +966,8 @@ func (m *Manager) startPlaneLocked(req SessionRequest, offsetMs int,
 		RGBMode:             rgbMode,
 		Codec:               dataplane.Codec(m.bridge.Video.EffectiveCodec()),
 		DeltaLZ4Enabled:     m.bridge.Video.DeltaLZ4Enabled,
+		NLCNear:             m.bridge.Video.NLCNear,
+		NLCPack:             nlcPackFromConfig(m.bridge.Video.EffectiveNLCPack()),
 		AudioRate:           audioRate,
 		AudioChans:          audioChans,
 		SuppressAudioOutput: suppressAudio,

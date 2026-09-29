@@ -334,3 +334,22 @@ func TestFormatCore(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatPipe(t *testing.T) {
+	cases := []struct {
+		pipe core.PipelineMeterView
+		want string
+	}{
+		{core.PipelineMeterView{Codec: "raw", FieldOrder: "tff"}, "RAW - TFF"},
+		{core.PipelineMeterView{Codec: "lz4", FieldOrder: "bff"}, "LZ4 - BFF"},
+		{core.PipelineMeterView{Codec: "lz4", DeltaLZ4Enabled: true, FieldOrder: "tff"}, "LZ4+D - TFF"},
+		{core.PipelineMeterView{Codec: "nlc", FieldOrder: "tff"}, "NLC - TFF"},
+		// Delta-LZ4 never applies to NLC: no "+D" even if the setting is on.
+		{core.PipelineMeterView{Codec: "nlc", DeltaLZ4Enabled: true}, "NLC - PROG"},
+	}
+	for _, c := range cases {
+		if got := formatPipe(c.pipe); got != c.want {
+			t.Errorf("formatPipe(%+v) = %q, want %q", c.pipe, got, c.want)
+		}
+	}
+}

@@ -21,6 +21,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy/nlc"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
@@ -215,6 +216,118 @@ func TestStatusHomeView_ReportsPlaneCoreAndCodec(t *testing.T) {
 	}
 	if view.Meter.Pipeline.Codec != "raw" {
 		t.Fatalf("Pipeline.Codec = %q, want raw (from the plane)", view.Meter.Pipeline.Codec)
+	}
+}
+
+// nlcExitPlane is a plane that reports a probed GroovyNLC session and exits
+// when its context is cancelled, as a real plane does on Pause.
+type nlcExitPlane struct {
+	contextDonePlane
+}
+
+func (f *nlcExitPlane) Core() groovy.Core               { return groovy.CoreGroovyNLC }
+func (f *nlcExitPlane) EffectiveCodec() dataplane.Codec { return dataplane.CodecNLC }
+
+// A paused session has no plane. The probed codec and core must outlive the
+// plane, or the meter falls back to the provisional codec and a paused NLC
+// session reads "LZ4".
+func TestStatusHomeView_KeepsPlaneCodecAndCoreAfterPlaneExit(t *testing.T) {
+	origProbe := probeInputFn
+	origCrop := probeCropFn
+	origNewPlane := newPlane
+	t.Cleanup(func() {
+		probeInputFn = origProbe
+		probeCropFn = origCrop
+		newPlane = origNewPlane
+	})
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60, Duration: 120}, nil
+	}
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+	newPlane = func(dataplane.PlaneConfig) planeRunner {
+		return &nlcExitPlane{contextDonePlane{done: make(chan struct{})}}
+	}
+
+	m := newTestManager(t)
+	m.bridge.Video.Codec = config.CodecNLC
+	t.Cleanup(func() { _ = m.Stop() })
+	req := SessionRequest{StreamURL: "http://example.test/movie.mp4", AdapterRef: "url:movie", Source: "url", Capabilities: Capabilities{CanSeek: true, CanPause: true}, DirectPlay: true}
+	if err := m.StartSession(req); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := m.Pause(); err != nil {
+		t.Fatalf("pause: %v", err)
+	}
+	// Pause returns once the plane's Done closes; handlePlaneExit runs just
+	// after Run returns.
+	deadline := time.Now().Add(time.Second)
+	for {
+		m.mu.Lock()
+		gone := m.plane == nil
+		m.mu.Unlock()
+		if gone {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("plane was not cleared after pause")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	view := m.StatusHomeView()
+	if view.Meter.Pipeline.Codec != "nlc" {
+		t.Fatalf("paused Pipeline.Codec = %q, want nlc", view.Meter.Pipeline.Codec)
+	}
+	if view.Meter.Pipeline.MisterCore != "groovynlc" {
+		t.Fatalf("paused Pipeline.MisterCore = %q, want groovynlc", view.Meter.Pipeline.MisterCore)
+	}
+}
+
+func TestNLCPackFromConfig(t *testing.T) {
+	for in, want := range map[string]nlc.Pack{
+		config.NLCPackRice:  nlc.PackRice,
+		config.NLCPackTiled: nlc.PackTiled,
+		"":                  nlc.PackTiled,
+	} {
+		if got := nlcPackFromConfig(in); got != want {
+			t.Errorf("nlcPackFromConfig(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestManager_StartSessionPlumbsNLCSettings(t *testing.T) {
+	origProbe := probeInputFn
+	origCrop := probeCropFn
+	origNewPlane := newPlane
+	t.Cleanup(func() {
+		probeInputFn = origProbe
+		probeCropFn = origCrop
+		newPlane = origNewPlane
+	})
+	probeInputFn = func(context.Context, string, ffmpeg.ProbeInputSpec) (*ffmpeg.ProbeResult, error) {
+		return &ffmpeg.ProbeResult{Width: 640, Height: 480, FrameRate: 60}, nil
+	}
+	probeCropFn = func(context.Context, string, ffmpeg.CropProbeSpec) (*ffmpeg.CropRect, error) {
+		return nil, nil
+	}
+	var captured dataplane.PlaneConfig
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
+		captured = cfg
+		return &blockingDonePlane{done: done}
+	}
+
+	m := newTestManager(t)
+	m.bridge.Video.Codec = config.CodecNLC
+	m.bridge.Video.NLCNear = 2
+	m.bridge.Video.NLCPack = config.NLCPackRice
+	if err := m.StartSession(SessionRequest{StreamURL: "http://example/clip.mp4", DirectPlay: true}); err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	if captured.Codec != dataplane.CodecNLC || captured.NLCNear != 2 || captured.NLCPack != nlc.PackRice {
+		t.Fatalf("PlaneConfig codec=%q near=%d pack=%v; want nlc, 2, rice", captured.Codec, captured.NLCNear, captured.NLCPack)
 	}
 }
 
