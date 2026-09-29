@@ -338,6 +338,7 @@ type PipelineMeterView struct {
 	FieldOrder          string
 	RGBMode             string
 	Codec               string // effective codec: "raw" | "lz4"
+	MisterCore          string // "groovy" | "groovynlc"; empty until the plane has probed
 	DeltaLZ4Enabled     bool
 	AudioSampleRate     int
 	AudioChannels       int

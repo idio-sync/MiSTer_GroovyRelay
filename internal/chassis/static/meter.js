@@ -82,6 +82,8 @@
     setText('[data-meter-output]', readout.output);
     setText('[data-meter-aspect]', readout.aspect);
     setText('[data-meter-pipe]', readout.pipe);
+    const pipeEl = document.querySelector('[data-meter-pipe]');
+    if (pipeEl) pipeEl.title = readout.core ? 'MiSTer core: ' + readout.core : '';
     setText('[data-meter-speed]', readout.speed);
     setText('[data-meter-link]', readout.link);
     updateHLS(strip);

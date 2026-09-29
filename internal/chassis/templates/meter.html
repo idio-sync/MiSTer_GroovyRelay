@@ -132,7 +132,7 @@
         <div class="net-grp">
           <span class="grp">
             <span class="key">PIPE</span>
-            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~ ~ ~~~~</span><span class="seg-text" data-meter-pipe>{{.Readout.Pipe}}</span></span>
+            <span class="seg-display"><span class="seg-ghost" aria-hidden="true">~~~~ ~ ~~~~</span><span class="seg-text" data-meter-pipe title="{{if .Readout.Core}}MiSTer core: {{.Readout.Core}}{{end}}">{{.Readout.Pipe}}</span></span>
           </span>
           <span class="grp speed-grp">
             <span class="key">SPEED</span>

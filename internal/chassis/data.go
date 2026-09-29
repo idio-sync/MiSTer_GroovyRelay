@@ -201,6 +201,7 @@ type ReadoutIdleData struct {
 	Output      string
 	Aspect      string
 	Pipe        string
+	Core        string
 	Speed       string
 	SpeedRatio  float64
 	Link        string

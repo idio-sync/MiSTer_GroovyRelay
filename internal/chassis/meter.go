@@ -166,6 +166,7 @@ func meterDataFromSnapshot(snap core.StatusHomeView, overlay adapters.MeterOverl
 	base.Readout.Output = formatOutput(pipe)
 	base.Readout.Aspect = formatAspect(src, snap.Meter.Crop)
 	base.Readout.Pipe = formatPipe(pipe)
+	base.Readout.Core = formatCore(pipe.MisterCore)
 	base.Readout.SpeedRatio = 1.0
 	base.Readout.Speed = formatSpeed(base.Readout.SpeedRatio)
 	base.Readout.Link = formatLink(snap.Meter.Runtime.LastACKAge)
@@ -403,6 +404,18 @@ func formatOutput(pipe core.PipelineMeterView) string {
 	return fmt.Sprintf("PROGRESSIVE %dp - BT.601", pipe.OutputHeight)
 }
 
+// formatCore labels the detected MiSTer core for the pipe readout's
+// tooltip. Empty until the plane has probed.
+func formatCore(core string) string {
+	switch core {
+	case "groovy":
+		return "GROOVY"
+	case "groovynlc":
+		return "GROOVYNLC"
+	}
+	return ""
+}
+
 func formatPipe(pipe core.PipelineMeterView) string {
 	codec := "RAW"
 	switch {
@@ -605,6 +618,7 @@ type meterReadoutE struct {
 	Output     string  `json:"output"`
 	Aspect     string  `json:"aspect"`
 	Pipe       string  `json:"pipe"`
+	Core       string  `json:"core"`
 	Speed      string  `json:"speed"`
 	SpeedRatio float64 `json:"speedRatio"`
 	Link       string  `json:"link"`
@@ -660,6 +674,7 @@ func meterEnvelopeFrom(m MeterData) meterEnvelope {
 			Output:     m.Readout.Output,
 			Aspect:     m.Readout.Aspect,
 			Pipe:       m.Readout.Pipe,
+			Core:       m.Readout.Core,
 			Speed:      m.Readout.Speed,
 			SpeedRatio: m.Readout.SpeedRatio,
 			Link:       m.Readout.Link,

@@ -326,3 +326,11 @@ func TestMeterEnvelopeFrom_PendingShapeExact(t *testing.T) {
 		t.Errorf("pending envelope must NOT include via/sampleHz: %s", body)
 	}
 }
+
+func TestFormatCore(t *testing.T) {
+	for in, want := range map[string]string{"groovy": "GROOVY", "groovynlc": "GROOVYNLC", "unknown": "", "": ""} {
+		if got := formatCore(in); got != want {
+			t.Errorf("formatCore(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

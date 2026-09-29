@@ -126,6 +126,8 @@ type planeRunner interface {
 	LastACKAge() time.Duration
 	LinkHealth() dataplane.LinkHealth
 	AudioScopes() *dataplane.AudioScopeSnapshot
+	Core() groovy.Core
+	EffectiveCodec() dataplane.Codec
 }
 
 var newPlane = func(cfg dataplane.PlaneConfig) planeRunner {
@@ -1809,6 +1811,12 @@ func (m *Manager) StatusHomeView() StatusHomeView {
 		wireBytes := m.plane.WireBytes()
 		lastACKAge := m.plane.LastACKAge()
 		linkHealth := m.plane.LinkHealth()
+		if codec := m.plane.EffectiveCodec(); codec != "" {
+			view.Meter.Pipeline.Codec = string(codec)
+		}
+		if core := m.plane.Core(); core != groovy.CoreUnknown {
+			view.Meter.Pipeline.MisterCore = core.String()
+		}
 		view.Modeline = m.bridge.Video.Modeline
 		view.Position = m.plane.Position()
 		view.BlitsTotal = blits

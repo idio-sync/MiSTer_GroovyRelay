@@ -238,6 +238,7 @@ func meterChanged(curr, last MeterData) bool {
 		curr.Readout.Output != last.Readout.Output ||
 		curr.Readout.Aspect != last.Readout.Aspect ||
 		curr.Readout.Pipe != last.Readout.Pipe ||
+		curr.Readout.Core != last.Readout.Core ||
 		curr.Readout.Link != last.Readout.Link
 }
 

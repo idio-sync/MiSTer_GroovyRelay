@@ -20,6 +20,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane/audiodsp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
@@ -101,6 +102,8 @@ func (f *fakePlane) WireBytes() uint64                          { return 0 }
 func (f *fakePlane) LastACKAge() time.Duration                  { return 0 }
 func (f *fakePlane) LinkHealth() dataplane.LinkHealth           { return dataplane.LinkHealth{} }
 func (f *fakePlane) AudioScopes() *dataplane.AudioScopeSnapshot { return nil }
+func (f *fakePlane) Core() groovy.Core                          { return groovy.CoreUnknown }
+func (f *fakePlane) EffectiveCodec() dataplane.Codec            { return "" }
 
 type contextDonePlane struct {
 	done chan struct{}
@@ -123,6 +126,8 @@ func (f *contextDonePlane) Underruns() uint64                 { return 0 }
 func (f *contextDonePlane) WireBytes() uint64                 { return 0 }
 func (f *contextDonePlane) LastACKAge() time.Duration         { return 0 }
 func (f *contextDonePlane) LinkHealth() dataplane.LinkHealth  { return dataplane.LinkHealth{} }
+func (f *contextDonePlane) Core() groovy.Core                 { return groovy.CoreUnknown }
+func (f *contextDonePlane) EffectiveCodec() dataplane.Codec   { return "" }
 
 type blockingDonePlane struct {
 	done chan struct{}
@@ -142,6 +147,8 @@ func (f *blockingDonePlane) WireBytes() uint64                          { return
 func (f *blockingDonePlane) LastACKAge() time.Duration                  { return 0 }
 func (f *blockingDonePlane) LinkHealth() dataplane.LinkHealth           { return dataplane.LinkHealth{} }
 func (f *blockingDonePlane) AudioScopes() *dataplane.AudioScopeSnapshot { return nil }
+func (f *blockingDonePlane) Core() groovy.Core                          { return groovy.CoreUnknown }
+func (f *blockingDonePlane) EffectiveCodec() dataplane.Codec            { return "" }
 
 type volumePlane struct {
 	fakePlane
@@ -174,6 +181,8 @@ func (f *errorPlane) WireBytes() uint64                          { return 0 }
 func (f *errorPlane) LastACKAge() time.Duration                  { return 0 }
 func (f *errorPlane) LinkHealth() dataplane.LinkHealth           { return dataplane.LinkHealth{} }
 func (f *errorPlane) AudioScopes() *dataplane.AudioScopeSnapshot { return nil }
+func (f *errorPlane) Core() groovy.Core                          { return groovy.CoreUnknown }
+func (f *errorPlane) EffectiveCodec() dataplane.Codec            { return "" }
 
 type linkHealthPlane struct{ fakePlane }
 
@@ -183,6 +192,29 @@ func (f *linkHealthPlane) LinkHealth() dataplane.LinkHealth {
 		ENOBUFTotal:      5,
 		AudioRingDrops:   2,
 		FramesAhead:      7,
+	}
+}
+
+type identityPlane struct {
+	fakePlane
+	core  groovy.Core
+	codec dataplane.Codec
+}
+
+func (f *identityPlane) Core() groovy.Core               { return f.core }
+func (f *identityPlane) EffectiveCodec() dataplane.Codec { return f.codec }
+
+func TestStatusHomeView_ReportsPlaneCoreAndCodec(t *testing.T) {
+	m := newTestManager(t)
+	m.mu.Lock()
+	m.plane = &identityPlane{core: groovy.CoreGroovyNLC, codec: dataplane.CodecRaw}
+	m.mu.Unlock()
+	view := m.StatusHomeView()
+	if view.Meter.Pipeline.MisterCore != "groovynlc" {
+		t.Fatalf("Pipeline.MisterCore = %q, want groovynlc", view.Meter.Pipeline.MisterCore)
+	}
+	if view.Meter.Pipeline.Codec != "raw" {
+		t.Fatalf("Pipeline.Codec = %q, want raw (from the plane)", view.Meter.Pipeline.Codec)
 	}
 }
 
