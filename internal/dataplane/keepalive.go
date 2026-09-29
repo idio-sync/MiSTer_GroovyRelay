@@ -21,7 +21,7 @@ type keepaliveSender interface {
 
 // runKeepalive sends a 1-byte GET_STATUS whenever nothing has been sent
 // for idle, polling at idle/4, until stop closes. It fires in the prebuffer
-// (design §1.2), and during LZ4 underrun holds, where holdField sends
+// (design §1.2), and during compressed-codec (LZ4/NLC) underrun holds, where holdField sends
 // nothing. Both cores answer with a FrameEcho==0 ACK, which echoAdvanced
 // ignores.
 func runKeepalive(s keepaliveSender, idle time.Duration, stop <-chan struct{}) {

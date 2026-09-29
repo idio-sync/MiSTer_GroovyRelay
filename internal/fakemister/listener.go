@@ -315,8 +315,9 @@ func (l *Listener) RunWithFields(
 			}
 			if cmd.Type == groovy.CmdInit {
 				// verbst fork: codecMode = INIT[1] & 3, compression when >= 1.
-				// psakhis: INIT[1] <= 1 ? INIT[1] : 0. Both agree on 0 and 1,
-				// the only values the relay sends.
+				// psakhis: INIT[1] <= 1 ? INIT[1] : 0. Both agree on 0 and 1;
+				// the relay also sends the NLC bitfield byte (codec 2, INIT[1]
+				// bits 0-1 == 2), which this &0x3 != 0 check covers too.
 				compression = cmd.Init.LZ4Frames&0x3 != 0
 			}
 			if cmd.Type == groovy.CmdBlitFieldVSync && compression && cmd.Blit != nil && !cmd.Blit.Compressed {

@@ -105,10 +105,13 @@ func runNLCSession(t *testing.T, coreVersion byte, codec dataplane.Codec, near i
 
 	// A single select loop is the only consumer of events/fieldsCh/audios,
 	// so dec (not goroutine-safe) and res are touched from one goroutine
-	// only. The header Command for a field is always enqueued to events
-	// before that field's payload is enqueued to fieldsCh (RunWithFields is
-	// one sequential producer), and INIT always precedes the first BLIT on
-	// the wire, so dec.SetInit/SetDims are applied before the first Decode.
+	// only. RunWithFields is one sequential producer, so a field's header
+	// Command is always enqueued to events before that field's payload is
+	// enqueued to fieldsCh, and INIT always precedes the first BLIT on the
+	// wire — but events and fieldsCh are separate channels, so the select
+	// below can still hand us the field first. handleField drains events
+	// itself before checking sawInit so dec.SetInit/SetDims are applied
+	// before the first Decode regardless of which case the select picks.
 	res := &nlcSessionResult{}
 	dec := fakemister.NewFieldDecoder()
 	handleCmd := func(cmd fakemister.Command) {
@@ -128,6 +131,21 @@ func runNLCSession(t *testing.T, coreVersion byte, codec dataplane.Codec, near i
 		}
 	}
 	handleField := func(fe fakemister.FieldEvent) {
+		// events and fieldsCh are separate channels, and the select below
+		// picks pseudo-randomly among ready cases, so a field's arrival can
+		// win the race even though its header's INIT was enqueued to events
+		// first (RunWithFields is one sequential producer, but consumption
+		// order across two channels isn't). Drain any pending events
+		// non-blockingly first, processing INIT/SWITCHRES exactly as the
+		// main loop does, so real ordering is reflected before we judge it.
+		for drained := false; !drained; {
+			select {
+			case cmd := <-events:
+				handleCmd(cmd)
+			default:
+				drained = true
+			}
+		}
 		if !res.sawInit {
 			t.Fatalf("field arrived before INIT")
 		}

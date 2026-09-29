@@ -314,8 +314,9 @@ When `codec = "nlc"`, two more settings apply:
 | `nlc_pack` | `tiled` (default) or `rice`. Rice only works with a Rice-capable GroovyNLC build; otherwise expect a garbled picture. |
 
 **NLC status:** the Go encoder is a bit-exact port verified against the fork's reference codec,
-and it costs about 2 ms of CPU per field on a desktop CPU — benchmark on NAS-class hosts before
-enabling it. It has **not yet been verified on real hardware**: try 240p first, 480i is
+and it costs about 2 ms wall-clock per 720x240 field (about 4 ms of CPU spread over 3 cores) on
+a desktop CPU — benchmark on NAS-class hosts before enabling it. It has **not yet been verified
+on real hardware**: try 240p first, 480i is
 unconfirmed on the fork, and OSD **Volatile framebuffer** must be Off. `auto` keeps using LZ4
 until hardware checks pass.
 

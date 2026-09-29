@@ -134,6 +134,32 @@ func TestApplySessionCodec_EncoderFailureFallsBackToLZ4(t *testing.T) {
 	}
 }
 
+// A progressive session whose ffmpeg output height diverges from
+// FieldHeight (SpawnSpec.OutputHeight set independently) would hand
+// sendField a payload the FieldHeight-sized encoder can't accept on every
+// tick. ensureNLCEncoder must catch that mismatch up front and fall back
+// to LZ4, the same as any other encoder-build failure.
+func TestApplySessionCodec_ProgressiveHeightMismatchFallsBackToLZ4(t *testing.T) {
+	cfg := PlaneConfig{
+		Codec:         CodecNLC,
+		FieldWidth:    32,
+		FieldHeight:   4,
+		BytesPerPixel: 3,
+	}
+	cfg.SpawnSpec.OutputHeight = 8 // != FieldHeight, so resolveVideoHeight() diverges
+	p := nlcTestPlane(cfg)
+	p.applySessionCodec(groovy.CoreGroovyNLC)
+	if p.codec != CodecLZ4 || p.EffectiveCodec() != CodecLZ4 {
+		t.Fatalf("codec = %q, effective = %q; want lz4 fallback", p.codec, p.EffectiveCodec())
+	}
+	if p.nlcEnc != nil || p.nlcScratch != nil {
+		t.Fatal("NLC scratch allocated despite the payload-size mismatch")
+	}
+	if got := p.initCompressionByte(); got != groovy.LZ4ModeDefault {
+		t.Fatalf("INIT[1] = %#x, want LZ4", got)
+	}
+}
+
 // §5.2 step 5: an encoder error skips the field: nothing on the wire, the
 // error counted, and stats with no payload.
 func TestSendField_NLCEncodeErrorSendsNothing(t *testing.T) {

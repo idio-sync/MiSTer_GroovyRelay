@@ -961,6 +961,23 @@ func (p *Plane) ensureNLCEncoder() error {
 		Near:   p.cfg.NLCNear,
 		Pack:   p.cfg.NLCPack,
 	}
+	// The tick loop hands sendField one of two payload shapes: an
+	// extracted field for interlaced modes (FieldWidth*FieldHeight, via
+	// ExtractFieldFromFrameInto), or the full progressive frame for
+	// progressive modes (FieldWidth*resolveVideoHeight). The encoder above
+	// is sized for FieldWidth*FieldHeight rows; if the progressive frame
+	// height diverges from FieldHeight (SpawnSpec.OutputHeight overridden),
+	// every field would miss nlc.FrameBytes and get skipped via
+	// noteNLCEncodeError. Catch the mismatch here instead so the session
+	// falls back to LZ4 up front.
+	payloadBytes := p.cfg.FieldWidth * p.cfg.FieldHeight * p.cfg.BytesPerPixel
+	if !p.cfg.Modeline.Interlaced() {
+		payloadBytes = p.cfg.FieldWidth * p.cfg.resolveVideoHeight() * p.cfg.BytesPerPixel
+	}
+	if want := nlc.FrameBytes(params); payloadBytes != want {
+		return fmt.Errorf("nlc field payload is %d bytes, encoder expects %d (width=%d height=%d bpp=%d)",
+			payloadBytes, want, params.Width, params.Height, p.cfg.BytesPerPixel)
+	}
 	enc, err := nlc.NewEncoder(params)
 	if err != nil {
 		return err
@@ -1385,6 +1402,12 @@ func (p *Plane) Run(ctx context.Context) error {
 			// the header would send top-field pixels tagged as bottom-field.
 			emitField := p.emitField(nextField)
 			if parity != nil {
+				// Recorded before the send outcome is known: a field an NLC
+				// encode error later skips (impossible with validated
+				// params — ensureNLCEncoder rejects a bad size/NEAR up
+				// front) is still counted as sent here. Acceptable: that
+				// path is unreachable in practice, and recordSent tracks
+				// intended field-order parity, not wire delivery.
 				parity.recordSent(frameNum, emitField)
 			}
 			fb, fbOK, fbClosed := pullVideoFrame(&videoPrebuffer, videoCh)
@@ -2144,7 +2167,7 @@ func (p *Plane) noteNLCEncodeError(err error, rawBytes int, now time.Time) {
 // isn't delayed.
 //
 // Only a codec with a header-only duplicate sends anything. The RAW codec
-// has one: a 9-byte dup header. Any compressed codec (LZ4 today) has none —
+// has one: a 9-byte dup header. Any compressed codec (LZ4 or NLC) has none —
 // the Groovy core honours the dup flag only while INIT has compression off
 // and otherwise arms a compressed blit of size 0, which trips its
 // lost-packet abort on the next datagram (groovy.cpp setBlit and
