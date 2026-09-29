@@ -355,8 +355,10 @@ type PlaneConfig struct {
 
 	// OnInit is fired exactly once after the INIT handshake completes.
 	// nil err = success (FPGA accepted INIT, ready for frames); non-nil
-	// err = INIT timeout or socket error (Run will return this same
-	// error). Manager wires this into eventlog emission per spec §S7.
+	// err = INIT timeout or socket error. OnInit also fires, exactly
+	// once, with the GET_VERSION core-probe socket error, before INIT
+	// is attempted; either way Run returns a wrapped form of this same
+	// error. Manager wires this into eventlog emission per spec §S7.
 	// Optional; may be nil for tests that don't care about init events.
 	OnInit func(err error)
 
@@ -910,10 +912,6 @@ func (p *Plane) Run(ctx context.Context) error {
 		audioDelayN = envAudioDelayFields(p.cfg.Modeline)
 	}
 
-	// 1. INIT handshake (ACK-gated; 60 ms timeout). Must happen BEFORE the
-	//    Drainer goroutine starts reading from the socket — otherwise it
-	//    swallows the ACK.
-	soundRate := rateCodeForHz(audioRate)
 	// 0. Core probe (design 2026-09-28 §3.1). Same socket contract as
 	//    INIT: it runs before the Drainer starts. It runs on every session,
 	//    because the user may switch cores between casts.
@@ -937,6 +935,10 @@ func (p *Plane) Run(ctx context.Context) error {
 	}
 	p.codec = codec
 	p.effCodec.Store(codec)
+	// 1. INIT handshake (ACK-gated; 60 ms timeout). Must happen BEFORE the
+	//    Drainer goroutine starts reading from the socket — otherwise it
+	//    swallows the ACK.
+	soundRate := rateCodeForHz(audioRate)
 	initPkt := groovy.BuildInit(initCompressionByte(p.codec), soundRate, byte(audioChans), p.cfg.RGBMode)
 	// 3 attempts × 60 ms: INIT is the one ACK-gated exchange, and a single
 	// lost datagram on a busy host should not fail the whole session.

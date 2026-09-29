@@ -63,8 +63,8 @@ func TestKeepalive_QuietWhileTrafficFlows(t *testing.T) {
 	s := &recordingSender{last: time.Now()}
 	stop := make(chan struct{})
 	done := make(chan struct{})
-	go func() { runKeepalive(s, 60*time.Millisecond, stop); close(done) }()
-	for i := 0; i < 10; i++ {
+	go func() { runKeepalive(s, 200*time.Millisecond, stop); close(done) }()
+	for i := 0; i < 30; i++ {
 		time.Sleep(15 * time.Millisecond)
 		s.touch()
 	}

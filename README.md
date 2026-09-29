@@ -283,6 +283,7 @@ To use GroovyNLC:
    [GroovyNLC]
    main=MiSTer_groovyNLC
    ```
+
 2. Launch GroovyNLC from the MiSTer menu. The UI's "Launch Groovy" button always starts the
    stock core.
 
