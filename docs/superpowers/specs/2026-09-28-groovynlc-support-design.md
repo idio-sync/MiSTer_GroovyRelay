@@ -127,13 +127,15 @@ Non-goals:
 
 ### 3.1 Version probe
 
-New `groovynet.(*Sender).ProbeVersion(timeout) (int, error)`, following
+New `groovynet.(*Sender).ProbeVersion(timeout) (byte, error)`, following
 `SendInitAwaitACK`'s contract (sender.go:312-316): it must be called with
 no Drainer running, flushes stale datagrams first (`flushStaleDatagrams`,
 sender.go:360-374), sends `GET_VERSION` (`0x08`), and waits up to
 `timeout` for a datagram of exactly 1 byte. Datagrams of any other length
 (for example a stray 13-byte ACK) are discarded and the wait continues.
-Returns the reply byte, or 0 on timeout.
+Returns the reply byte, or 0 on timeout. `SendInitAwaitACK` skips
+non-13-byte datagrams, so a GET_VERSION reply that arrives late cannot
+fail the handshake.
 
 `Plane.Run` calls it immediately before INIT with a 200 ms timeout, on
 every run. There is no cache: the Sender's destination is fixed for the
@@ -154,12 +156,14 @@ bridge, exactly as today.
 ### 3.3 Keepalive
 
 `Plane.Run` starts a keepalive goroutine after the INIT ACK and stops it
-when `Run` returns. The plane records the time of every datagram it sends
-(blit header, dup, audio, keepalive) in an atomic. The goroutine wakes
-every 500 ms and, if nothing has been sent for ≥ 2 s, sends a 1-byte
-`GET_STATUS`. It runs regardless of the detected core: the original core
-answers GET_STATUS harmlessly, and it protects fork v1.1–v1.3 during the
-prebuffer (§1.2). In steady playback it never fires.
+when `Run` returns. The Sender stamps every successful write. The
+keepalive calls `Sender.SendIfIdle(GET_STATUS, 2s)`, which checks the
+stamp and writes under the Sender's mutex, so a keepalive can never land
+between a BLIT/AUDIO header and its payload. Since `57d87f0b`, LZ4
+underrun holds send nothing, and the keepalive covers those too. It runs
+regardless of the detected core: the original core answers GET_STATUS
+harmlessly, and it protects fork v1.1–v1.3 during the prebuffer (§1.2).
+In steady playback it never fires.
 
 Keepalive sends use the same `Sender` as the rest of the plane; `Send`
 must already be safe for concurrent use with the tick loop (verify during
@@ -191,8 +195,11 @@ They appear in:
 
 - the plane start log line (`core=groovy|groovynlc core_version=N
   codec=raw|lz4|nlc`);
-- the status snapshot and SSE status event, as `mister_core` and
-  `video_codec`;
+- Part 1 surfaces the detected core in the plane start log and in the
+  meter (`PipelineMeterView.MisterCore`, and the meter SSE JSON
+  `readout.core`, shown as the pipe readout's tooltip). The effective
+  codec reaches the meter's pipe label through `PipelineMeterView.Codec`.
+  No separate status-snapshot field was added.
 - the meter label (`internal/chassis/meter.go:405-415`), which switches
   from reading config (`internal/core/meter.go:57-58`) to the active
   plane's effective codec, falling back to the configured one when idle.
@@ -281,7 +288,9 @@ core/manager.go:934-935, dataplane/plane.go:331-332 and the LZ4 branches.
 The LZ4 checkbox becomes a codec select: Auto / Raw / LZ4 in Part 1, plus
 NLC in Part 2. The NLC near and pack controls (Part 2) are enabled only
 when the codec is `nlc`. The delta-LZ4 checkbox is enabled only when the
-codec is `auto` or `lz4`.
+codec is `auto` or `lz4`. Part 1: the delta switch stays enabled for
+every codec, and its help text states it only applies to LZ4. Live
+enable/disable is deferred.
 
 ## 5. NLC encoder and data plane (Part 2)
 
@@ -404,6 +413,10 @@ Part 1:
 - `-core=groovy`: plane logs `core=groovy`.
 - `-core=nlc -idle-timeout=1s` with a frame source that withholds the
   first frame for 3 s (prebuffer): frames are accepted afterwards.
+
+Part 1 implemented the core-detection and prebuffer-keepalive checks as
+ffmpeg-free `internal/dataplane` tests (`core_session_test.go`) using
+fake-mister, not in `tests/integration`.
 
 Part 2:
 - `-core=nlc`, codec `nlc`: decoded fields match the source within the

@@ -269,6 +269,41 @@ curl -i -X POST http://localhost:32500/ui/visualizer \
 
 Omitting `Sec-Fetch-Site: same-origin` returns 403.
 
+## GroovyNLC core
+
+The bridge works with both the original [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer)
+core and the [GroovyNLC fork](https://github.com/verbst/Groovy_MiSTer). It asks the core for its
+version at the start of every cast and logs the answer (`core=groovy` or `core=groovynlc` on the
+`dataplane session started` line). The receiver meter's pipe readout shows it on hover.
+
+To use GroovyNLC:
+
+1. Install the fork's `.rbf` and `MiSTer_groovyNLC` binary, and add to `MiSTer.ini`:
+   ```ini
+   [GroovyNLC]
+   main=MiSTer_groovyNLC
+   ```
+2. Launch GroovyNLC from the MiSTer menu. The UI's "Launch Groovy" button always starts the
+   stock core.
+
+3. Leave the core's OSD **Volatile framebuffer** option **Off**. GroovyNLC's NLC codec needs it
+   off, and it does no harm with LZ4.
+
+While a cast starts up, or while it waits out a stall, the bridge sends a status ping after
+every 2 s of silence. This stops GroovyNLC v1.1–v1.3 from closing the session.
+
+`bridge.video.codec` controls frame compression:
+
+| Value | Behaviour |
+|-------|-----------|
+| `auto` (default) | LZ4 on both cores today. |
+| `lz4` | Always LZ4. |
+| `raw` | Uncompressed. |
+
+Configs that still say `lz4_enabled` are migrated automatically: `true` becomes `auto`, `false`
+becomes `raw`. `auto` may pick GroovyNLC's NLC codec in a future release, once that codec is
+verified on hardware. To keep LZ4 regardless, set `codec = "lz4"`.
+
 ## License
 
-[GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.en.html). See the design notes for why: this project stands on the shoulders of several GPL-3 references (plexdlnaplayer, plex-mpv-shim, Groovy_MiSTer) and carries that license forward.
+[GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.en.html). See the design notes for why: this project stands on the shoulders of several GPL references (plexdlnaplayer and plex-mpv-shim under GPL-3, and the Groovy_MiSTer protocol, which is GPL-2) and carries that license forward.
