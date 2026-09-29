@@ -245,8 +245,11 @@ runs in `Plane.Run` after the probe:
 
 `auto` deliberately resolves to LZ4 on both cores until NLC passes the
 §6.5 hardware checks. Flipping `auto` to NLC on GroovyNLC later is a
-one-cell change. The warning is logged and surfaced as a receiver UI
-notice.
+one-cell change. The warning is logged only; a receiver-UI notice is
+deferred (Part 2 status: not implemented). The meter's codec/core readout
+already shows the effective result of a fallback (e.g. `codec=lz4` on a
+session configured for `nlc`), so the operator can see the outcome there
+even without a dedicated notice.
 
 Because `effective` is known only in `Run`, codec-dependent allocation
 moves out of `NewPlane` (plane.go:569-597): `NewPlane` no longer decides
@@ -366,9 +369,9 @@ class hosts should benchmark before choosing NLC.
 
 ### 6.1 Golden vectors (bit-exactness, Part 2)
 
-`tools/nlcvectors/` contains a C++11 harness and a vendored copy of
+`tools/nlcvectors/` contains a C++17 harness and a vendored copy of
 `nlc_codec.{h,cpp}` from fork `e60f52a` with its license notice and
-source URL. `make nlc-vectors` builds it with local clang/gcc (`-std=c++11
+source URL. `make nlc-vectors` builds it with local clang/gcc (`-std=c++17
 -pthread`) and writes `internal/groovy/nlc/testdata/`. It is not run in
 CI; the committed files are the contract. (The fork's own
 `tools/nlc_vectors.cpp` emits one synthetic image as hex for the RTL
@@ -429,10 +432,16 @@ Part 1 implemented the core-detection and prebuffer-keepalive checks as
 ffmpeg-free `internal/dataplane` tests (`core_session_test.go`) using
 fake-mister, not in `tests/integration`.
 
-Part 2:
-- `-core=nlc`, codec `nlc`: decoded fields match the source within the
-  NEAR bound.
-- `-core=groovy`, codec `nlc`: falls back to LZ4 with a warning.
+Part 2 (`tests/integration/nlc_test.go`, real ffmpeg against a real
+`dataplane.Plane`): these assert wire shape (12-byte compressed BLIT
+headers, correct INIT byte), decodability (every field decodes with no
+error via `fakemister.FieldDecoder`), and motion (decoded fields differ
+frame to frame) for both progressive (240p) and interlaced (480i)
+sessions against a `-core=nlc` fake MiSTer. Byte-exact decode vs. the
+source is not this suite's job — that is covered by the near-0
+`internal/dataplane` `core_session` tests and the §6.1 golden vectors.
+The `-core=groovy`, codec `nlc` fallback case asserts `EffectiveCodec()`
+and the INIT byte resolve to LZ4, not the fallback log line.
 
 ### 6.5 Manual hardware checks (not automatable)
 
