@@ -1,4 +1,4 @@
-.PHONY: build build-bridge build-fake test test-integration lint clean
+.PHONY: build build-bridge build-fake test test-integration lint clean nlc-vectors
 
 build: build-bridge build-fake
 
@@ -19,3 +19,6 @@ lint:
 
 clean:
 	rm -f mister-groovy-relay fake-mister
+
+nlc-vectors:
+	bash tools/nlcvectors/gen.sh

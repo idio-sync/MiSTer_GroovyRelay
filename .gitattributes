@@ -18,3 +18,10 @@ internal/chassis/templates/*.html text eol=lf
 # "ffmpeg.exe\r": the *.exe case fails, Windows extraction dies ("could not find
 # ffmpeg"), and Linux/macOS silently emit binaries named "ffmpeg\r". Force LF.
 scripts/sidecar-manifest.txt text eol=lf
+
+# Vendored GroovyNLC reference codec (tools/nlcvectors/nlc_codec.*) must stay
+# byte-identical to the upstream fork blob it was copied from. Golden test
+# vectors (internal/groovy/nlc/testdata) must be byte-exact for hashes in
+# vectors.json to stay reproducible across platforms. Store both verbatim.
+tools/nlcvectors/nlc_codec.* -text
+internal/groovy/nlc/testdata/** -text
