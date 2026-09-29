@@ -10,8 +10,10 @@ package integration
 import (
 	"net"
 	"testing"
+	"time"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/fakemister"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
@@ -67,4 +69,28 @@ func NewHarness(t *testing.T) *Harness {
 		<-recDone
 	})
 	return &Harness{Listener: l, Sender: s, Recorder: rec, Events: events}
+}
+
+// answerInitHandshake serves the bridge's pre-INIT handshake on conn: it
+// answers GET_VERSION with 1 (the original core), then ACKs the first INIT
+// with status, and returns. It returns false on a 2 s read timeout.
+func answerInitHandshake(conn *net.UDPConn, status byte) bool {
+	defer conn.SetReadDeadline(time.Time{})
+	buf := make([]byte, 64)
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, src, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			return false
+		}
+		switch {
+		case n == 1 && buf[0] == groovy.CmdGetVersion:
+			_, _ = conn.WriteToUDP([]byte{1}, src)
+		case n > 0 && buf[0] == groovy.CmdInit:
+			ack := make([]byte, groovy.ACKPacketSize)
+			ack[12] = status
+			_, _ = conn.WriteToUDP(ack, src)
+			return true
+		}
+	}
 }

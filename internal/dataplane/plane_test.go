@@ -1906,7 +1906,7 @@ func TestPlane_Prebuffer_HitsTargetReturnsFrames(t *testing.T) {
 		videoCh <- fb
 	}
 
-	video, audio, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, 4, time.Second)
+	video, audio, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, nil, nil, 4, time.Second)
 	if exit != "" {
 		t.Fatalf("exit = %q, want empty (target hit)", exit)
 	}
@@ -1950,7 +1950,7 @@ func TestPlane_Prebuffer_DrainsAudioWhileWaiting(t *testing.T) {
 		}
 	}()
 
-	video, audio, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, 2, time.Second)
+	video, audio, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, nil, nil, 2, time.Second)
 	if exit != "" {
 		t.Fatalf("exit = %q, want empty", exit)
 	}
@@ -1986,7 +1986,7 @@ func TestPlane_Prebuffer_HonorsCtxCancel(t *testing.T) {
 		cancel()
 	}()
 
-	_, _, exit := p.prebuffer(ctx, procDone, videoCh, audioCh, 4, time.Second)
+	_, _, exit := p.prebuffer(ctx, procDone, videoCh, audioCh, nil, nil, 4, time.Second)
 	if exit != "context_cancelled" {
 		t.Errorf("exit = %q, want context_cancelled", exit)
 	}
@@ -2007,7 +2007,7 @@ func TestPlane_Prebuffer_HonorsFFmpegExit(t *testing.T) {
 		close(procDone)
 	}()
 
-	_, _, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, 4, time.Second)
+	_, _, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, nil, nil, 4, time.Second)
 	if exit != "ffmpeg_exit" {
 		t.Errorf("exit = %q, want ffmpeg_exit", exit)
 	}
@@ -2028,7 +2028,7 @@ func TestPlane_Prebuffer_HonorsVideoEOF(t *testing.T) {
 		close(videoCh)
 	}()
 
-	_, _, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, 4, time.Second)
+	_, _, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, nil, nil, 4, time.Second)
 	if exit != "video_pipe_eof" {
 		t.Errorf("exit = %q, want video_pipe_eof", exit)
 	}
@@ -2046,7 +2046,7 @@ func TestPlane_Prebuffer_HonorsTimeout(t *testing.T) {
 	audioCh := make(chan []byte, 8)
 	procDone := make(chan struct{})
 
-	video, _, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, 4, 30*time.Millisecond)
+	video, _, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, nil, nil, 4, 30*time.Millisecond)
 	if exit != "timeout" {
 		t.Errorf("exit = %q, want timeout", exit)
 	}
@@ -2066,7 +2066,7 @@ func TestPlane_Prebuffer_DisabledByZeroTarget(t *testing.T) {
 	audioCh := make(chan []byte, 8)
 	procDone := make(chan struct{})
 
-	video, audio, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, 0, time.Second)
+	video, audio, exit := p.prebuffer(context.Background(), procDone, videoCh, audioCh, nil, nil, 0, time.Second)
 	if exit != "" {
 		t.Errorf("exit = %q, want empty (disabled)", exit)
 	}
@@ -2091,7 +2091,7 @@ func TestPlane_Prebuffer_NilAudioChannel(t *testing.T) {
 		videoCh <- fb
 	}
 
-	video, audio, exit := p.prebuffer(context.Background(), procDone, videoCh, nil, 2, time.Second)
+	video, audio, exit := p.prebuffer(context.Background(), procDone, videoCh, nil, nil, nil, 2, time.Second)
 	if exit != "" {
 		t.Errorf("exit = %q, want empty", exit)
 	}

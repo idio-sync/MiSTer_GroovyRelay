@@ -4,7 +4,6 @@ package integration
 
 import (
 	"context"
-	"encoding/binary"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -77,22 +76,7 @@ func TestModeline_PAL576i(t *testing.T) {
 	ackDone := make(chan struct{})
 	go func() {
 		defer close(ackDone)
-		conn := l.Conn()
-		buf := make([]byte, 64)
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		n, src, err := conn.ReadFromUDP(buf)
-		if err != nil || n == 0 || buf[0] != groovy.CmdInit {
-			_ = conn.SetReadDeadline(time.Time{})
-			return
-		}
-		_ = conn.SetReadDeadline(time.Time{})
-		ack := make([]byte, groovy.ACKPacketSize)
-		binary.LittleEndian.PutUint32(ack[0:4], 0)
-		binary.LittleEndian.PutUint16(ack[4:6], 0)
-		binary.LittleEndian.PutUint32(ack[6:10], 0)
-		binary.LittleEndian.PutUint16(ack[10:12], 0)
-		ack[12] = 1 << 6 // bit 6 = audio ready
-		_, _ = conn.WriteToUDP(ack, src)
+		answerInitHandshake(l.Conn(), 1<<6)
 	}()
 
 	runDone := make(chan struct{})

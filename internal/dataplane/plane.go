@@ -359,6 +359,11 @@ type PlaneConfig struct {
 	// error). Manager wires this into eventlog emission per spec §S7.
 	// Optional; may be nil for tests that don't care about init events.
 	OnInit func(err error)
+
+	// KeepaliveIdle overrides how long the plane may send nothing before
+	// the keepalive sends GET_STATUS. 0 = defaultKeepaliveIdle (2 s).
+	// Tests shorten it.
+	KeepaliveIdle time.Duration
 }
 
 // videoChCap is the video jitter buffer. ffmpeg runs faster than realtime,
@@ -413,6 +418,7 @@ const (
 	defaultPrebufferFields    = 6
 	defaultPrebufferTimeoutMs = 5000
 	defaultAudioDelay         = 67 * time.Millisecond
+	coreProbeTimeout          = 200 * time.Millisecond
 	maxAudioDelayFields       = 16
 )
 
@@ -908,6 +914,29 @@ func (p *Plane) Run(ctx context.Context) error {
 	//    Drainer goroutine starts reading from the socket — otherwise it
 	//    swallows the ACK.
 	soundRate := rateCodeForHz(audioRate)
+	// 0. Core probe (design 2026-09-28 §3.1). Same socket contract as
+	//    INIT: it runs before the Drainer starts. It runs on every session,
+	//    because the user may switch cores between casts.
+	coreVersion, err := p.cfg.Sender.ProbeVersion(coreProbeTimeout)
+	if err != nil {
+		if p.cfg.OnInit != nil {
+			p.cfg.OnInit(err)
+		}
+		return fmt.Errorf("core version probe: %w", err)
+	}
+	core := groovy.CoreFromVersion(coreVersion)
+	p.core.Store(uint32(core))
+	codec, codecWarning := ResolveCodec(p.cfg.Codec, core)
+	if codecWarning != "" {
+		slog.Warn("video codec fallback", "reason", codecWarning, "core", core.String())
+	}
+	if codec != CodecLZ4 {
+		// Only reachable from a provisional LZ4 (Part 2 may do this); drop
+		// delta so the raw path never consults LZ4 history.
+		p.deltaLZ4Enabled = false
+	}
+	p.codec = codec
+	p.effCodec.Store(codec)
 	initPkt := groovy.BuildInit(initCompressionByte(p.codec), soundRate, byte(audioChans), p.cfg.RGBMode)
 	// 3 attempts × 60 ms: INIT is the one ACK-gated exchange, and a single
 	// lost datagram on a busy host should not fail the whole session.
@@ -924,6 +953,20 @@ func (p *Plane) Run(ctx context.Context) error {
 	p.audioReady.Store(audioEnabled && ack.AudioReady())
 	p.fpgaFrame.Store(ack.FPGAFrame)
 	p.lastACKUnix.Store(time.Now().UnixNano())
+	keepaliveIdle := p.cfg.KeepaliveIdle
+	if keepaliveIdle <= 0 {
+		keepaliveIdle = defaultKeepaliveIdle
+	}
+	keepaliveStop := make(chan struct{})
+	keepaliveDone := make(chan struct{})
+	go func() {
+		defer close(keepaliveDone)
+		runKeepalive(p.cfg.Sender, keepaliveIdle, keepaliveStop)
+	}()
+	defer func() {
+		close(keepaliveStop)
+		<-keepaliveDone
+	}()
 
 	// Session-start lifecycle marker. One INFO line per session with the
 	// negotiated parameters so the operator can correlate later events
@@ -931,6 +974,8 @@ func (p *Plane) Run(ctx context.Context) error {
 	sessionStart := time.Now()
 	slog.Info("dataplane session started",
 		"codec", string(p.codec),
+		"core", core.String(),
+		"core_version", coreVersion,
 		"rgb_mode", p.cfg.RGBMode,
 		"audio_rate", audioRate,
 		"audio_chans", audioChans,
@@ -1004,7 +1049,11 @@ func (p *Plane) Run(ctx context.Context) error {
 	prebufferTarget := envPrebufferFields(videoChCap)
 	prebufferTimeout := envPrebufferTimeout()
 	videoPrebuffer, audioPrebuffer, prebufferExit := p.prebuffer(
-		ctx, proc.Done(), videoCh, audioCh, prebufferTarget, prebufferTimeout)
+		ctx, proc.Done(), videoCh, audioCh, ackCh, func(a groovy.ACK) {
+			p.audioReady.Store(audioEnabled && a.AudioReady())
+			p.fpgaFrame.Store(a.FPGAFrame)
+			p.lastACKUnix.Store(time.Now().UnixNano())
+		}, prebufferTarget, prebufferTimeout)
 	switch prebufferExit {
 	case "context_cancelled", "ffmpeg_exit", "video_pipe_eof":
 		for _, fb := range videoPrebuffer {
@@ -1137,7 +1186,7 @@ func (p *Plane) Run(ctx context.Context) error {
 			p.fpgaFrame.Store(a.FPGAFrame)
 			p.lastACKUnix.Store(time.Now().UnixNano())
 			latestACK = a
-			if a.FrameEcho != lastEcho {
+			if echoAdvanced(a, lastEcho) {
 				p.noteEchoAdvance(lastEcho, a.FrameEcho, frameNum)
 				lastEcho = a.FrameEcho
 				ticksSinceEchoMoved = 0
@@ -2082,6 +2131,8 @@ func (p *Plane) prebuffer(
 	procDone <-chan struct{},
 	videoCh <-chan *FrameBuf,
 	audioCh <-chan []byte,
+	acks <-chan groovy.ACK,
+	onACK func(groovy.ACK),
 	target int,
 	timeout time.Duration,
 ) (video []*FrameBuf, audio [][]byte, exitReason string) {
@@ -2112,6 +2163,12 @@ func (p *Plane) prebuffer(
 		case pcm, ok := <-audioCh:
 			if ok && len(pcm) > 0 {
 				audio = append(audio, pcm)
+			}
+		case a := <-acks:
+			// SWITCHRES (GroovyNLC) and keepalive ACKs arrive here; draining
+			// keeps ackCh from filling (design §3.4). A nil acks never fires.
+			if onACK != nil {
+				onACK(a)
 			}
 		}
 	}
