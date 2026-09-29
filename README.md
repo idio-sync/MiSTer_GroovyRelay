@@ -300,10 +300,24 @@ every 2 s of silence. This stops GroovyNLC v1.1–v1.3 from closing the session.
 | `auto` (default) | LZ4 on both cores today. |
 | `lz4` | Always LZ4. |
 | `raw` | Uncompressed. |
+| `nlc` | GroovyNLC's near-lossless codec. Needs the GroovyNLC core; on the original core the bridge falls back to LZ4 and logs a warning. |
 
 Configs that still say `lz4_enabled` are migrated automatically: `true` becomes `auto`, `false`
 becomes `raw`. `auto` may pick GroovyNLC's NLC codec in a future release, once that codec is
 verified on hardware. To keep LZ4 regardless, set `codec = "lz4"`.
+
+When `codec = "nlc"`, two more settings apply:
+
+| Value | Behaviour |
+|-------|-----------|
+| `nlc_near` | `0` (lossless) to `3`; higher values trade picture fidelity for a smaller encoded size. |
+| `nlc_pack` | `tiled` (default) or `rice`. Rice only works with a Rice-capable GroovyNLC build; otherwise expect a garbled picture. |
+
+**NLC status:** the Go encoder is a bit-exact port verified against the fork's reference codec,
+and it costs about 2 ms of CPU per field on a desktop CPU — benchmark on NAS-class hosts before
+enabling it. It has **not yet been verified on real hardware**: try 240p first, 480i is
+unconfirmed on the fork, and OSD **Volatile framebuffer** must be Off. `auto` keeps using LZ4
+until hardware checks pass.
 
 ## License
 

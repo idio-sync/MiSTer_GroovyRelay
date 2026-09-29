@@ -253,6 +253,13 @@ moves out of `NewPlane` (plane.go:569-597): `NewPlane` no longer decides
 delta support from config; `Run` allocates LZ4/delta scratch or NLC
 scratch after resolution.
 
+Part 2 implementation note: `NewPlane` still allocates LZ4/delta scratch
+against the provisional LZ4 codec (the same pre-probe resolution
+`ResolveCodec` gives `CodecNLC` against `groovy.CoreUnknown`), since that
+allocation must happen before the core is known. `applySessionCodec`, called
+from `Run` once the probe resolves the real codec, drops the delta scratch
+and allocates the NLC encoder/scratch when the effective codec is NLC.
+
 ### 4.3 INIT byte[1]
 
 - raw → `0`, lz4 → `1`.
@@ -372,9 +379,11 @@ Layout, to keep the testdata small: each input image stored once
 of the reference decoder's output.
 
 Input matrix: flat, gradient, sharp edges, noise, alternating saturated
-primaries (Co/Cg extremes), content that forces the Rice escape path
-(residual ≥ 20<<k), one real 720×240 field, and a width not divisible by
-16; each × near {0,1,2,3} × pack {tiled, rice}.
+primaries (Co/Cg extremes), one real 720×240 field, and a width not
+divisible by 16; each × near {0,1,2,3} × pack {tiled, rice}. The Rice
+escape is unreachable with tile 16 and adaptive k (the per-tile k bound
+gives q ≤ 16 < the escape limit 20), so no vector exercises it; the Go port
+keeps the escape code verbatim and a unit round-trip covers it.
 
 Go tests require byte-identical encoder output for every case; Go decode
 is exact at near 0 and matches the reference decode hash at near 1–3.
@@ -450,3 +459,8 @@ Two implementation plans against this spec:
 2. **Part 2 — NLC encoder:** §5, §6.1, `nlc` codec + `nlc_near` +
    `nlc_pack` config/UI, fake-mister NLC decode, the Part 2 tests.
    The §1.5 license question is resolved (GPL-2.0-or-later).
+
+**Status (2026-09-29): Part 2 implemented.** The NLC encoder/decoder
+package, dataplane NLC path, config/UI, fake-mister NLC decode, and the
+Part 2 unit and integration tests are all in place. The §6.5 manual
+hardware checks remain outstanding — `auto` stays on LZ4 until they pass.

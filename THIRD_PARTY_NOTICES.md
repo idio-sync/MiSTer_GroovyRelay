@@ -35,6 +35,16 @@ https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE
 
 MiSTer Groovy Relay uses `github.com/anacrolix/torrent` for BitTorrent magnet and metainfo handling in the optional Torrent adapter. It is distributed under the Mozilla Public License 2.0 (MPL-2.0); see the module's license in its upstream repository and the version pinned in `go.mod`.
 
+### internal/groovy/nlc
+
+`internal/groovy/nlc` is a Go port of the NLC codec from
+[verbst/Groovy_MiSTer](https://github.com/verbst/Groovy_MiSTer)
+(`api/nlc_codec.{h,cpp}` at commit `e60f52a`), used under GPL-2.0-or-later
+and distributed as part of this GPL-3.0 project, as permitted by that
+license. `tools/nlcvectors` vendors the original C++ source under the same
+terms; it is used only to generate test vectors and is not part of the
+shipped binaries.
+
 ## Bundled UI Fonts
 
 The companion extension bundles WOFF2 font assets for DSEG (7- and
