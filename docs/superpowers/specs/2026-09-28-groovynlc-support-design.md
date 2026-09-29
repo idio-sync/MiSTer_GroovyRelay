@@ -96,9 +96,11 @@ v2-or-later for the codec. This project is GPL-3.0.
 
 The Go port is a derivative work; if the codec is GPL-2.0-only it cannot
 be combined into this project. The vendored C reference used only as a
-separate test-vector tool is closer to aggregation. **Confirm "v2 or
-later" with the fork author before merging Part 2.** Part 1 contains no
-fork-derived code. (Separately, README.md:272 calls Groovy_MiSTer a
+separate test-vector tool is closer to aggregation. **Resolved
+2026-09-29: the codec is GPL-2.0-or-later (confirmed by the project
+owner), so the Go port can ship under this project's GPL-3.0.** The
+vendored C copy and the Go port should carry a "GPL-2.0-or-later"
+notice crediting the fork. Part 1 contains no fork-derived code. (Separately, README.md:272 calls Groovy_MiSTer a
 "GPL-3 reference", which is inaccurate; fix in Part 1's README edit.)
 
 ## 2. Goals / non-goals
@@ -447,4 +449,4 @@ Two implementation plans against this spec:
    and the §1.5 license wording fix. Shippable alone.
 2. **Part 2 — NLC encoder:** §5, §6.1, `nlc` codec + `nlc_near` +
    `nlc_pack` config/UI, fake-mister NLC decode, the Part 2 tests.
-   Gated on the §1.5 license confirmation.
+   The §1.5 license question is resolved (GPL-2.0-or-later).
