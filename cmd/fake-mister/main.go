@@ -93,8 +93,12 @@ func main() {
 				if sampleRate > 0 && channels > 0 {
 					dumper.StartAudio(sampleRate, channels)
 				}
+				decoder.SetInit(cmd.Init.LZ4Frames)
 			case groovy.CmdSwitchres:
 				modeline = cmd.Switchres
+				if w, h, ok := fieldDims(modeline); ok {
+					decoder.SetDims(w, h)
+				}
 			case groovy.CmdClose:
 				dumper.CloseAudio(sampleRate, channels)
 			}

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy/nlc"
 	"github.com/pierrec/lz4/v4"
 )
 
@@ -117,6 +118,125 @@ func TestFieldDecoder_DeltaWithoutPrevErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on delta without prev field")
 	}
+}
+
+// TestFieldDecoder_NLCRoundTrip confirms SetInit(2 | ...) plus SetDims makes
+// Decode take the NLC path and recover the encoder's exact input at near 0.
+func TestFieldDecoder_NLCRoundTrip(t *testing.T) {
+	const w, h = 96, 24
+	p := nlc.Params{Width: w, Height: h, Near: 0, Pack: nlc.PackTiled}
+	src := make([]byte, nlc.FrameBytes(p))
+	for i := range src {
+		src[i] = byte(i * 7 % 251)
+	}
+	enc, err := nlc.NewEncoder(p)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	dst := make([]byte, nlc.MaxEncodedSize(p))
+	n, err := enc.EncodeInto(dst, src)
+	if err != nil {
+		t.Fatalf("EncodeInto: %v", err)
+	}
+
+	d := NewFieldDecoder()
+	d.SetInit(groovy.NLCCompressionByte(0, false))
+	d.SetDims(w, h)
+	out, err := d.Decode(FieldEvent{
+		Header:  BlitHeader{Frame: 1, Field: 0, Compressed: true, CompressedSize: uint32(n)},
+		Payload: dst[:n],
+	}, w*h*3)
+	if err != nil {
+		t.Fatalf("decode nlc: %v", err)
+	}
+	if !bytes.Equal(out, src) {
+		t.Fatal("nlc round trip at near 0 is not lossless")
+	}
+}
+
+// TestFieldDecoder_NLCCorruptPayloadErrors confirms a corrupted NLC payload
+// surfaces as a decode error rather than a silently wrong or truncated field.
+func TestFieldDecoder_NLCCorruptPayloadErrors(t *testing.T) {
+	const w, h = 96, 24
+	p := nlc.Params{Width: w, Height: h, Near: 0, Pack: nlc.PackTiled}
+	src := make([]byte, nlc.FrameBytes(p))
+	if _, err := cryptorand.Read(src); err != nil {
+		t.Fatal(err)
+	}
+	enc, err := nlc.NewEncoder(p)
+	if err != nil {
+		t.Fatalf("NewEncoder: %v", err)
+	}
+	dst := make([]byte, nlc.MaxEncodedSize(p))
+	n, err := enc.EncodeInto(dst, src)
+	if err != nil {
+		t.Fatalf("EncodeInto: %v", err)
+	}
+	encoded := dst[:n]
+	// A segment-length field pointing past the end of the payload makes the
+	// stream truncated, which nlc.Decode rejects (see nlc.Decode's doc).
+	corrupt := append([]byte(nil), encoded...)
+	corrupt[2], corrupt[3] = 0xff, 0xff
+
+	d := NewFieldDecoder()
+	d.SetInit(groovy.NLCCompressionByte(0, false))
+	d.SetDims(w, h)
+	if _, err := d.Decode(FieldEvent{
+		Header:  BlitHeader{Frame: 1, Field: 0, Compressed: true, CompressedSize: uint32(len(corrupt))},
+		Payload: corrupt,
+	}, w*h*3); err == nil {
+		t.Fatal("expected error decoding a corrupt NLC payload")
+	}
+}
+
+// TestFieldDecoder_SetInitRawAndLZ4Unaffected confirms SetInit(0) and
+// SetInit(1) leave raw and LZ4 decoding exactly as before SetInit existed.
+func TestFieldDecoder_SetInitRawAndLZ4Unaffected(t *testing.T) {
+	const fieldBytes = 720 * 240 * 3
+
+	t.Run("raw", func(t *testing.T) {
+		d := NewFieldDecoder()
+		d.SetInit(groovy.LZ4ModeOff)
+		raw := make([]byte, fieldBytes)
+		if _, err := cryptorand.Read(raw); err != nil {
+			t.Fatal(err)
+		}
+		out, err := d.Decode(FieldEvent{
+			Header:  BlitHeader{Frame: 1, Field: 0},
+			Payload: raw,
+		}, fieldBytes)
+		if err != nil {
+			t.Fatalf("decode raw: %v", err)
+		}
+		if !bytes.Equal(out, raw) {
+			t.Fatal("raw payload corrupted by decoder after SetInit(0)")
+		}
+	})
+
+	t.Run("lz4", func(t *testing.T) {
+		d := NewFieldDecoder()
+		d.SetInit(groovy.LZ4ModeDefault)
+		raw := make([]byte, fieldBytes)
+		for i := range raw {
+			raw[i] = byte(i % 251)
+		}
+		scratch := make([]byte, len(raw)*2)
+		var c lz4.Compressor
+		n, ok := groovy.LZ4CompressInto(&c, scratch, raw)
+		if !ok {
+			t.Fatal("compressible input wasn't compressed")
+		}
+		out, err := d.Decode(FieldEvent{
+			Header:  BlitHeader{Frame: 1, Field: 0, Compressed: true, CompressedSize: uint32(n)},
+			Payload: scratch[:n],
+		}, fieldBytes)
+		if err != nil {
+			t.Fatalf("decode lz4: %v", err)
+		}
+		if !bytes.Equal(out, raw) {
+			t.Fatal("lz4 round-trip corrupted after SetInit(1)")
+		}
+	})
 }
 
 func TestFieldDecoder_LostDeltaDesyncsUntilFullField(t *testing.T) {
