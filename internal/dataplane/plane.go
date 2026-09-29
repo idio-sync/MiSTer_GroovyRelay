@@ -15,6 +15,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/dataplane/audiodsp"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/ffmpeg"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy/nlc"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/osd"
 	"github.com/pierrec/lz4/v4"
@@ -42,7 +43,7 @@ type fieldSender interface {
 
 type fieldSendStats struct {
 	total           time.Duration
-	lz4             time.Duration
+	encode          time.Duration // LZ4 or NLC compression of the field
 	congestion      time.Duration
 	send            time.Duration
 	rawBytes        int
@@ -60,7 +61,7 @@ type dataplaneStatsWindow struct {
 
 	fieldTotal         time.Duration
 	maxField           time.Duration
-	maxLZ4             time.Duration
+	maxEncode          time.Duration
 	maxCongestion      time.Duration
 	maxSend            time.Duration
 	sendBudgetOverruns uint64
@@ -135,8 +136,8 @@ func (w *dataplaneStatsWindow) observeField(stats fieldSendStats, budgetThreshol
 	if stats.total > w.maxField {
 		w.maxField = stats.total
 	}
-	if stats.lz4 > w.maxLZ4 {
-		w.maxLZ4 = stats.lz4
+	if stats.encode > w.maxEncode {
+		w.maxEncode = stats.encode
 	}
 	if stats.congestion > w.maxCongestion {
 		w.maxCongestion = stats.congestion
@@ -250,7 +251,7 @@ func dataplaneStatsAttrs(window dataplaneStatsWindow, snap dataplaneStatsSnapsho
 		"duplicate_pct", duplicatePct,
 		"avg_field_ms", avgFieldMs,
 		"max_field_ms", window.maxField.Milliseconds(),
-		"max_lz4_ms", window.maxLZ4.Milliseconds(),
+		"max_encode_ms", window.maxEncode.Milliseconds(),
 		"max_congestion_ms", window.maxCongestion.Milliseconds(),
 		"max_send_ms", window.maxSend.Milliseconds(),
 		"send_budget_overruns", window.sendBudgetOverruns,
@@ -337,6 +338,11 @@ type PlaneConfig struct {
 	AudioDSP            audiodsp.Params // tone/EQ chain; zero value = transparent
 	SeekOffsetMs        int             // reported as session start position
 	Generation          uint64          // session generation; stamps audio snapshots
+
+	// NLCNear (0..3) and NLCPack are the GroovyNLC encoder parameters. They
+	// are used only when the codec resolves to NLC (design 2026-09-28 §4.3).
+	NLCNear int
+	NLCPack nlc.Pack
 
 	// OSD, when non-nil, is drawn into every outgoing field just before
 	// compression. It is owned by the control plane and shared across
@@ -511,6 +517,16 @@ type Plane struct {
 	codec    Codec
 	effCodec atomic.Value  // Codec
 	core     atomic.Uint32 // groovy.Core
+
+	// NLC encoder state (design 2026-09-28 §5.2). nlcEnc and nlcScratch are
+	// allocated by applySessionCodec only when the session resolves to NLC,
+	// once per Plane, and are owned by the tick goroutine. nlcEncodeErrors
+	// counts fields skipped because the encoder failed; lastNLCErrorLog
+	// rate-limits the matching warning.
+	nlcEnc          *nlc.Encoder
+	nlcScratch      []byte // len == nlc.MaxEncodedSize
+	nlcEncodeErrors atomic.Uint64
+	lastNLCErrorLog time.Time
 
 	// Optional delta/diagnostic state. Owned by the tick goroutine. Allocated
 	// only when delta-LZ4 or GROOVY_FIELD_DIAG is enabled so the default
@@ -887,6 +903,77 @@ func (p *Plane) EffectiveCodec() Codec {
 // groovy.CoreUnknown before the probe. Safe for concurrent use.
 func (p *Plane) Core() groovy.Core { return groovy.Core(p.core.Load()) }
 
+// applySessionCodec resolves the session's final codec against the probed
+// core and allocates what that codec needs (design 2026-09-28 §4.2). Called
+// by Run after the core probe and before INIT.
+//
+// Under NLC, delta-LZ4 is off, and the NLC encoder and its output buffer
+// are allocated on first use and kept for the Plane's lifetime. If the
+// encoder cannot be built (an invalid size or NEAR, or a pixel format other
+// than RGB888), the session falls back to LZ4, which effCodec and the INIT
+// byte then report.
+func (p *Plane) applySessionCodec(core groovy.Core) {
+	codec, warning := ResolveCodec(p.cfg.Codec, core)
+	if warning != "" {
+		slog.Warn("video codec fallback", "reason", warning, "core", core.String())
+	}
+	if codec == CodecNLC {
+		if err := p.ensureNLCEncoder(); err != nil {
+			slog.Warn("video codec fallback",
+				"reason", "nlc encoder unavailable; using lz4",
+				"err", err,
+				"core", core.String())
+			codec = CodecLZ4
+		}
+	}
+	if codec != CodecLZ4 {
+		// Delta is LZ4-only; drop it so no other codec consults LZ4 history.
+		// Field history stays only for GROOVY_FIELD_DIAG (§5.2).
+		if p.deltaLZ4Enabled {
+			slog.Info("adaptive delta-LZ4 disabled: session codec is not LZ4",
+				"codec", string(codec))
+			if !p.fieldDiagEnabled {
+				p.fieldPrev = [2][]byte{}
+				p.fieldDeltaScratch, p.fieldDeltaLZ4Scratch = nil, nil
+			}
+		}
+		p.deltaLZ4Enabled = false
+	}
+	p.codec = codec
+	p.effCodec.Store(codec)
+}
+
+// ensureNLCEncoder builds the NLC encoder and its output buffer once per
+// Plane. The encoder input is one transmitted payload: a field for
+// interlaced modes, or the full progressive frame, both FieldHeight rows of
+// RGB888.
+func (p *Plane) ensureNLCEncoder() error {
+	if p.nlcEnc != nil {
+		return nil
+	}
+	if p.cfg.BytesPerPixel != 3 {
+		return fmt.Errorf("nlc needs 3 bytes per pixel (RGB888), got %d", p.cfg.BytesPerPixel)
+	}
+	params := nlc.Params{
+		Width:  p.cfg.FieldWidth,
+		Height: p.cfg.FieldHeight,
+		Near:   p.cfg.NLCNear,
+		Pack:   p.cfg.NLCPack,
+	}
+	enc, err := nlc.NewEncoder(params)
+	if err != nil {
+		return err
+	}
+	p.nlcEnc = enc
+	p.nlcScratch = make([]byte, nlc.MaxEncodedSize(params))
+	return nil
+}
+
+// initCompressionByte is INIT byte[1] for the session's current codec.
+func (p *Plane) initCompressionByte() byte {
+	return initCompressionByte(p.codec, p.cfg.NLCNear, p.cfg.NLCPack == nlc.PackRice)
+}
+
 // Run is the orchestration spine. Blocks until ctx is cancelled, the FFmpeg
 // child exits, or the video pipe closes. Returns ctx.Err() on cancellation
 // and nil on a clean EOF; propagates spawn / handshake errors directly.
@@ -924,22 +1011,14 @@ func (p *Plane) Run(ctx context.Context) error {
 	}
 	core := groovy.CoreFromVersion(coreVersion)
 	p.core.Store(uint32(core))
-	codec, codecWarning := ResolveCodec(p.cfg.Codec, core)
-	if codecWarning != "" {
-		slog.Warn("video codec fallback", "reason", codecWarning, "core", core.String())
-	}
-	if codec != CodecLZ4 {
-		// Only reachable from a provisional LZ4 (Part 2 may do this); drop
-		// delta so the raw path never consults LZ4 history.
-		p.deltaLZ4Enabled = false
-	}
-	p.codec = codec
-	p.effCodec.Store(codec)
+	// The final codec, and its scratch, are settled before INIT is built so
+	// INIT byte[1] names the codec actually used.
+	p.applySessionCodec(core)
 	// 1. INIT handshake (ACK-gated; 60 ms timeout). Must happen BEFORE the
 	//    Drainer goroutine starts reading from the socket — otherwise it
 	//    swallows the ACK.
 	soundRate := rateCodeForHz(audioRate)
-	initPkt := groovy.BuildInit(initCompressionByte(p.codec), soundRate, byte(audioChans), p.cfg.RGBMode)
+	initPkt := groovy.BuildInit(p.initCompressionByte(), soundRate, byte(audioChans), p.cfg.RGBMode)
 	// 3 attempts × 60 ms: INIT is the one ACK-gated exchange, and a single
 	// lost datagram on a busy host should not fail the whole session.
 	// SendInitAwaitACK flushes stale ACKs from the shared socket before
@@ -1166,7 +1245,8 @@ func (p *Plane) Run(ctx context.Context) error {
 			"frame_echo_final", lastEcho,
 			"enobuf_total", p.cfg.Sender.ENOBUFCount(),
 			"torn_payload_sends_total", p.TornPayloadSends(),
-			"audio_ring_drops_total", audioRing.Drops())
+			"audio_ring_drops_total", audioRing.Drops(),
+			"nlc_encode_errors_total", p.nlcEncodeErrors.Load())
 	}()
 	// nextField is the row-stripe parity walking 0,1,0,1 every tick. The
 	// configured TFF/BFF baseline is encoded in fieldOrderFlip alone (set by
@@ -1574,6 +1654,12 @@ func (p *Plane) stampOSD(payload []byte, now time.Time) {
 // compressed blit of size 0 and the RAW payload that follows is fed to the
 // LZ4 decoder (groovy.cpp setBlit). With LZ4 disabled the RAW variant is
 // emitted.
+//
+// Under NLC (design 2026-09-28 §5.2) every field is NLC-encoded and sent as
+// a 12-byte compressed header plus the encoded bytes, even when larger than
+// raw; a RAW, dup or delta header is never sent. If the encoder fails the
+// field is skipped: nothing is sent, nlcEncodeErrors counts it and the tick
+// loop still advances frameNum.
 func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats {
 	fieldStart := time.Now()
 	stats := fieldSendStats{rawBytes: len(raw)}
@@ -1597,7 +1683,20 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats 
 				p.logLZ4Incompressible(len(raw), time.Now())
 			}
 		}
-		stats.lz4 = time.Since(t)
+		stats.encode = time.Since(t)
+	} else if p.codec == CodecNLC {
+		t := time.Now()
+		n, err := p.nlcEnc.EncodeInto(p.nlcScratch, raw)
+		stats.encode = time.Since(t)
+		if err != nil {
+			p.noteNLCEncodeError(err, len(raw), time.Now())
+			stats.total = time.Since(fieldStart)
+			return stats
+		}
+		payload = p.nlcScratch[:n]
+		opts.Compressed = true
+		opts.CompressedSize = uint32(n)
+		stats.compressedBytes = n
 	}
 	stats.payloadBytes = len(payload)
 	stats.payloadChunks = datagramChunks(len(payload))
@@ -1645,7 +1744,7 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats 
 		attrs := []any{
 			"threshold_ms", budgetThreshold.Milliseconds(),
 			"total_ms", stats.total.Milliseconds(),
-			"lz4_ms", stats.lz4.Milliseconds(),
+			"encode_ms", stats.encode.Milliseconds(),
 			"congestion_ms", stats.congestion.Milliseconds(),
 			"send_ms", stats.send.Milliseconds(),
 			"raw_bytes", stats.rawBytes,
@@ -2012,6 +2111,20 @@ func (p *Plane) logLZ4Incompressible(size int, now time.Time) {
 	}
 	slog.Debug("lz4 incompressible field; sending expanded LZ4 block", attrs...)
 	p.lastLZ4FallbackDebug = now
+}
+
+// noteNLCEncodeError counts an NLC encoder failure and logs it at most once
+// per second. Tick-goroutine only.
+func (p *Plane) noteNLCEncodeError(err error, rawBytes int, now time.Time) {
+	total := p.nlcEncodeErrors.Add(1)
+	if !p.lastNLCErrorLog.IsZero() && now.Sub(p.lastNLCErrorLog) < time.Second {
+		return
+	}
+	p.lastNLCErrorLog = now
+	slog.Warn("nlc encode failed; field skipped",
+		"err", err,
+		"raw_bytes", rawBytes,
+		"nlc_encode_errors_total", total)
 }
 
 // holdField holds the raster on an underrun tick. The caller has already

@@ -1,6 +1,7 @@
 package dataplane
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/fakemister"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovy/nlc"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
 )
 
@@ -31,6 +33,7 @@ func (s *slowStartSource) ReadFrame(dst []byte) {
 
 type coreSession struct {
 	listener *fakemister.Listener
+	cmds     chan fakemister.Command
 	fields   chan fakemister.FieldEvent
 	plane    *Plane
 	cancel   context.CancelFunc
@@ -38,7 +41,9 @@ type coreSession struct {
 }
 
 // startCoreSession runs a Frames plane against a fake MiSTer that
-// impersonates the given core version.
+// impersonates the given core version. The field is 4x1 at 1 byte per pixel
+// unless cfg sets FieldWidth (then cfg's FieldHeight and BytesPerPixel are
+// used as given).
 func startCoreSession(t *testing.T, version byte, idleTimeout time.Duration, cfg PlaneConfig) *coreSession {
 	t.Helper()
 	l, err := fakemister.NewListener("127.0.0.1:0")
@@ -49,7 +54,10 @@ func startCoreSession(t *testing.T, version byte, idleTimeout time.Duration, cfg
 	sender, err := groovynet.NewSender("127.0.0.1", l.Addr().(*net.UDPAddr).Port, 0)
 	requireUDPSockets(t, err)
 
-	const fieldBytes = 4 * 1 * 1
+	if cfg.FieldWidth == 0 {
+		cfg.FieldWidth, cfg.FieldHeight, cfg.BytesPerPixel = 4, 1, 1
+	}
+	fieldBytes := uint32(cfg.FieldWidth * cfg.FieldHeight * cfg.BytesPerPixel)
 	cmds := make(chan fakemister.Command, 4096)
 	fields := make(chan fakemister.FieldEvent, 4096)
 	audios := make(chan fakemister.AudioEvent, 8)
@@ -57,13 +65,12 @@ func startCoreSession(t *testing.T, version byte, idleTimeout time.Duration, cfg
 
 	cfg.Sender = sender
 	cfg.Modeline = groovy.NTSC480i60
-	cfg.FieldWidth, cfg.FieldHeight, cfg.BytesPerPixel = 4, 1, 1
 	cfg.RGBMode = groovy.RGBMode888
 	plane := NewPlane(cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	runErr := make(chan error, 1)
 	go func() { runErr <- plane.Run(ctx) }()
-	cs := &coreSession{listener: l, fields: fields, plane: plane, cancel: cancel, runErr: runErr}
+	cs := &coreSession{listener: l, cmds: cmds, fields: fields, plane: plane, cancel: cancel, runErr: runErr}
 	t.Cleanup(func() {
 		cancel()
 		if err := <-runErr; err != nil && !errors.Is(err, context.Canceled) {
@@ -129,5 +136,122 @@ func TestPlane_NoKeepaliveIsReapedDuringSlowPrebuffer(t *testing.T) {
 	}
 	if cs.listener.Reaps() == 0 {
 		t.Fatal("expected the idle core to reap a silent prebuffer")
+	}
+}
+
+// patternSource fills every frame with the same position-dependent bytes, so
+// the two fields of a frame differ and a decoded field can be checked exactly.
+type patternSource struct{}
+
+func (patternSource) ReadFrame(dst []byte) {
+	for i := range dst {
+		dst[i] = byte(i*7 + (i/96)*13)
+	}
+}
+
+// initFrom returns the session's INIT command from the fake-mister stream.
+func (cs *coreSession) initFrom(t *testing.T, within time.Duration) fakemister.Command {
+	t.Helper()
+	deadline := time.After(within)
+	for {
+		select {
+		case c := <-cs.cmds:
+			if c.Type == groovy.CmdInit {
+				return c
+			}
+		case <-deadline:
+			t.Fatal("no INIT within deadline")
+		}
+	}
+}
+
+// Design §5.2: on GroovyNLC with codec nlc, every field is a 12-byte
+// compressed blit whose payload is the NLC encoding of that field; no raw,
+// dup or delta header is ever sent.
+func TestPlane_NLCSessionOnGroovyNLC(t *testing.T) {
+	const w, h, bpp = 32, 4, 3
+	for _, tc := range []struct {
+		name string
+		near int
+		pack nlc.Pack
+	}{
+		{"tiled", 0, nlc.PackTiled},
+		{"rice", 0, nlc.PackRice},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cs := startCoreSession(t, 2, 0, PlaneConfig{
+				Codec: CodecNLC, NLCNear: tc.near, NLCPack: tc.pack,
+				FieldWidth: w, FieldHeight: h, BytesPerPixel: bpp,
+				Frames: patternSource{},
+			})
+			frame := make([]byte, w*2*h*bpp)
+			patternSource{}.ReadFrame(frame)
+			params := nlc.Params{Width: w, Height: h, Near: tc.near, Pack: tc.pack}
+			want := make([]byte, w*h*bpp)
+			got := make([]byte, w*h*bpp)
+			for i := 0; i < 8; i++ {
+				var ev fakemister.FieldEvent
+				select {
+				case ev = <-cs.fields:
+				case <-time.After(2 * time.Second):
+					t.Fatalf("field %d did not arrive", i)
+				}
+				if !ev.Header.Compressed || ev.Header.Delta || ev.Header.Duplicate {
+					t.Fatalf("field %d header = %+v, want a plain compressed blit", i, ev.Header)
+				}
+				if int(ev.Header.CompressedSize) != len(ev.Payload) {
+					t.Fatalf("field %d: CompressedSize %d != payload %d", i, ev.Header.CompressedSize, len(ev.Payload))
+				}
+				if err := nlc.Decode(got, ev.Payload, params); err != nil {
+					t.Fatalf("field %d: nlc.Decode: %v", i, err)
+				}
+				ExtractFieldFromFrameInto(want, frame, w, 2*h, bpp, ev.Header.Field)
+				if !bytes.Equal(got, want) {
+					t.Fatalf("field %d (parity %d): decoded payload differs from the source field", i, ev.Header.Field)
+				}
+			}
+			if c := cs.plane.EffectiveCodec(); c != CodecNLC {
+				t.Fatalf("EffectiveCodec() = %q, want nlc", c)
+			}
+			initCmd := cs.initFrom(t, time.Second)
+			if want := groovy.NLCCompressionByte(tc.near, tc.pack == nlc.PackRice); initCmd.Init.LZ4Frames != want {
+				t.Fatalf("INIT[1] = %#x, want %#x", initCmd.Init.LZ4Frames, want)
+			}
+			// Every BLIT header so far must be the 12-byte compressed form.
+			blits := 0
+			for drained := false; !drained; {
+				select {
+				case c := <-cs.cmds:
+					if c.Type != groovy.CmdBlitFieldVSync {
+						continue
+					}
+					blits++
+					if n := len(c.Raw); n != groovy.BlitHeaderLZ4 {
+						t.Fatalf("BLIT header length %d, want %d (no raw/dup/delta under NLC)", n, groovy.BlitHeaderLZ4)
+					}
+				default:
+					drained = true
+				}
+			}
+			if blits == 0 {
+				t.Fatal("no BLIT headers observed")
+			}
+			if n := cs.listener.ZeroSizeLZ4Blits(); n != 0 {
+				t.Fatalf("ZeroSizeLZ4Blits = %d, want 0", n)
+			}
+		})
+	}
+}
+
+// Design §4.2: codec nlc on the original core falls back to LZ4, and INIT
+// says so.
+func TestPlane_NLCOnOriginalGroovyFallsBackToLZ4(t *testing.T) {
+	cs := startCoreSession(t, 1, 0, PlaneConfig{Codec: CodecNLC, NLCNear: 2, NLCPack: nlc.PackRice, Frames: &fillSource{}})
+	cs.waitField(t, 2*time.Second)
+	if c := cs.plane.EffectiveCodec(); c != CodecLZ4 {
+		t.Fatalf("EffectiveCodec() = %q, want lz4", c)
+	}
+	if initCmd := cs.initFrom(t, time.Second); initCmd.Init.LZ4Frames != groovy.LZ4ModeDefault {
+		t.Fatalf("INIT[1] = %#x, want %#x", initCmd.Init.LZ4Frames, groovy.LZ4ModeDefault)
 	}
 }
