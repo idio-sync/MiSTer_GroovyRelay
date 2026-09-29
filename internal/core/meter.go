@@ -66,7 +66,9 @@ func buildMeterHomeView(req SessionRequest, probe *ffmpeg.ProbeResult, crop *ffm
 }
 
 // provisionalCodec is the codec a session will use before the core probe
-// can refine it. In Part 1 the core never changes the answer (§4.2).
+// can refine it (§4.2). It resolves against groovy.CoreUnknown, so a
+// configured `nlc` codec shows as lz4 here until the probe; the active
+// plane's effective codec (once running) overrides this idle-state guess.
 func provisionalCodec(bridge config.BridgeConfig) dataplane.Codec {
 	c, _ := dataplane.ResolveCodec(dataplane.Codec(bridge.Video.EffectiveCodec()), groovy.CoreUnknown)
 	return c

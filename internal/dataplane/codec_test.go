@@ -146,6 +146,9 @@ func TestSendField_NLCEncodeErrorSendsNothing(t *testing.T) {
 		if stats.payloadBytes != 0 || stats.compressedBytes != 0 || stats.wireBytes != 0 {
 			t.Fatalf("stats = %+v, want no payload", stats)
 		}
+		if !stats.skipped {
+			t.Fatalf("stats.skipped = false, want true so the tick loop excludes this field from its counters")
+		}
 	}
 	if len(sender.headers) != 0 || len(sender.payloads) != 0 {
 		t.Fatalf("sent %d headers, %d payloads; want none", len(sender.headers), len(sender.payloads))
@@ -156,6 +159,23 @@ func TestSendField_NLCEncodeErrorSendsNothing(t *testing.T) {
 	if p.WireBytes() != 0 {
 		t.Fatalf("WireBytes = %d, want 0", p.WireBytes())
 	}
+	// Matching holdField's underrun hold: MarkBlitSent(0) resets the
+	// congestion window even though nothing went on the wire.
+	if want := []int{0, 0, 0}; !equalInts(sender.markBlitSentArgs, want) {
+		t.Fatalf("MarkBlitSent calls = %v, want %v", sender.markBlitSentArgs, want)
+	}
+}
+
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestSendField_NLCSendsCompressedBlit(t *testing.T) {

@@ -1152,11 +1152,12 @@ func TestWriteFieldSubDeltaInto_UsesByteWrapSubtraction(t *testing.T) {
 }
 
 type scriptedFieldSender struct {
-	headers         [][]byte
-	payloads        [][]byte
-	failPayloadSend int
-	payloadSends    int
-	congestionDelay time.Duration
+	headers          [][]byte
+	payloads         [][]byte
+	failPayloadSend  int
+	payloadSends     int
+	congestionDelay  time.Duration
+	markBlitSentArgs []int
 }
 
 func (s *scriptedFieldSender) WaitForCongestion() {
@@ -1179,7 +1180,7 @@ func (s *scriptedFieldSender) SendPayload(data []byte) error {
 	return nil
 }
 
-func (s *scriptedFieldSender) MarkBlitSent(int) {}
+func (s *scriptedFieldSender) MarkBlitSent(n int) { s.markBlitSentArgs = append(s.markBlitSentArgs, n) }
 
 func repeatedTileField(length int, tile []byte) []byte {
 	out := make([]byte, length)

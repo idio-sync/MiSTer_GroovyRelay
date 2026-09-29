@@ -256,6 +256,12 @@ func TestEncodeAllocs(t *testing.T) {
 func FuzzDecode(f *testing.F) {
 	for _, c := range loadGolden(f) {
 		p := c.params(f)
+		// Seed only the small golden cases (96x24, 250x7). The 720x240
+		// "field" streams are large enough to stall fuzz minimisation on
+		// Windows.
+		if p.Width == 720 && p.Height == 240 {
+			continue
+		}
 		// The fuzz body maps w,h to w%1024+1, h%256+1, so seed with dims-1.
 		f.Add(goldenEncoded(f, c), uint16(p.Width-1), uint16(p.Height-1), uint8(p.Near), p.Pack == PackRice)
 	}

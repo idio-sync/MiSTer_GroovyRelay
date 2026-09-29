@@ -52,6 +52,7 @@ type fieldSendStats struct {
 	payloadChunks   int
 	wireBytes       int
 	deltaSelected   bool
+	skipped         bool // NLC encode failed; no header/payload was sent for this tick
 }
 
 type dataplaneStatsWindow struct {
@@ -1412,14 +1413,18 @@ func (p *Plane) Run(ctx context.Context) error {
 				}
 				p.stampOSD(payload, time.Now())
 				sendStats := p.sendField(frameNum, emitField, payload)
-				statWindow.fieldsSent++
+				if !sendStats.skipped {
+					statWindow.fieldsSent++
+					sessionTotalFields++
+				}
 				statWindow.observeField(sendStats, p.fieldBudgetThreshold())
-				sessionTotalFields++
 				// Trailing Put — invariant (2): sendField does not return
 				// errors out of Run, so unconditional Put after sendField
 				// is safe. defer is reserved for panic-prone code paths.
 				p.framePool.Put(fb)
-				p.framesTotal.Add(1)
+				if !sendStats.skipped {
+					p.framesTotal.Add(1)
+				}
 			} else {
 				if consecutiveUnderruns == 0 {
 					consecutiveUnderrunFrom = time.Now()
@@ -1690,6 +1695,11 @@ func (p *Plane) sendField(frame uint32, field uint8, raw []byte) fieldSendStats 
 		stats.encode = time.Since(t)
 		if err != nil {
 			p.noteNLCEncodeError(err, len(raw), time.Now())
+			// Matching holdField's underrun hold: no header or payload
+			// goes out this tick, so reset the congestion window the
+			// same way.
+			p.fieldSender.MarkBlitSent(0)
+			stats.skipped = true
 			stats.total = time.Since(fieldStart)
 			return stats
 		}

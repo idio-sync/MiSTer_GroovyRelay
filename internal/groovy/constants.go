@@ -38,13 +38,17 @@ const (
 
 // INIT byte[1] (lz4Frames) mode values.
 //
-// On the wire INIT[1] is a binary flag: 0 = raw, 1 = LZ4 enabled. Both
-// MiSTerCast (Library/MiSTerCastLib/groovymister.cpp:449 — `m_bufferSend[1] =
-// (lz4Frames) ? 1 : 0`) and the Groovy_MiSTer receiver
+// On the original core INIT[1] is a binary flag: 0 = raw, 1 = LZ4 enabled.
+// Both MiSTerCast (Library/MiSTerCastLib/groovymister.cpp:449 —
+// `m_bufferSend[1] = (lz4Frames) ? 1 : 0`) and the Groovy_MiSTer receiver
 // (hps_linux/src/support/groovy/groovy.cpp — `compression = recvbufPtr[1]`,
 // only 0/1 are recognized) treat it that way. The values 2..6 that appear in
 // the MiSTerCast source are an internal per-frame strategy parameter
 // (fast vs. LZ4-HC, evaluate delta vs. skip) — they are never transmitted.
+//
+// On GroovyNLC (design §1.1c) INIT[1] is instead a bitfield: bits[1:0] the
+// codec (0 raw, 1 LZ4, 2 NLC), and for NLC also NEAR, colour, display mode
+// and pack. See NLCCompressionByte, which builds that byte.
 //
 // Delta-LZ4 is selected per-frame on the wire via the 13-byte BLIT header
 // variant (BlitFlagDelta at byte[12]); the receiver accepts that variant by
