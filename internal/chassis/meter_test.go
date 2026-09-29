@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -236,6 +237,25 @@ func TestMeterSamplerIdleDimsBothStandardLamps(t *testing.T) {
 	if got.MidRow.StandardNTSC || got.MidRow.StandardPAL {
 		t.Fatalf("idle standard lamps = NTSC %v PAL %v, want both false", got.MidRow.StandardNTSC, got.MidRow.StandardPAL)
 	}
+}
+
+// TestBuildSnapshot_ConcurrentCallersShareSamplerSafely guards the
+// refresher-vs-handler race: the snapshot refresher goroutine and
+// mutation handlers (refreshSnapshotNow) both run buildSnapshot, which
+// advances the single shared meterSampler. Only meaningful under -race.
+func TestBuildSnapshot_ConcurrentCallersShareSamplerSafely(t *testing.T) {
+	s := newTestServer(t)
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 50 {
+				s.refreshSnapshotNow()
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestMeterOverlayPanicRecoveryKeepsBaseFields(t *testing.T) {

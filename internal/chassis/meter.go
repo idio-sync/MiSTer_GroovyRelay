@@ -13,7 +13,10 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
 )
 
+// meterSampler is shared by the snapshot refresher goroutine and by
+// handlers that call refreshSnapshotNow, so Sample serializes on mu.
 type meterSampler struct {
+	mu             sync.Mutex
 	prevGeneration uint64
 	prevWireBytes  uint64
 	prevBlits      uint64
@@ -30,6 +33,8 @@ func newMeterSampler() *meterSampler {
 }
 
 func (s *meterSampler) Sample(snap core.StatusHomeView, overlay adapters.MeterOverlay, audioLive bool, now time.Time) MeterData {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if snap.State != core.StatePlaying && snap.State != core.StatePaused {
 		s.reset()
 		idle := idleMeterData()

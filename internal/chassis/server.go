@@ -479,8 +479,8 @@ func (s *Server) Close() error {
 // refreshSnapshotNow rebuilds the cached snapshot synchronously.
 // Successful preset mutations call this so connected SSE clients
 // observe the change within one diff-tick rather than waiting for the
-// next 250ms refresh. Safe to call from any goroutine; the cache uses
-// its own mutex.
+// next 250ms refresh. Safe to call from any goroutine; the cache and
+// the shared meterSampler each serialize on their own mutex.
 func (s *Server) refreshSnapshotNow() {
 	s.cache.Set(s.buildSnapshot(time.Now()))
 }
