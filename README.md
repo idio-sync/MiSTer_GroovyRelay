@@ -74,11 +74,13 @@ Host networking is required for Plex discovery. For macvlan/ipvlan networking, h
 
 ## CRT setup
 
+- **Output mode:** 480i by default; 240p and PAL modes are available.
 - **Field order:** if the picture shimmers, flip `interlace_field_order` in Settings; it applies live.
+- **Flicker filter:** if subtitles or thin lines flicker on 480i, set it to `full`.
 - **Picture size and position:** press **Calibrate on CRT** in Settings → Video & Audio and adjust until the test pattern's border shows on all four edges.
 - **On-screen display:** volume, channel, and transport overlays are on by default, with an optional clock.
 
-Details: [docs/picture.md](docs/picture.md). For the GroovyNLC core and the frame codec setting, see [docs/groovynlc.md](docs/groovynlc.md).
+Details: [docs/picture.md](docs/picture.md). For the GroovyNLC core and the frame codec setting, see [docs/groovynlc.md](docs/groovynlc.md). Every setting is listed in [docs/configuration.md](docs/configuration.md).
 
 ## Troubleshooting
 

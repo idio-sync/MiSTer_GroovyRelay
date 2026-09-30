@@ -1,5 +1,27 @@
 # Picture setup and on-screen display
 
+## Video settings
+
+These live in Settings → Video & Audio, stored under `[bridge.video]`.
+
+| Setting (UI label) | Values | What it does |
+| --- | --- | --- |
+| `modeline` (Output mode) | `NTSC_480i` (default), `NTSC_240p`, `PAL_576i`, `PAL_288p` | CRT video mode. PAL modes work over the wire but are untested on real PAL CRTs. |
+| `interlace_field_order` (Field order) | `bff` (default), `tff` | Flip it if the picture shimmers or combs. Applies immediately, even mid-cast. |
+| `aspect_mode` (Aspect) | `auto` (default), `letterbox`, `zoom` | How widescreen sources fit the 4:3 frame. `letterbox` adds black bars; `zoom` fills the frame and crops the sides; `auto` detects black bars burned into the source, crops them, then letterboxes what remains. |
+| `interlace_filter` (Flicker filter) | `light` (default), `full`, `off` | Vertical softening against interlace flicker; see below. |
+| `rgb_mode` | `rgb888` | Pixel format sent to the MiSTer. Only `rgb888` is supported today. |
+
+### Flicker filter
+
+On interlaced modes (480i, 576i), a detail one line tall exists in only one field, so it flashes at 30 Hz (25 Hz on PAL): subtitles, visualizer text, thin lines in animation, native 480-line sources. The flicker filter spreads each line into its neighbours so both fields carry it:
+
+- `light` (default): halves one-line flicker; barely softer than unfiltered.
+- `full`: removes one-line flicker; visibly softer.
+- `off`: full vertical sharpness, maximum flicker.
+
+It takes effect on the next cast and does nothing on 240p/288p. Film downscaled from HD is already soft vertically, so the difference shows mostly on subtitles, text, animation, and native 480-line sources.
+
 ## Picture size and position
 
 Every consumer CRT crops the edges of the picture differently, and some sit off-centre. Settings → Video & Audio has four fields for this, stored under `[bridge.video]`:

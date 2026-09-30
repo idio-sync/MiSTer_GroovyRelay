@@ -70,6 +70,19 @@ Useful controls:
 - Set `GROOVY_HLS_BUFFER=0` on the bridge process for a quick diagnostic or rollback bypass.
 - For bundled Streams, provider/channel `hls_buffer_disabled` settings can opt out a direct stream without disabling the whole catalog.
 
+Tuning, under `[bridge.hls_buffer]` (defaults rarely need changing):
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `live_edge_segments` | `3` | Stay this many segments behind the live edge. |
+| `start_segments` | `2` | Segments to fetch before starting FFmpeg. |
+| `max_cached_segments` | `6` | Rolling segment count kept per cast. |
+| `max_cache_bytes` | 256 MiB | Per-cast cache ceiling. |
+| `max_playlist_bytes` / `max_segment_bytes` | 1 MiB / 50 MiB | Largest playlist or segment accepted from the origin. |
+| `playlist_timeout_seconds` / `segment_timeout_seconds` | `10` / `10` | HTTP timeouts for playlist refreshes and segment downloads. |
+| `max_variant_height` | `720` | Tallest master-playlist variant eligible for buffering. |
+| `stale_cache_reap_hours` | `24` | Age after which abandoned cache directories are removed. |
+
 Cache roots live under `<bridge.data_dir>/streams/hls` and `<bridge.data_dir>/url/hls`. Startup reaps stale session directories older than `stale_cache_reap_hours`, while active sessions keep a lock marker so they are left alone.
 
 Unsupported HLS features such as encrypted streams, byte ranges, discontinuities, alternate audio renditions, low-latency parts, fragmented MP4 init maps, and audio-only HLS fail clearly. Use the global bypass if you need to fall back to the old direct-FFmpeg path for a specific stream.
@@ -124,13 +137,7 @@ Flip `interlace_field_order` between `tff` and `bff`. The correct value depends 
 
 **Subtitles, text, or thin horizontal lines flicker on an interlaced mode.**
 
-That is interlace twitter: a detail one line tall exists in only one field, so it flashes at 30 Hz (25 Hz on PAL). `bridge.video.interlace_filter` applies a vertical low-pass before the fields are split so both fields carry the detail. It is set in the Settings UI as **Flicker filter**:
-
-- `light` (default): halves one-line flicker; barely softer than unfiltered.
-- `full`: removes one-line flicker; visibly softer.
-- `off`: full vertical sharpness, maximum flicker.
-
-It applies only to interlaced modes (480i, 576i) and takes effect on the next cast. Film downscaled from HD is already soft vertically, so the difference shows mostly on subtitles, visualizer text, animation, and native 480-line sources.
+That is interlace twitter. Set **Flicker filter** (`bridge.video.interlace_filter`) to `full`; see [Flicker filter](picture.md#flicker-filter).
 
 **Plex says the target is offline moments after casting.**
 
