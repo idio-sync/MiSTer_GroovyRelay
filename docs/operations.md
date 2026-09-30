@@ -80,13 +80,13 @@ The TV-side `BUFFERING...` slate is deferred. If a live source stops publishing 
 
 The data plane pushes fields at 59.94 Hz regardless of scheduling pressure. Under heavy CPU contention, FFmpeg can fall behind; the bridge covers with duplicate-field BLITs, so the symptom is visible motion glitches rather than A/V drift.
 
-If you see glitches, cap container CPU so the bridge has dedicated cores:
+If you see occasional hitches on a busy host, give the bridge a larger CPU share so the kernel runs it first when cores are contended. It costs nothing while cores are idle:
 
 ```bash
-docker run --cpus=2 ...
+docker run --cpu-shares=8192 ...
 ```
 
-Two cores is typically enough for one 480p transcode plus Groovy packet framing.
+On Unraid, add `--cpu-shares=8192` to the container's **Extra Parameters**. To try it on a running container, use `docker update --cpu-shares 8192 <name>` (lost when Unraid recreates the container). Two free cores are typically enough for one 480p cast. Avoid `--cpus` limits, which throttle the bridge instead of prioritizing it.
 
 ### CPU pinning and isolated cores (Unraid)
 
@@ -135,3 +135,14 @@ It applies only to interlaced modes (480i, 576i) and takes effect on the next ca
 **Plex says the target is offline moments after casting.**
 
 This is usually a `source_port` problem. If the bridge restarts and binds a different ephemeral port, the MiSTer's session key no longer matches. Set `source_port` to a fixed number in `config.toml` and confirm nothing else on the host is using it.
+
+## Scripting the UI
+
+Scripted POSTs to UI endpoints need the browser's same-origin header, or they return 403. For example, to change the visualizer mode:
+
+```bash
+curl -i -X POST http://localhost:32500/ui/visualizer \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -H 'Sec-Fetch-Site: same-origin' \
+  --data 'mode=stereo_scope'
+```

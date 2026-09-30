@@ -2,131 +2,44 @@
 
 <img align="right" width="220" src=".github/screenshots/plex_dash.png">
 
-A cast-target bridge for the MiSTer. Run it alongside your Plex/Jellyfin Media Server; it advertises itself as a cast target on the LAN, and when you pick it from the client's "Cast" menu it transcodes the output through FFmpeg and streams raw RGB fields + PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol into a MiSTer FPGA. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine NTSC/PAL video. The idea was to have a way for the MiSTer to act as a dumb cast reciever for different types of media via a headless background bridge. 
+A headless cast-target bridge that turns a MiSTer FPGA into a cast receiver. It advertises itself on the LAN; when you pick it from a Plex or Jellyfin "Cast" menu, it converts the stream with FFmpeg and sends RGB fields and PCM audio over the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP protocol. The MiSTer drives a 15 kHz analog CRT directly, giving you genuine NTSC/PAL video.
 
-Now expanded to include yt-dlp compatable URLs, torrent/magnet links, DLNA casts and local files from the server's filesystem, castable via the web-ui.
+It also casts yt-dlp-compatible URLs, torrents and magnet links, DLNA, and local files from the web UI.
 
-Note: The primary deployment target is a Docker container running on the same host as your media server, but Win/Mac/Linux binaries are provided as well. 
-
-## Images
+The primary target is a Docker container on the same host as your media server; Windows, macOS, and Linux binaries are also provided.
 
 <p align="center">
-  <img width="800" alt="image" src="https://github.com/user-attachments/assets/2cf51d90-ce01-41ac-af23-4354fb359034">
+  <img width="800" alt="Plex dashboard with the MiSTer cast target" src="https://github.com/user-attachments/assets/2cf51d90-ce01-41ac-af23-4354fb359034">
 </p>
 
 <p align="center">
-  <img width="800" alt="image" src="https://raw.githubusercontent.com/idio-sync/MiSTer_GroovyRelay/refs/heads/main/.github/screenshots/ui_and_crt.jpg">
+  <img width="800" alt="Bridge UI next to the CRT" src="https://raw.githubusercontent.com/idio-sync/MiSTer_GroovyRelay/refs/heads/main/.github/screenshots/ui_and_crt.jpg">
 </p>
 
-## Video Cast Sources
-- Plex
-- Jellyfin
-- Plex/Jellyfin music tracks with CRT visualizer output
-- YouTube/Twitch/Vimeo/etc. URL (and other sites supported by yt-dlp)
-- URL to video file (Archive.org .mkv, .mp4, etc.)
-- URL to M3U/M3U8 playlist ([ws4channels](https://github.com/rice9797/ws4channels), public streams, etc.); public live `.m3u8` casts use an HLS buffer to minimize playback hiccups
-- Torrent streaming (uploaded .torrent files and .torrent URLs/magnet links)
-- Local media files (browse a mounted or host directory)
+## Cast sources
+
+- Plex and Jellyfin, including music tracks with a CRT visualizer
+- YouTube, Twitch, Vimeo, and other yt-dlp sites
+- Direct video URLs (Archive.org `.mkv`, `.mp4`, etc.) and M3U/M3U8 playlists, with buffering for live HLS
+- Torrents (`.torrent` files, URLs, and magnet links)
+- Local media files
 - DLNA / UPnP MediaRenderer
-- Spotify Connect (music to the CRT visualizer)
-- AirPlay from iPhone, iPad, and Mac (music to the CRT visualizer)
-- Built-in catalog of streaming channels
+- Spotify Connect and AirPlay (music to the CRT visualizer)
+- A built-in catalog of streaming channels
 
-## Music visualizer modes
+## Requirements
 
-Plex and Jellyfin music casts automatically render a CRT visualizer for audio-only items. The adapters provide track metadata and a compatibility visualizer request, while the bridge applies the global visualizer mode when each music cast starts.
+- MiSTer FPGA with an Analogue I/O board or direct video adapter, wired to a 15 kHz-capable CRT
+- Groovy_MiSTer on the MiSTer, ideally the [44.1 kHz audio fix release](https://github.com/iequalshane/Groovy_MiSTer/releases/tag/0.8)
+- A host on the same LAN running Docker (Linux, Unraid, Synology, Raspberry Pi 4/5) with gigabit networking
+- Optional: a Plex or Jellyfin Media Server reachable from that host
 
-Supported modes are:
-
-- `retro_analyzer`: classic spectrum bars.
-- `oscilloscope_wave`: horizontal waveform trace.
-- `stereo_scope`: stereo/vector-scope display.
-- `vu_cabinet`: stereo VU meter cabinet display.
-- `spectrum_waterfall`: scrolling spectrogram waterfall (showspectrum).
-- `raster_pulse`: mirrored reactive waveform bands.
-- `cover_vu`: cached album art with VU meters.
-- `cover_spectrum`: cached album art with spectrum bars.
-
-Changing only the visualizer mode does not interrupt the current cast; the new mode applies to the next music cast.
-
-### AUX analog visualizer
-
-The receiver page can expose an `AUX` source that drives the CRT visualizer from a line-in or USB audio interface.
-
-For native binaries, configure `mode = "local_capture"` with the FFmpeg capture format and device for the host.
-
-For Docker/Unraid, the recommended v1 path is `mode = "stream_url"` and a small FFmpeg producer on the machine that has the audio input:
-
-```bash
-while true; do
-  ffmpeg -nostdin -f alsa -thread_queue_size 64 -sample_rate 48000 -channels 2 -i hw:1,0 \
-    -vn -ac 2 -ar 48000 -f wav -listen 1 http://0.0.0.0:8090/aux.wav
-  sleep 0.2
-done
-```
-
-The loop is required because GroovyRelay opens the stream twice per AUX start: once for probe, then once for playback.
-
-If your FFmpeg build does not stream `-f wav` cleanly over HTTP (some builds emit a fixed `RIFF` header that does not survive piped HTTP), substitute `-f mpegts` or `-f ogg` and update the producer/container format or `url` as needed. Test the producer end-to-end with `ffprobe http://capture-host:8090/aux.wav` from the GroovyRelay host before pointing the AUX adapter at it. I will likely 
-provide a binary or script in the future to make this easier.
-
-Set `audio_output = "visual_only"` to drive the CRT visualizer without sending PCM monitor audio to MiSTer. Set `audio_output = "monitor"` to keep PCM output enabled so the captured audio can be monitored through the normal MiSTer audio path.
-
-### Spotify Connect
-
-Enable `[adapters.spotify]` and the bridge appears in the Spotify app's device list (Spotify Premium required). Picking it plays the music through the MiSTer and drives the CRT visualizer; track title, artist, and album update on screen without interrupting playback, and the `cover_vu` / `cover_spectrum` modes show the album art.
-
-- The bridge runs [librespot](https://github.com/librespot-org/librespot) as a supervised helper. The Docker image bundles it; native installs need `librespot` on `PATH` or `binary_path` set.
-- Discovery uses mDNS, so the container needs `--network=host` (already required). Set `zeroconf_port` if a firewall needs a fixed port.
-- Pausing keeps the cast on the CRT for `pause_grace_seconds` (default 30), then ends it. Starting another cast (Plex, DLNA, …) takes over and disconnects the phone.
-- `audio_output = "visual_only"` drives the visualizer without sending audio to the MiSTer.
-
-### AirPlay
-
-Enable `[adapters.airplay]` and the bridge appears as an AirPlay speaker on iPhones, iPads, and Macs. It behaves like Spotify Connect above: live track text, album art in the cover modes, a pause grace window, and another cast taking over.
-
-- The bridge runs [shairport-sync](https://github.com/mikebrady/shairport-sync) in classic AirPlay (AirPlay 1) mode. The Docker image bundles it; native Linux and macOS installs need `shairport-sync` on `PATH` (built with `--with-stdout --with-metadata --with-metadata-multicast`) or `binary_path` set. Windows is not supported.
-- It listens on RTSP port 5000 plus UDP ports 6001–6010. Change `port` if another AirPlay receiver on the host (for example macOS's own AirPlay Receiver) already uses 5000.
-- Discovery uses shairport-sync's built-in mDNS responder. If the speaker does not appear on a host that runs its own mDNS daemon (avahi), check the helper's log lines for port 5353 errors.
-- AirPlay 2 (multi-room grouping with HomePods) is not supported yet.
-
-## On-screen display
-
-While a cast is playing, the bridge draws an old-TV-style OSD into the picture: a green volume bar (or red `MUTING`) when you turn the knob, a green channel banner when a cast starts (`CH 07` for a streams channel in the preset bank, otherwise the channel or source name, such as `PLEX`), and `PLAY ▶` / `FF ▶▶` / `REW ◀◀` on start, resume and seek. Each element fades after a few seconds and stays inside the title-safe area of a consumer CRT (inside the picture, if you have shrunk it; see below).
-
-Configure it under `[bridge.osd]`; every setting applies live, mid-cast:
-
-- `enabled` (default `true`) turns the whole OSD on or off.
-- `clock` (default `false`) shows the local time under the channel banner, with `clock_24h` for `21:41` instead of `9:41 PM`. In Docker, set the `TZ` environment variable (for example `TZ=America/New_York`) or the clock shows UTC.
-
-The OSD appears only while something is playing. When paused or idle the MiSTer has no picture to draw on.
-
-## Picture size and position
-
-Every consumer CRT crops the edges of the picture differently, and some sit off-centre. Settings → Video & Audio has four fields for this, stored under `[bridge.video]`:
-
-- `picture_h_size` / `picture_v_size` (default `100`, range `80`–`100`) shrink the picture, in percent, until the edges your CRT was cutting off come into view. The freed border is black.
-- `picture_h_offset` (pixels, `-72`–`72`) and `picture_v_offset` (field lines, `-28`–`28`) move the picture right/down (+) or left/up (−).
-
-Changes apply on the next cast; saving restarts the current one.
-
-To line the picture up by eye, press **Calibrate on CRT** while nothing is playing. The bridge puts a test pattern on the CRT: a white border on the picture's outer edge, a crosshatch, a centre circle, and the 95% / 90% safe areas. Use the Position and Size keys (or the arrow keys; Shift for bigger steps) until the white border just shows on all four edges and the circle looks round. Each change reaches the CRT in a fraction of a second, without restarting anything. **Save** stores the values; **Cancel** discards them. A cast that starts mid-calibration takes over, and your unsaved values stay in the panel. An untouched calibration ends by itself after 5 minutes.
-
-## Hardware requirements
-
-- MiSTer FPGA with Analogue I/O board or direct video adapter wired to a 15 kHz-capable CRT (consumer, PVM, arcade, etc.)
-- Groovy_MiSTer installed on your MiSTer, ideally the [44.1khz audio fix release](https://github.com/iequalshane/Groovy_MiSTer/releases/tag/0.8)
-- A host on the same LAN running Docker (Linux, Unraid, Synology, a Raspberry Pi 4/5), anything with a few spare CPU cycles and gigabit-class networking.
-- A Plex/Jellyfin Media Server reachable from that host (optional)
-
-The bridge itself is stateless and light, just a few hundred MB of RAM and one FFmpeg worker per active cast. Video transcode is primarily handled by the media server, FFmpeg in this app takes 480p from the server to 480i.
+The bridge is light: a few hundred MB of RAM and one FFmpeg worker per cast.
 
 ## Quick start (Docker)
 
-Docker with host networking is the primary deployment path.
-
 ```bash
-# 1. Generate config.toml, then edit bridge.mister.host.
+# 1. Generate config.toml, then set bridge.mister.host to your MiSTer's IP.
 mkdir -p /opt/mister-groovy-relay
 docker run --rm --network=host \
   -v /opt/mister-groovy-relay:/config \
@@ -140,48 +53,9 @@ docker run -d --name mister-groovy-relay --restart unless-stopped \
   idiosync000/mister-groovy-relay:latest
 ```
 
-Open `http://<host>:32500/`, choose Plex or Jellyfin in the sidebar, and link your server. The token is saved in `data.json` under `data_dir`.
+Open `http://<host>:32500/`, link Plex or Jellyfin from the sidebar, and cast. The settings UI marks whether each setting applies live, restarts the current cast, or needs a bridge restart.
 
-For headless Plex linking:
-
-```bash
-docker run --rm -it --network=host \
-  -v /opt/mister-groovy-relay:/config \
-  idiosync000/mister-groovy-relay:latest --link
-```
-
-Host networking is the supported Docker path because it gives the bridge the host's LAN address, avoids Docker NAT on the MiSTer UDP source port, and lets Plex GDM multicast work normally. Simple bridge-mode port publishing is not equivalent: `-p 32500:32500/tcp -p 32101:32101/udp -p 32412:32412/udp` can expose unicast ports, but Docker still NATs outbound UDP and does not make LAN multicast membership reliable.
-
-Advanced L2 container networks can work. With macvlan/ipvlan on `br0` or another LAN-facing parent interface, give the container its own LAN IP, set `bridge.host_ip` to that IP, and make sure the MiSTer, Plex Media Server, and Plex controllers can reach it. In that layout you do not publish ports; the container owns `32500/tcp`, the configured `bridge.mister.source_port` (default `32101/udp`), and Plex GDM multicast (`239.0.0.250`, UDP `32412/32413`) directly.
-
-## Native builds
-
-Native binaries are built for Windows, macOS, and Linux. On first run, the bridge writes a platform-specific config file and exits so you can set `bridge.mister.host`, then relaunch it. These builds are supported but are not the primary target and may lag a bit in terms of features/fixes.
-
-| OS | Default config path |
-| --- | --- |
-| Windows | `%APPDATA%\mister-groovy-relay\config.toml` |
-| macOS | `~/Library/Application Support/mister-groovy-relay/config.toml` |
-| Linux | `$XDG_CONFIG_HOME/mister-groovy-relay/config.toml` or `~/.config/mister-groovy-relay/config.toml` |
-
-Release archives bundle `ffmpeg`, `ffprobe`, and `yt-dlp` beside the bridge binary. To use system-installed tools instead, set `bridge.ffmpeg_path`, `bridge.ffprobe_path`, or `bridge.ytdlp_path` in `config.toml`.
-
-On macOS, right-click the binary and choose **Open** the first time if Gatekeeper blocks it. As a fallback:
-
-```bash
-xattr -dr com.apple.quarantine /path/to/mister-groovy-relay-folder
-```
-
-## First-time setup
-
-1. Install the Docker image or native binary.
-2. Start once to generate `config.toml`.
-3. Set `bridge.mister.host` to your MiSTer's LAN IP.
-4. Restart the bridge.
-5. Open `http://<host-ip>:32500/` and link Plex or Jellyfin.
-6. Cast from Plex, Jellyfin, a URL, a supported streaming catalog, DLNA, or a torrent source.
-
-The settings UI labels whether a saved field applies live, restarts the current cast, or requires a bridge restart.
+Host networking is required for Plex discovery. For macvlan/ipvlan networking, headless Plex linking, native Windows/macOS/Linux builds, and mounting media for Local Files, see [docs/install.md](docs/install.md). Don't pin the container to Unraid's isolated cores; see [Troubleshooting](#troubleshooting).
 
 ## Adapters
 
@@ -189,137 +63,40 @@ The settings UI labels whether a saved field applies live, restarts the current 
 | --- | --- | --- | --- |
 | Plex | Plex cast picker | On after linking | Needs multicast discovery and a stable bridge address. |
 | Jellyfin | Jellyfin cast picker | On after linking | Link through the settings UI. |
-| URL | Global Cast drawer or browser extension | On | Supports direct media and `yt-dlp` pages. See [docs/url-adapter.md](docs/url-adapter.md) and [`extension/firefox/`](extension/firefox/README.md). |
-| Streams | Bundled catalog entries | On | Includes Toonami Aftermath and other bundled channels. |
-| AUX | Receiver page | Off | CRT visualizer from native capture or a remote FFmpeg producer. |
-| Torrent | Global Cast drawer magnet link or `.torrent` upload | Off | Requires explicit traffic acknowledgement. See [docs/torrent.md](docs/torrent.md). |
-| Local Files | Receiver settings drawer | Off | Browse named on-disk libraries and cast one media file. |
-| DLNA / UPnP | DLNA controller | Off | Exposes unauthenticated LAN control. See [docs/dlna.md](docs/dlna.md). |
-| Spotify Connect | Spotify app device picker | Off | Music to the CRT visualizer via a supervised librespot. See [Spotify Connect](#spotify-connect). |
-| AirPlay | AirPlay speaker picker | Off | Music to the CRT visualizer via a supervised shairport-sync; Linux/macOS/Docker only. See [AirPlay](#airplay). |
+| URL | Cast drawer or browser extension | On | Direct media and `yt-dlp` pages. See [docs/url-adapter.md](docs/url-adapter.md) and the [Firefox extension](extension/firefox/README.md). |
+| Streams | Bundled catalog | On | Toonami Aftermath and other channels. |
+| Local Files | Settings drawer | Off | Cast from named on-disk libraries. See [docs/install.md](docs/install.md#local-files). |
+| Torrent | Cast drawer | Off | Requires explicit traffic acknowledgement. See [docs/torrent.md](docs/torrent.md). |
+| DLNA / UPnP | DLNA controller | Off | Unauthenticated LAN control. See [docs/dlna.md](docs/dlna.md). |
+| Spotify Connect | Spotify device picker | Off | Premium required. See [docs/music.md](docs/music.md#spotify-connect). |
+| AirPlay | AirPlay speaker picker | Off | AirPlay 1; not on Windows. See [docs/music.md](docs/music.md#airplay). |
+| AUX | Receiver page | Off | Visualizer from line-in or a remote FFmpeg producer. See [docs/music.md](docs/music.md#aux-analog-visualizer). |
 
-## Local Files
+## CRT setup
 
-The Local Files adapter lets the receiver settings drawer browse named folders that the bridge process can read. It is disabled by default. Enable it in Settings, add one or more libraries, then use the Local Files browse drawer to cast a single direct media file.
+- **Field order:** if the picture shimmers, flip `interlace_field_order` in Settings; it applies live.
+- **Picture size and position:** press **Calibrate on CRT** in Settings → Video & Audio and adjust until the test pattern's border shows on all four edges.
+- **On-screen display:** volume, channel, and transport overlays are on by default, with an optional clock.
 
-For Docker, bind-mount media into the container and use the container path in the library root:
-
-```bash
-docker run -d --name mister-groovy-relay --restart unless-stopped \
-  --network=host \
-  -v /opt/mister-groovy-relay:/config \
-  -v /mnt/user/media:/media:ro \
-  idiosync000/mister-groovy-relay:latest
-```
-
-In that example, configure the library root as `/media`, not `/mnt/user/media`. The adapter validates paths from inside the bridge process, so a host path that is not mounted into the container will fail validation.
-
-The container user must be able to read and list the mounted directory. If a library validates on the host but not in Docker, check ownership, mode bits, ACLs, and any NAS permission mapping for the UID/GID running the container.
-
-Native builds use real OS paths. Linux and macOS paths look like `/home/me/Videos` or `/Volumes/Media`; Windows paths can be drive paths like `D:\Movies` or UNC paths like `\\server\share\movies`.
-
-## Settings UI
-
-Open `http://<host>:32500/` after the bridge starts. The UI lets you:
-
-> **Settings UI:** The UI lives at `/ui`; `/` redirects there.
-> License attributions for the bundled fonts: `/ui/static/fonts/LICENSE`.
-
-- Link Plex and Jellyfin accounts.
-- Enable or disable adapters.
-- Flip `interlace_field_order` live while watching the CRT.
-- See adapter state at a glance: running, stopped, or erroring.
-- Save bridge settings with clear apply scope.
-
-## Operations
-
-Most installs only need the quick start. Use [docs/operations.md](docs/operations.md) for the longer notes:
-
-| Topic | When it matters |
-| --- | --- |
-| Multi-NIC hosts | Cast target appears, but commands never reach the bridge. |
-| Live HLS buffering | Public `.m3u8` streams freezing, unsupported HLS, or live-delay questions. |
-| Docker CPU contention | Playback shows motion glitches under host load. |
-| Fake MiSTer diagnostics | You need to prove the bridge is sending packets before debugging the real MiSTer path. |
-
-DLNA controller findings live in [docs/dlna-compatibility.md](docs/dlna-compatibility.md).
+Details: [docs/picture.md](docs/picture.md). For the GroovyNLC core and the frame codec setting, see [docs/groovynlc.md](docs/groovynlc.md).
 
 ## Troubleshooting
 
 | Symptom | First check | More detail |
 | --- | --- | --- |
-| Target missing from Plex | `--network=host`, multicast, server link, bridge logs | [Operations](docs/operations.md) |
-| Cast target duplicates another Plex target | Run the bridge from a different IP than the Plex server | [Operations](docs/operations.md) |
-| No video on CRT | MiSTer is running Groovy_MiSTer and listening on `mister_port` | [Operations](docs/operations.md) |
-| Audio drift or motion glitches | Host CPU contention | [Operations](docs/operations.md) |
+| Target missing from Plex | `--network=host`, multicast, server link, bridge logs | [Operations](docs/operations.md#general-troubleshooting) |
+| Cast target duplicates another Plex target | Run the bridge from a different IP than the Plex server | [Operations](docs/operations.md#general-troubleshooting) |
+| No video on CRT | MiSTer is running Groovy_MiSTer and listening on `mister_port` | [Operations](docs/operations.md#general-troubleshooting) |
+| Lower part of the picture tears or flashes | Container pinned only to isolated cores (Unraid `isolcpus`) or to one core; the bridge warns in Settings → System. Remove the pinning or pin to non-isolated cores | [Operations](docs/operations.md#cpu-pinning-and-isolated-cores-unraid) |
+| Occasional single-frame hitch on a busy host | Other containers crowd out the bridge. Add `--cpu-shares=8192` (Unraid: **Extra Parameters**) so it wins CPU under contention | [Operations](docs/operations.md#cpu-contention-under-docker) |
+| Audio drift or constant motion glitches | Host CPU contention | [Operations](docs/operations.md#cpu-contention-under-docker) |
 | Field shimmer | Flip `interlace_field_order` | Settings UI |
-| Picture edges cut off, or picture off-centre | Picture width/height and position | [Picture size and position](#picture-size-and-position) |
-| Plex reports target offline after cast | Fixed `source_port` and no port conflict | [Operations](docs/operations.md) |
+| Picture edges cut off, or picture off-centre | Calibrate on CRT | [Picture setup](docs/picture.md) |
+| Plex reports target offline after cast | Fixed `source_port` and no port conflict | [Operations](docs/operations.md#general-troubleshooting) |
 | DLNA renderer missing or uncontrollable | `bridge.host_ip`, UDP 1900, trusted LAN only | [DLNA adapter](docs/dlna.md) |
 
-Scripted POSTs to local UI endpoints need the same-origin fetch header that
-the browser sends. For example, to change the receiver visualizer mode:
-
-```bash
-curl -i -X POST http://localhost:32500/ui/visualizer \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  -H 'Sec-Fetch-Site: same-origin' \
-  --data 'mode=stereo_scope'
-```
-
-Omitting `Sec-Fetch-Site: same-origin` returns 403.
-
-## GroovyNLC core
-
-The bridge works with both the original [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer)
-core and the [GroovyNLC fork](https://github.com/verbst/Groovy_MiSTer). It asks the core for its
-version at the start of every cast and logs the answer (`core=groovy` or `core=groovynlc` on the
-`dataplane session started` line). The receiver meter's pipe readout shows it on hover.
-
-To use GroovyNLC:
-
-1. Install the fork's `.rbf` and `MiSTer_groovyNLC` binary, and add to `MiSTer.ini`:
-   ```ini
-   [GroovyNLC]
-   main=MiSTer_groovyNLC
-   ```
-
-2. Launch GroovyNLC from the MiSTer menu. The UI's "Launch Groovy" button always starts the
-   stock core.
-
-3. Leave the core's OSD **Volatile framebuffer** option **Off**. GroovyNLC's NLC codec needs it
-   off, and it does no harm with LZ4.
-
-While a cast starts up, or while it waits out a stall, the bridge sends a status ping after
-every 2 s of silence. This stops GroovyNLC v1.1–v1.3 from closing the session.
-
-`bridge.video.codec` controls frame compression:
-
-| Value | Behaviour |
-|-------|-----------|
-| `auto` (default) | LZ4 on both cores today. |
-| `lz4` | Always LZ4. |
-| `raw` | Uncompressed. |
-| `nlc` | GroovyNLC's near-lossless codec. Needs the GroovyNLC core; on the original core the bridge falls back to LZ4 and logs a warning. |
-
-Configs that still say `lz4_enabled` are migrated automatically: `true` becomes `auto`, `false`
-becomes `raw`. `auto` may pick GroovyNLC's NLC codec in a future release, once that codec is
-verified on hardware. To keep LZ4 regardless, set `codec = "lz4"`.
-
-When `codec = "nlc"`, two more settings apply:
-
-| Value | Behaviour |
-|-------|-----------|
-| `nlc_near` | `0` (lossless) to `3`; higher values trade picture fidelity for a smaller encoded size. |
-| `nlc_pack` | `tiled` (default) or `rice`. Rice only works with a Rice-capable GroovyNLC build; otherwise expect a garbled picture. |
-
-**NLC status:** the Go encoder is a bit-exact port verified against the fork's reference codec,
-and it costs about 2 ms wall-clock per 720x240 field (about 4 ms of CPU spread over 3 cores) on
-a desktop CPU — benchmark on NAS-class hosts before enabling it. It has **not yet been verified
-on real hardware**: try 240p first, 480i is
-unconfirmed on the fork, and OSD **Volatile framebuffer** must be Off. `auto` keeps using LZ4
-until hardware checks pass.
+More in [docs/operations.md](docs/operations.md): multi-NIC hosts, live HLS buffering, delta-LZ4, and scripting the UI.
 
 ## License
 
-[GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.en.html). See the design notes for why: this project stands on the shoulders of several GPL references (plexdlnaplayer and plex-mpv-shim under GPL-3, and the Groovy_MiSTer protocol, which is GPL-2) and carries that license forward.
+[GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.en.html). This project builds on GPL references (plexdlnaplayer and plex-mpv-shim under GPL-3, and the GPL-2 Groovy_MiSTer protocol) and carries that license forward.
