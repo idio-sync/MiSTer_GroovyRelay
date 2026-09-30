@@ -88,6 +88,12 @@ docker run --cpus=2 ...
 
 Two cores is typically enough for one 480p transcode plus Groovy packet framing.
 
+### CPU pinning and isolated cores (Unraid)
+
+Do not pin the container only to isolated cores (`isolcpus`, which Unraid sets from its CPU Pinning page for VMs). Linux never moves threads between isolated cores, so every bridge and FFmpeg thread stays on one of them however many you pin. Field sends then stall behind FFmpeg, and the MiSTer shows the lower part of the picture tearing or flashing. Pinning to a single core has the same effect.
+
+The bridge detects both cases at startup, logs a warning, and repeats it at the top of Settings → System. To fix it, remove the container's CPU pinning or pin it to cores that are not isolated (check `/sys/devices/system/cpu/isolated` on the host).
+
 ## General troubleshooting
 
 **The target did not appear in Plex's cast menu.**

@@ -41,6 +41,7 @@ import (
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/companion"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/config"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/core"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/cpuaffinity"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/eventlog"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/extbin"
 	"github.com/idio-sync/MiSTer_GroovyRelay/internal/groovynet"
@@ -226,6 +227,11 @@ func main() {
 	})
 	if err != nil {
 		dieFriendly("aux adapter init", err)
+	}
+
+	cpuWarning := cpuaffinity.Check()
+	if cpuWarning != "" {
+		slog.Warn(cpuWarning)
 	}
 
 	hostIP := sec.Bridge.HostIP
@@ -545,6 +551,7 @@ func main() {
 		Version:                   version,
 		StartedAt:                 startedAt,
 		HostIP:                    hostIP,
+		CPUWarning:                cpuWarning,
 		Session:                   coreMgr, // *core.Manager structurally satisfies chassis.SessionViewer
 		TransportViewer:           playbackDispatcher,
 		TransportController:       playbackDispatcher,

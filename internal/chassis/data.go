@@ -546,6 +546,9 @@ type SettingsData struct {
 	// survives a page reload but clears once the bridge has actually
 	// restarted.
 	BootStamp int64
+	// CPUWarning is Config.CPUWarning: a startup notice for CPU pinning
+	// that strands the relay on one core. Empty hides it.
+	CPUWarning string
 }
 
 // AdapterPaneData carries the per-adapter render context for the Adapters
@@ -783,6 +786,7 @@ func settingsDataFromConfig(cfg Config) SettingsData {
 	if !cfg.StartedAt.IsZero() {
 		data.BootStamp = cfg.StartedAt.UnixNano()
 	}
+	data.CPUWarning = cfg.CPUWarning
 	// 4D — append per-adapter panes from the AdapterSettingsSaver. Nil-guarded
 	// so 4A/4B/4C configs (no saver wired) leave data.Adapters nil, preserving
 	// the prior package-builder behavior exactly.

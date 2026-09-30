@@ -24,6 +24,9 @@ type Config struct {
 	Version   string
 	StartedAt time.Time
 	HostIP    string
+	// CPUWarning is the startup CPU-pinning warning from cpuaffinity.Check,
+	// shown in the System settings pane. Empty hides the notice.
+	CPUWarning string
 
 	// Session is the read-only session-state source for live VFD
 	// rendering and SSE events. Optional: when nil, the chassis renders

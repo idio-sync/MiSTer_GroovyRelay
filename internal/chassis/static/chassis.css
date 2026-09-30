@@ -6355,6 +6355,16 @@ body.receiver .settings-notice[hidden] { display: none; }
 body.receiver .settings-notice.ok  { color: oklch(0.80 0.12 150); border-color: oklch(0.36 0.10 150); }
 body.receiver .settings-notice.err { color: oklch(0.84 0.14 25); border-color: oklch(0.44 0.15 25); }
 
+/* Startup warning inside a settings section (System pane: CPU pinning). */
+body.receiver .settings-warn {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  font: 500 12px/1.45 'Inter', sans-serif;
+  border: 1px solid oklch(0.44 0.15 25);
+  border-radius: 2px;
+  color: oklch(0.84 0.14 25);
+}
+
 /* Restart-pending bar — persists (per bridge boot) until the bridge
    restarts, listing every saved REBOOT-scope change. Lit like a faceplate
    tally lamp so it reads as machine state, not a transient toast. */

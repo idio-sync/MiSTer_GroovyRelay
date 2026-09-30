@@ -6,6 +6,9 @@
 
   <div class="settings-section">
     <h4>Bridge</h4>
+    {{- if .CPUWarning }}
+    <div class="settings-warn" role="alert">{{ .CPUWarning }}</div>
+    {{- end }}
     {{ field (dict
       "Name" "ui_http_port" "Type" "number" "Label" "HTTP port"
       "Help" "Serves this UI and Plex Companion on one listener."
