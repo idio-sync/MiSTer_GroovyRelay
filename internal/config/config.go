@@ -99,7 +99,7 @@ func defaults() *Config {
 		AspectMode:          "auto",
 		RGBMode:             "rgb888",
 		LZ4Enabled:          true,
-		DeltaLZ4Enabled:     true,
+		DeltaLZ4Enabled:     false, // opt-in: see docs/operations.md
 		AudioSampleRate:     48000,
 		AudioChannels:       2,
 		AudioOutputVolume:   100,

@@ -91,6 +91,7 @@ Details: [docs/picture.md](docs/picture.md). For the GroovyNLC core and the fram
 | No video on CRT | MiSTer is running Groovy_MiSTer and listening on `mister_port` | [Operations](docs/operations.md#general-troubleshooting) |
 | Lower part of the picture tears or flashes | Container pinned only to isolated cores (Unraid `isolcpus`) or to one core; the bridge warns in Settings → System. Remove the pinning or pin to non-isolated cores | [Operations](docs/operations.md#cpu-pinning-and-isolated-cores-unraid) |
 | Occasional single-frame hitch on a busy host | Other containers crowd out the bridge. Add `--cpu-shares=8192` (Unraid: **Extra Parameters**) so it wins CPU under contention | [Operations](docs/operations.md#cpu-contention-under-docker) |
+| Picture freezes while audio keeps playing | Turn off **Delta-LZ4** (Settings → Video & Audio) and restart the cast | [Operations](docs/operations.md#experimental-adaptive-delta-lz4-blits) |
 | Audio drift or constant motion glitches | Host CPU contention | [Operations](docs/operations.md#cpu-contention-under-docker) |
 | Field shimmer | Flip `interlace_field_order` | Settings UI |
 | Picture edges cut off, or picture off-centre | Calibrate on CRT | [Picture setup](docs/picture.md) |

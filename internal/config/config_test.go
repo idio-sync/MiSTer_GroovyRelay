@@ -349,10 +349,25 @@ func TestDefaultBridge_SSHCredentials(t *testing.T) {
 	}
 }
 
-func TestDefaultBridge_DeltaLZ4Enabled(t *testing.T) {
+// Delta-LZ4 is opt-in: each delta field depends on the MiSTer's framebuffer
+// matching the relay's history, and a real Groovy core froze on a delta
+// stream after frame skips until the cast restarted with delta off.
+func TestDefaultBridge_DeltaLZ4Disabled(t *testing.T) {
 	b := defaultBridge()
-	if !b.Video.DeltaLZ4Enabled {
-		t.Error("default DeltaLZ4Enabled = false, want true")
+	if b.Video.DeltaLZ4Enabled {
+		t.Error("default DeltaLZ4Enabled = true, want false")
+	}
+}
+
+// The template is what first run writes to disk, so it must match the
+// in-code default.
+func TestExampleTOML_DeltaLZ4Disabled(t *testing.T) {
+	s, _, err := loadSectionedFromBytes(exampleTOML)
+	if err != nil {
+		t.Fatalf("parse example.toml: %v", err)
+	}
+	if s.Bridge.Video.DeltaLZ4Enabled {
+		t.Error("example.toml delta_lz4_enabled = true, want false")
 	}
 }
 

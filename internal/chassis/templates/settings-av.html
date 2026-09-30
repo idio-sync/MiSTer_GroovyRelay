@@ -76,7 +76,7 @@
       "Error" (errOf .Errors "video_nlc_pack")) }}
     {{ field (dict
       "Name" "video_delta_lz4_enabled" "Type" "switch" "Label" "Delta-LZ4"
-      "Help" "Sends only what changed between frames when that is smaller than a full LZ4 frame. Applies only when compression is Auto or LZ4."
+      "Help" "Experimental. Sends only what changed between frames when that is smaller than a full LZ4 frame. Can freeze the picture after dropped frames; leave off unless you are testing. Applies only when compression is Auto or LZ4."
       "Value" (boolStr .Bridge.Video.DeltaLZ4Enabled)
       "Scope" "recast") }}
   </div>

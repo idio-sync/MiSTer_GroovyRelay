@@ -28,15 +28,11 @@ delta[i] = current[i] - prev[i] mod 256
 
 The FPGA reconstructs the field by adding the previous framebuffer bytes back to the decompressed delta. On motion-light content, the delta compresses better than the full field, reducing UDP chunk count and lowering the chance of hitting the 500 KB congestion backoff threshold.
 
-The bridge can opt in to emit 13-byte BLITs alongside the standard 12-byte LZ4 path. It chooses the delta variant only when it is at least 5 percent smaller, matching the upstream Groovy_MiSTer reference threshold.
+When enabled, the bridge emits 13-byte BLITs alongside the standard 12-byte LZ4 path, choosing the delta variant only when it is at least 5 percent smaller (the upstream Groovy_MiSTer reference threshold).
 
-Enable it with:
+It is **off by default**. Turn on **Delta-LZ4** in Settings → Video & Audio, set `delta_lz4_enabled = true` under `[bridge.video]`, or override either with `GROOVY_DELTA_LZ4=1` (or `=0`) on the bridge process. It only applies when `codec` resolves to LZ4. Configs generated before delta became opt-in contain `delta_lz4_enabled = true` and keep it until changed.
 
-```bash
-GROOVY_DELTA_LZ4=1 ./mister-groovy-relay --config /path/to/config.toml
-```
-
-The generated config enables it by default. The feature has no effect unless `bridge.lz4_enabled` is also true, which is also the default.
+**Known issue: the picture can freeze.** On a real Groovy core, a delta stream froze the picture (audio kept playing) after a burst of MiSTer frame skips, and it stayed frozen through the periodic full-field resyncs below until the cast restarted with delta off. The bridge kept sending and the MiSTer kept acknowledging every field, so nothing in the bridge log flags it beyond the `vga_frameskip` warnings before it. If you see this, turn delta-LZ4 off.
 
 **Known limitation: delta loss is not acknowledged per chunk.** UDP packet loss is structural in this protocol: there are no per-chunk sequence numbers, and the receiver concatenates by arrival order. If a delta-LZ4 field is lost, sender and receiver history diverge until a full BLIT resyncs them. The bridge forces that resync early whenever the receiver may be out of step:
 
