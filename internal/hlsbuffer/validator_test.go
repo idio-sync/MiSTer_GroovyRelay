@@ -216,11 +216,15 @@ func TestBundledToonamiValidationRejectsWrongHostOrPath(t *testing.T) {
 		// Wowza origin pool: only /livehttporigin/{channel}/ paths and the
 		// streamDelay query are allowed; everything else must be rejected.
 		"http://asp6.toonamiaftermath.com:1934/evil/x.m3u8",
-		"http://other.toonamiaftermath.com:1934/livehttporigin/est/x.m3u8",
 		"http://asp6.toonamiaftermath.com:8080/livehttporigin/est/x.m3u8",
 		"http://asp6.toonamiaftermath.com:1934/livehttporigin/est/x.m3u8?token=x",
 		"http://asp6.toonamiaftermath.com:1934/livehttporigin/est/x.m3u8?streamDelay=180&token=x",
-		"http://aspx.toonamiaftermath.com:1934/livehttporigin/est/x.m3u8",
+		"http://n3.toonamiaftermath.com:8080/livehttporigin/est/x.m3u8",
+		"http://n3.toonamiaftermath.com:1934/evil/x.m3u8",
+		// Lookalike domains must not pass the toonamiaftermath.com host match.
+		"http://eviltoonamiaftermath.com:1934/livehttporigin/est/x.m3u8",
+		"http://n3.toonamiaftermath.com.evil.com:1934/livehttporigin/est/x.m3u8",
+		"http://n3-toonamiaftermath.com:1934/livehttporigin/est/x.m3u8",
 	}
 	for _, raw := range cases {
 		t.Run(raw, func(t *testing.T) {
@@ -240,13 +244,22 @@ func TestBundledToonamiValidationAcceptsKnownHosts(t *testing.T) {
 		"http://api.toonamiaftermath.com:3000/pst/playlist.m3u8",
 		"http://api.toonamiaftermath.com:3000/movies/playlist.m3u8",
 		"http://api.toonamiaftermath.com:3000/radio/playlist.m3u8",
-		// Wowza origin pool: variant playlists and segments live here. The
-		// hostname digit is load-balanced (asp1..N) so any digit must pass.
+		// Wowza origin pool: variant playlists and segments live here.
+		// Upstream renames the pool, so any toonamiaftermath.com host on
+		// port 1934 must pass.
 		"http://asp6.toonamiaftermath.com:1934/livehttporigin/est/gYAkxI-najmUm-chunklist.m3u8",
 		"http://asp1.toonamiaftermath.com:1934/livehttporigin/movies/gYAkxI-l6sJtY-chunklist.m3u8",
 		"http://asp12.toonamiaftermath.com:1934/livehttporigin/radio/x-media-seg.ts",
 		// pst attaches ?streamDelay=180 to its variant URL.
 		"http://asp6.toonamiaftermath.com:1934/livehttporigin/est/gYAkxI-VQnF27-chunklist.m3u8?streamDelay=180",
+		// Newer origin pool (observed 2026-09) uses nN hostnames.
+		"http://n3.toonamiaftermath.com:1934/livehttporigin/est/gYAkxI-8qaCsk-chunklist-hls10.m3u8",
+		"http://n3.toonamiaftermath.com:1934/livehttporigin/est/gYAkxI-4JX0cg-chunklist-hls10.m3u8?streamDelay=180",
+		"http://n3.toonamiaftermath.com:1934/livehttporigin/movies/gYAkxI-l9Z2IG-chunklist.m3u8",
+		"http://n12.toonamiaftermath.com:1934/livehttporigin/radio/gYAkxI-IYGFfK-media-x_1.ts",
+		"http://other.toonamiaftermath.com:1934/livehttporigin/est/x.m3u8",
+		"http://edge.us-east.toonamiaftermath.com:1934/livehttporigin/pst/x.m3u8",
+		"http://toonamiaftermath.com:1934/livehttporigin/movies/x.m3u8",
 	}
 	for _, raw := range cases {
 		t.Run(raw, func(t *testing.T) {

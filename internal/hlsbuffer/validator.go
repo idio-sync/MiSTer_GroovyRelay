@@ -266,10 +266,11 @@ func defaultResolver(ctx context.Context, host string) ([]net.IP, error) {
 }
 
 // toonamiOriginHostRE matches the Wowza streaming-origin hosts that
-// Toonami Aftermath returns inside its master playlists. The digit in
-// `aspN` rotates across the load-balanced pool, so the regex covers any
-// digit on the fixed port 1934.
-var toonamiOriginHostRE = regexp.MustCompile(`^asp\d+\.toonamiaftermath\.com:1934$`)
+// Toonami Aftermath returns inside its master playlists. Upstream renames
+// the load-balanced pool (`aspN` became `nN` in 2026-09), so any
+// toonamiaftermath.com host on the fixed port 1934 is accepted; the
+// channel path prefixes and query checks are what constrain the URL.
+var toonamiOriginHostRE = regexp.MustCompile(`^(?:[a-z0-9-]+\.)*toonamiaftermath\.com:1934$`)
 
 var toonamiAPIChannelPrefixes = []string{"/est/", "/pst/", "/movies/", "/radio/"}
 
