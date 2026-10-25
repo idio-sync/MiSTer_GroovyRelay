@@ -227,6 +227,74 @@ func TestEscapeSubtitlePathFor(t *testing.T) {
 	}
 }
 
+func TestBuildFilterChain_AutoCropWithoutProbedSizeUsesPixels(t *testing.T) {
+	spec := PipelineSpec{
+		OutputWidth: 720, OutputHeight: 480,
+		FieldOrder: "tff", AspectMode: "auto",
+		CropRect: &CropRect{W: 1920, H: 800, X: 0, Y: 140},
+	}
+	chain := buildFilterChain(spec)
+	if !strings.Contains(chain, "crop=1920:800:0:140") {
+		t.Errorf("expected pixel crop when the source size is unknown, got %s", chain)
+	}
+}
+
+// TestBuildFilterChain_AutoCropSurvivesResolutionChangeWithFFmpeg covers
+// Twitch's stitched pre-roll: the crop probe measures a 1920x1080 ad, then
+// the live stream continues at 1280x720. A crop locked in source pixels no
+// longer fits when ffmpeg reconfigures the graph, and the session dies.
+func TestBuildFilterChain_AutoCropSurvivesResolutionChangeWithFFmpeg(t *testing.T) {
+	ffmpegPath := findFFBinary("ffmpeg")
+	if ffmpegPath == "" {
+		t.Skip("ffmpeg not found; skipping resolution-change crop test")
+	}
+	dir := t.TempDir()
+	segments := []struct{ name, size string }{
+		{"ad.ts", "1920x1080"},
+		{"live.ts", "1280x720"},
+	}
+	for _, seg := range segments {
+		genCtx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+		gen := exec.CommandContext(genCtx, ffmpegPath,
+			"-hide_banner", "-v", "error", "-y",
+			"-f", "lavfi", "-i", "testsrc2=s="+seg.size+":r=30:d=0.5",
+			"-c:v", "mpeg2video", "-f", "mpegts",
+			filepath.Join(dir, seg.name),
+		)
+		out, err := gen.CombinedOutput()
+		cancel()
+		if err != nil {
+			t.Fatalf("generate %s: %v\n%s", seg.name, err, out)
+		}
+	}
+	spec := PipelineSpec{
+		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 30},
+		OutputWidth: 720, OutputHeight: 480,
+		FieldOrder: "tff", AspectMode: "auto",
+		CropRect: &CropRect{W: 1920, H: 1080, X: 0, Y: 0},
+	}
+	runCtx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, ffmpegPath,
+		"-hide_banner", "-v", "error",
+		"-i", "concat:"+filepath.Join(dir, "ad.ts")+"|"+filepath.Join(dir, "live.ts"),
+		"-vf", buildFilterChain(spec),
+		"-pix_fmt", "bgr24", "-f", "rawvideo", "-",
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("ffmpeg failed across the resolution change: %v\n%s\nchain=%s", err, stderr.String(), buildFilterChain(spec))
+	}
+	// Both halves must come through; 0.5s of 30fps per half becomes about
+	// 30 frames each at 59.94fps.
+	frames := len(out) / (720 * 480 * 3)
+	if frames < 50 {
+		t.Fatalf("got %d frames, want both halves (~60)\nstderr=%s", frames, stderr.String())
+	}
+}
+
 func TestBuildFilterChain_AutoCropUsesLockedRect(t *testing.T) {
 	spec := PipelineSpec{
 		SourceProbe: &ProbeResult{Width: 1920, Height: 1080, FrameRate: 23.976},
@@ -235,8 +303,8 @@ func TestBuildFilterChain_AutoCropUsesLockedRect(t *testing.T) {
 		CropRect: &CropRect{W: 1920, H: 800, X: 0, Y: 140},
 	}
 	chain := buildFilterChain(spec)
-	if !strings.Contains(chain, "crop=1920:800:0:140") {
-		t.Errorf("expected locked crop, got %s", chain)
+	if !strings.Contains(chain, "crop=iw*1920/1920:ih*800/1080:iw*0/1920:ih*140/1080") {
+		t.Errorf("expected locked crop relative to the probed frame, got %s", chain)
 	}
 	if strings.Contains(chain, "cropdetect") {
 		t.Errorf("main chain must NOT include cropdetect (probe pass only): %s", chain)

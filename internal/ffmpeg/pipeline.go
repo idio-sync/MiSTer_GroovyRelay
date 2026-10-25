@@ -213,6 +213,20 @@ const (
 	visibleDARDen = 3
 )
 
+// cropFilter renders the locked crop rect. When the probed frame size is
+// known, the rect is expressed as a fraction of the current input (iw/ih) so
+// a mid-stream resolution change scales the crop instead of failing the graph
+// reconfigure: Twitch's stitched pre-roll is 1080p, so the probe locks a
+// 1920x1080 rect that no longer fits the 720p live stream after the ad.
+func cropFilter(r CropRect, probe *ProbeResult) string {
+	if probe == nil || probe.Width <= 0 || probe.Height <= 0 {
+		return fmt.Sprintf("crop=%d:%d:%d:%d", r.W, r.H, r.X, r.Y)
+	}
+	w, h := probe.Width, probe.Height
+	return fmt.Sprintf("crop=iw*%d/%d:ih*%d/%d:iw*%d/%d:ih*%d/%d",
+		r.W, w, r.H, h, r.X, w, r.Y, h)
+}
+
 // logicalCanvas returns the square-pixel (W,H) the source is fitted into
 // before anamorphic-stretch to (OutputWidth, OutputHeight). For NTSC 480i
 // (480 high) it returns (640, 480); for NTSC 240p (240 high) it returns
@@ -275,9 +289,8 @@ func buildFilterChain(s PipelineSpec) string {
 	logicalW, logicalH := logicalCanvas(s.OutputHeight)
 	switch {
 	case s.AspectMode == "auto" && s.CropRect != nil:
-		r := s.CropRect
 		filters = append(filters,
-			fmt.Sprintf("crop=%d:%d:%d:%d", r.W, r.H, r.X, r.Y),
+			cropFilter(*s.CropRect, s.SourceProbe),
 			displayAspectFitScale(logicalW, logicalH, "min"),
 			"setsar=1",
 			fmt.Sprintf("pad=w=%d:h=%d:x=(ow-iw)/2:y=(oh-ih)/2:color=black", logicalW, logicalH),
