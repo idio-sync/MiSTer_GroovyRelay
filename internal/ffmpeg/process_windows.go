@@ -22,6 +22,7 @@ type acceptResult struct {
 // only used by the Unix implementation.
 func Spawn(ctx context.Context, spec PipelineSpec) (*Process, error) {
 	spec = withVisualizerCapabilities(ctx, spec)
+	spec = withCaptureInputCapabilities(ctx, spec)
 	audioEnabled := audioOutputEnabled(spec)
 
 	videoListener, err := listenLoopback()
