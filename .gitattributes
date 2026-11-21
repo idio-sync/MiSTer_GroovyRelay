@@ -26,3 +26,8 @@ scripts/sidecar-manifest.txt text eol=lf
 # vectors.json to stay reproducible across platforms. Store both verbatim.
 tools/nlcvectors/nlc_codec.* -text
 internal/groovy/nlc/testdata/** -text
+
+# The config template is embedded via go:embed and written out as every
+# first-run config.toml. A CRLF copy broke the settings UI's per-adapter
+# saves (issue #7), and core.autocrlf would re-embed CRLF on Windows builds.
+internal/config/example.toml text eol=lf

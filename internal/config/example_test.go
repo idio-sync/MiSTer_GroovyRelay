@@ -42,3 +42,12 @@ func TestDefaultConfigTOML_ParsesAsSectioned(t *testing.T) {
 		t.Fatalf("DefaultConfigTOML output fails Sectioned.Validate(): %v", err)
 	}
 }
+
+// The embedded template becomes every first-run config.toml. It shipped with
+// CRLF line endings, which broke the settings UI's per-adapter saves (issue
+// #7); .gitattributes pins it to LF so no checkout re-embeds CRLF.
+func TestExampleTOML_HasLFLineEndings(t *testing.T) {
+	if strings.Contains(string(ExampleTOML()), "\r") {
+		t.Fatal("example.toml contains CR characters; it must be LF-only (see .gitattributes)")
+	}
+}
