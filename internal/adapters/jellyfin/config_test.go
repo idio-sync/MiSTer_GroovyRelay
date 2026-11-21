@@ -1,10 +1,12 @@
 package jellyfin
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
 func TestConfig_DefaultsWhenSectionAbsent(t *testing.T) {
@@ -95,6 +97,21 @@ func TestConfig_Validate_Rejects(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), c.want) {
 				t.Errorf("Validate() = %v, want substring %q", err, c.want)
+			}
+			// The settings UI only renders adapters.FieldErrors; any other
+			// error type surfaces as a misleading WRITE FAILED (issue #7).
+			var ferrs adapters.FieldErrors
+			if !errors.As(err, &ferrs) {
+				t.Fatalf("Validate() error type = %T, want adapters.FieldErrors", err)
+			}
+			wantKey := "server_url"
+			if strings.HasPrefix(c.name, "bitrate") {
+				wantKey = "max_video_bitrate_kbps"
+			} else if strings.HasPrefix(c.name, "device-name") {
+				wantKey = "device_name"
+			}
+			if len(ferrs) == 0 || ferrs[0].Key != wantKey {
+				t.Errorf("Validate() field errors = %+v, want key %q", ferrs, wantKey)
 			}
 		})
 	}

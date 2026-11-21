@@ -3,10 +3,11 @@
 package jellyfin
 
 import (
-	"errors"
 	"fmt"
 	"net/url"
 	"unicode"
+
+	"github.com/idio-sync/MiSTer_GroovyRelay/internal/adapters"
 )
 
 // Config is the [adapters.jellyfin] TOML section. Secrets (access
@@ -35,45 +36,63 @@ func DefaultConfig() Config {
 // Validate enforces the rules in the spec §"Validate() rules". Returns
 // nil when the config is acceptable. Empty server_url is permitted when
 // Enabled=false (the operator has not yet linked).
+//
+// Failures are adapters.FieldErrors keyed by TOML key so the settings UI can
+// show them against the field; a plain error reaches the operator as a
+// misleading "couldn't write config.toml" notice (issue #7).
 func (c Config) Validate() error {
+	var errs adapters.FieldErrors
 	if c.MaxVideoBitrateKbps < 200 || c.MaxVideoBitrateKbps > 50000 {
-		return fmt.Errorf("max_video_bitrate_kbps = %d, must be between 200 and 50000", c.MaxVideoBitrateKbps)
+		errs = append(errs, adapters.FieldError{
+			Key: "max_video_bitrate_kbps",
+			Msg: fmt.Sprintf("must be between 200 and 50000, got %d", c.MaxVideoBitrateKbps),
+		})
 	}
-	if len(c.DeviceName) > 64 {
-		return fmt.Errorf("device_name length = %d, must be <= 64", len(c.DeviceName))
+	if msg := validateDeviceName(c.DeviceName); msg != "" {
+		errs = append(errs, adapters.FieldError{Key: "device_name", Msg: msg})
 	}
-	for _, r := range c.DeviceName {
+	if msg := validateServerURL(c.ServerURL, c.Enabled); msg != "" {
+		errs = append(errs, adapters.FieldError{Key: "server_url", Msg: msg})
+	}
+	return errs.Err()
+}
+
+func validateDeviceName(name string) string {
+	if len(name) > 64 {
+		return fmt.Sprintf("length %d, must be at most 64", len(name))
+	}
+	for _, r := range name {
 		if r > unicode.MaxASCII || !unicode.IsPrint(r) {
-			return fmt.Errorf("device_name must be ASCII-printable; got rune %U", r)
+			return fmt.Sprintf("must be ASCII-printable; got rune %U", r)
 		}
 	}
-	if !c.Enabled && c.ServerURL == "" {
-		return nil
+	return ""
+}
+
+func validateServerURL(raw string, enabled bool) string {
+	if raw == "" {
+		if enabled {
+			return "required before enabling Jellyfin; enter the server URL and link first"
+		}
+		return ""
 	}
-	if c.ServerURL == "" {
-		return errors.New("server_url is required when enabled = true")
-	}
-	u, err := url.Parse(c.ServerURL)
+	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("server_url: parse: %w", err)
+		return fmt.Sprintf("parse: %v", err)
 	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("server_url: scheme %q must be http or https", u.Scheme)
+	switch {
+	case u.Scheme != "http" && u.Scheme != "https":
+		return fmt.Sprintf("scheme %q must be http or https", u.Scheme)
+	case u.User != nil:
+		return "must not contain username/password; credentials are stored separately after linking"
+	case u.Path != "" && u.Path != "/":
+		return fmt.Sprintf("path %q must be empty", u.Path)
+	case u.RawQuery != "":
+		return fmt.Sprintf("query string must be empty (got %q)", u.RawQuery)
+	case u.Fragment != "":
+		return fmt.Sprintf("fragment must be empty (got %q)", u.Fragment)
+	case u.Host == "":
+		return "host is required"
 	}
-	if u.User != nil {
-		return fmt.Errorf("server_url: must not contain username/password; credentials are stored separately after linking")
-	}
-	if u.Path != "" && u.Path != "/" {
-		return fmt.Errorf("server_url: path %q must be empty", u.Path)
-	}
-	if u.RawQuery != "" {
-		return fmt.Errorf("server_url: query string must be empty (got %q)", u.RawQuery)
-	}
-	if u.Fragment != "" {
-		return fmt.Errorf("server_url: fragment must be empty (got %q)", u.Fragment)
-	}
-	if u.Host == "" {
-		return errors.New("server_url: host is required")
-	}
-	return nil
+	return ""
 }
