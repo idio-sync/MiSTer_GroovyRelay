@@ -792,3 +792,64 @@ func TestSaveValues_ConcurrentSavesSerialize(t *testing.T) {
 		t.Fatalf("config is not valid TOML after concurrent saves: %v\n%s", err, got)
 	}
 }
+
+// crlfConfigWithTrailingSection writes a CRLF config.toml where the target
+// [adapters.<name>] section is followed by another section — the shape of
+// the default config.toml the bridge writes on first run (issue #7).
+func crlfConfigWithTrailingSection(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.toml")
+	doc := "[bridge]\nmister.host = \"x\"\n\n" +
+		"[adapters." + name + "]\nenabled = false            # comment\ndevice_name = \"Old\"\n\n" +
+		"[adapters.other]\nenabled = true\n"
+	doc = strings.ReplaceAll(doc, "\n", "\r\n")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return path
+}
+
+func assertCRLFSaveResult(t *testing.T, path string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var decoded struct {
+		Adapters map[string]map[string]any `toml:"adapters"`
+	}
+	if _, err := toml.Decode(string(got), &decoded); err != nil {
+		t.Fatalf("saved config does not parse: %v\n%q", err, got)
+	}
+	if v, _ := decoded.Adapters["dlna"]["enabled"].(bool); !v {
+		t.Errorf("adapters.dlna.enabled = %v, want true", decoded.Adapters["dlna"]["enabled"])
+	}
+	if v, _ := decoded.Adapters["dlna"]["device_name"].(string); v != "Old" {
+		t.Errorf("adapters.dlna.device_name = %q, want preserved \"Old\"", v)
+	}
+	if v, _ := decoded.Adapters["other"]["enabled"].(bool); !v {
+		t.Errorf("adapters.other section not preserved:\n%s", got)
+	}
+}
+
+func TestSaveTouched_CRLFConfig(t *testing.T) {
+	t.Parallel()
+	path := crlfConfigWithTrailingSection(t, "dlna")
+	saver := NewAdapterSaver(path, &sync.Mutex{})
+	adapter := &fakeFullAdapter{values: map[string]any{"enabled": false, "device_name": "Old"}}
+	if _, err := saver.SaveTouched("dlna", map[string]string{"enabled": "true"}, adapter, adapter.Fields()); err != nil {
+		t.Fatalf("SaveTouched on CRLF config: %v", err)
+	}
+	assertCRLFSaveResult(t, path)
+}
+
+func TestSaveValues_CRLFConfig(t *testing.T) {
+	t.Parallel()
+	path := crlfConfigWithTrailingSection(t, "dlna")
+	saver := NewAdapterSaver(path, &sync.Mutex{})
+	adapter := &fakeFullAdapter{values: map[string]any{"enabled": false, "device_name": "Old"}}
+	if _, err := saver.SaveValues("dlna", map[string]any{"enabled": true}, []string{"enabled"}, adapter); err != nil {
+		t.Fatalf("SaveValues on CRLF config: %v", err)
+	}
+	assertCRLFSaveResult(t, path)
+}

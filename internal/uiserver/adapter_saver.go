@@ -36,12 +36,26 @@ func (r *AdapterSaver) Save(name string, rawTOMLSection []byte) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	data, err := os.ReadFile(r.path)
+	data, err := readConfigDoc(r.path)
 	if err != nil {
 		return fmt.Errorf("read: %w", err)
 	}
 	updated := replaceAdapterSection(data, name, rawTOMLSection)
 	return config.WriteAtomic(r.path, updated)
+}
+
+// readConfigDoc reads config.toml with CRLF line endings normalized to LF.
+// The section helpers below split on "\n", so a CRLF file leaves a "\r" on
+// every line; a section body extracted from the middle of the file then ends
+// in a lone "\r", which the TOML parser rejects as a control character
+// (issue #7). Normalizing on read keeps the line logic simple and means the
+// rewritten file is consistently LF.
+func readConfigDoc(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")), nil
 }
 
 // replaceAdapterSection rewrites (or appends) the [adapters.<name>]
@@ -396,7 +410,7 @@ func (r *AdapterSaver) SaveTouched(name string, touched map[string]string, adapt
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	doc, err := os.ReadFile(r.path)
+	doc, err := readConfigDoc(r.path)
 	if err != nil {
 		return 0, fmt.Errorf("read config: %w", err)
 	}
@@ -505,7 +519,7 @@ func (r *AdapterSaver) SaveValues(name string, values map[string]any, allowedKey
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	doc, err := os.ReadFile(r.path)
+	doc, err := readConfigDoc(r.path)
 	if err != nil {
 		return 0, fmt.Errorf("read config: %w", err)
 	}
