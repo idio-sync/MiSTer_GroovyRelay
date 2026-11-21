@@ -790,7 +790,22 @@
     }
     if (payload.errors) {
       const msg = payload.errors[key];
-      if (msg) paintFieldErrorOn(target, msg);
+      if (msg) {
+        paintFieldErrorOn(target, msg);
+        return;
+      }
+      // Rejected over a different field than the one saved (e.g. enabling
+      // Jellyfin before its Server URL is set). Paint each message on its own
+      // field when it is in this adapter's pane, and say why in the notice so
+      // a toggle never snaps back unexplained.
+      const adapter = target.getAttribute('data-adapter');
+      const lines = [];
+      for (const [k, m] of Object.entries(payload.errors)) {
+        const el = drawer.querySelector(`[data-adapter="${CSS.escape(adapter)}"][name="${CSS.escape(k)}"]`);
+        if (el) paintFieldErrorOn(el, m);
+        lines.push(`${el ? labelFor(el) : k}: ${m}`);
+      }
+      if (lines.length) showNotice(lines.join(' · '), 'err');
       return;
     }
     if (payload.chip) {
